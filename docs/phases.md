@@ -11,7 +11,7 @@ buildable and testable; the project stays useful even if work pauses partway.
 | 3     | P25 trunking (Phase 1 then Phase 2)    | partial     |
 | 3.5   | System ID & control-channel hunting    | done        |
 | 4     | DMR trunking (Tier II + Tier III)      | partial     |
-| 5     | NXDN trunking                          | upcoming    |
+| 5     | NXDN trunking                          | partial     |
 | 6     | Trunking engine (grant follower)       | upcoming    |
 | 7a    | Voice passthrough (FM, raw frames)     | upcoming    |
 | 7b    | IMBE (P25 Phase 1, default)            | upcoming    |
@@ -164,6 +164,51 @@ Deferred to follow-up phases:
   III scaffolding (Tier II is mostly a configuration variation).
 - Voice burst payload (two AMBE+2 frames per burst) — Phase 7.
 - Vendor extensions behind FID != 0 (Hytera, Motorola Connect+).
+
+## Phase 5 — NXDN Trunking (in progress)
+
+Landed in this phase:
+
+- `internal/radio/nxdn/frame.go` — Frame layout constants for the
+  192-dibit NXDN frame: FSW (8 dibits) + LICH (8 wire dibits) + SACCH
+  (32 dibits) + Information field (144 dibits). `BaudRate` enum
+  selects between 4800 (BFSK) and 9600 (4-FSK) channel rates that
+  share the same logical structure.
+- `internal/radio/nxdn/lich.go` — 8-bit Link Information Channel
+  parser and assembler with the field decomposition (RFCh + FCT +
+  Option + Direction + Parity), even-parity validation, and a soft
+  decoder for the on-air 16-bit doubled wire form (each info bit
+  transmitted twice).
+- `internal/radio/nxdn/sync.go` — Frame Sync Word constants
+  (outbound BS→MS and inbound MS→BS) as 16-bit hex + 8-dibit
+  decompositions, plus a sliding sync detector with configurable
+  tolerance and per-direction match reporting.
+- `internal/radio/nxdn/cac.go` — CAC (Common Access Channel)
+  message-level parser/assembler with CRC-CCITT trailer; RCCH opcode
+  enum (VCALL, VCALL_ASSGN, DCALL, SDCALL, SITE_INFO, SRV_INFO,
+  CCH_ANNOUNCE); payload parsers for VCALL and SITE_INFO.
+- `internal/radio/nxdn/control.go` — Control-channel state machine
+  consuming a parsed LICH + CAC, validating RFCh = RCCH and the
+  LICH parity, and publishing `cc.locked` / `cc.lost` events with an
+  NXDN-specific LockState payload (FrequencyHz + BaudRate + SiteID +
+  SystemID).
+
+Tests cover frame layout consistency, LICH round-trip with parity
+verification + per-bit corruption detection, LICH wire-form encode/
+decode + majority voting on a single corrupted bit, FSW pattern
+matching with clean / tolerant / over-budget cases and inbound vs
+outbound discrimination, CAC round-trip + CRC failure, payload
+parsers, and the control-channel emission path.
+
+Deferred to follow-up phases:
+- Final cross-check of FSW values against the published NXDN
+  technical document (the constants above match common reference
+  implementations but should be verified before live captures).
+- SACCH FEC (Reed-Muller / convolutional + scrambler) and the
+  sub-frame interleaver across the 144-dibit information field.
+- Full RCCH state machine (paging, channel-grant follow, neighbor-
+  list reaction) — Phase 6 along with the engine.
+- Voice frame AMBE+2 payloads — Phase 7.
 
 …subsequent phases follow the plan in
 `/root/.claude/plans/using-the-readme-md-as-sleepy-fairy.md`.
