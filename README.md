@@ -1,18 +1,142 @@
-# GopherTrunk
-A headless, low-latency trunking engine that manages hardware pools and decodes P25/DMR control channels.
-GopherTrunk 📻🐹
-GopherTrunk is a high-performance, concurrent digital trunking scanner engine written in Go. It leverages the power of Go's goroutines to manage multiple RTL-SDR dongles simultaneously, allowing for seamless tracking of P25, DMR, and NXDN trunked radio systems.
-✨ Features
-Native Concurrency: Designed from the ground up to use Go channels for low-latency IQ data processing.
-Multi-SDR Pool: Auto-discovery and role assignment for multiple RTL-SDR devices (Control vs. Voice).
-Protocol Support (Planned):
-P25 Phase 1 & 2 (C4FM/QPSK)
-DMR (Tier II & III)
-NXDN (4800/9600 baud)
-Headless Architecture: Core engine runs as a daemon with a gRPC/Websocket API for frontend integration.
-Priority Tracking: Intelligent talkgroup preemption based on user-defined priority levels.
-🛠 Tech Stack
-Language: Go (Golang)
-Hardware Interface: libusb / CGO wrappers for RTL-SDR
-DSP: Custom Go-based polyphase channelizers and demodulators
-API: gRPC & Protobuf for metadata and audio streaming
+# GopherTrunk 📻🐹
+
+A headless, low-latency digital-trunking scanner engine in Go.
+
+GopherTrunk manages a pool of RTL-SDR dongles, runs a custom Go DSP pipeline,
+and decodes the control channels of P25, DMR, and NXDN trunked radio systems
+— with the engine pieces that follow voice grants, hold talkgroups by
+priority, and stream metadata + audio to a frontend layered on top.
+
+> **Status: under active development.** Phases 0 – 5 of the build plan have
+> landed (foundation, SDR hardware, DSP core, P25 Phase 1 control channel,
+> system-ID & CC hunter, DMR Tier III CSBK, NXDN frame structure). The full
+> phased roadmap lives in [`docs/phases.md`](docs/phases.md); the
+> architectural overview is in [`docs/architecture.md`](docs/architecture.md).
+
+## What's built so far
+
+| Area              | Component                                                  |
+| ----------------- | ---------------------------------------------------------- |
+| Hardware          | CGO `librtlsdr` binding, multi-device pool, role assignment, DC blocker, IQ-imbalance correction, file-backed IQ replay (mock) |
+| DSP               | Polyphase channelizer, FIR + Kaiser LPF designer + RRC, CIC, halfband, AGC, rational resampler, FM / C4FM / H-DQPSK demods, Mueller-Müller clock recovery, frame-sync correlator |
+| FEC primitives    | CRC-CCITT/FALSE, Hamming(15,11,3), Hamming(13,9,3), extended Golay(24,12,8), BPTC(196,96), 4-state ½-rate Viterbi |
+| P25 Phase 1       | 48-bit FSW + sync detector, NID parser (NAC + DUID), TSBK with CRC trailer, payload parsers for GroupVoiceChannelGrant / Update / NetworkStatus / RFSSStatus, control-channel state machine |
+| DMR (Tier III)    | All 9 ETSI sync patterns, burst layout (132 dibits), Color Code + Data Type, CSBK with CRC, payload parsers for TalkGroup/Private Voice grants + Aloha + AdjacentSiteStatus + SystemInfoBroadcast, control-channel state machine |
+| NXDN              | 192-dibit frame layout (4800 BFSK / 9600 4-FSK), LICH parse with parity + 16-bit doubled-wire decoder, FSW correlator, CAC parser with CRC, RCCH opcode enum + payload parsers, control-channel state machine |
+| Orchestration     | In-process pub/sub event bus, `System` model, JSON-on-disk last-known-CC cache, control-channel `Hunter` that retunes the SDR and parks on the first responsive frequency |
+| Daemon            | `cmd/gophertrunk` with `version`, `sdr list`, and `run` subcommands; YAML config; `log/slog`; signal-driven shutdown |
+
+## What's intentionally deferred
+
+The build plan calls these out by phase; the most visible items still ahead:
+
+- Wiring the demod pipeline → control-channel state machine inside the
+  daemon process (Phase 6 — the trunking engine).
+- BCH(63,16,11) for full P25 NID validation; P25-specific trellis tables and
+  the TSBK block interleaver (so the P25 Phase 1 control channel can decode
+  live captures end-to-end).
+- Hamming(20,8) over the DMR slot-type field; SACCH FEC + sub-frame
+  interleaver for NXDN.
+- Voice frame decoding — IMBE for P25 Phase 1 lands as Phase 7; AMBE+2
+  (P25 Phase 2 / DMR / NXDN) is gated behind a `mbelib` build tag for
+  patent-licensing clarity.
+- gRPC + WebSocket API surfaces (Phase 8), persistence + recording
+  (Phase 9), and hardening (metrics, reconnect, Docker — Phase 10).
+
+## ✨ Goals
+
+- **Native concurrency.** Goroutines + typed channels carry IQ from the
+  RTL-SDR async-read callback all the way through the DSP and protocol
+  pipelines.
+- **Multi-SDR pool.** Auto-discovery and Control / Voice role assignment
+  across multiple dongles, with serial-number hints honored.
+- **Protocols.** P25 Phase 1 & 2 (C4FM / H-DQPSK), DMR Tier II & III, NXDN
+  4800 / 9600 baud.
+- **Headless architecture.** Daemon with gRPC + WebSocket APIs for any
+  frontend; the engine itself stays API-agnostic via an in-process event
+  bus.
+- **Priority tracking.** Talkgroup preemption based on user-defined
+  priority levels; multi-site neighbor following.
+
+## 🛠 Tech stack
+
+- **Language:** Go 1.24+
+- **Hardware:** `libusb-1.0` + `librtlsdr` via CGO (custom thin binding)
+- **DSP:** `gonum/dsp/fourier` for FFT, custom polyphase channelizer,
+  filters, and demodulators
+- **Logging:** `log/slog` (stdlib)
+- **API (planned):** gRPC + Protobuf for metadata; server-streaming RPC
+  for audio; WebSocket bridge for browser frontends
+
+## Quick start
+
+### Prerequisites
+
+```sh
+sudo apt-get install librtlsdr-dev libusb-1.0-0-dev
+```
+
+See [`docs/hardware.md`](docs/hardware.md) for `udev` rules and DVB
+blacklisting on Linux.
+
+### Build and test
+
+```sh
+make build     # produces ./bin/gophertrunk
+make test      # go test -race ./...
+make vet
+```
+
+### Smoke test
+
+```sh
+./bin/gophertrunk version
+./bin/gophertrunk sdr list      # enumerates attached RTL-SDR dongles
+./bin/gophertrunk run --config config.yaml
+```
+
+A minimal `config.yaml`:
+
+```yaml
+log:
+  level: info
+  format: text
+sdr:
+  sample_rate: 2400000
+  devices:
+    - serial: "00000001"
+      role: control
+      ppm: -2
+trunking:
+  systems:
+    - name: ExampleP25
+      protocol: p25
+      control_channels: [851000000, 852000000]
+```
+
+## Repository layout
+
+```
+cmd/gophertrunk/        daemon entrypoint + sdr list CLI
+internal/sdr/           Driver interface, pool, CGO librtlsdr, mock
+internal/dsp/           Channelizer, filters, demods, sync, FFT
+internal/radio/         framing/ + p25/phase1/ + dmr/ + nxdn/
+internal/trunking/      System, last-known-CC cache, CC Hunter
+internal/events/        In-process pub/sub bus
+internal/config/        YAML loader
+docs/                   architecture.md · phases.md · hardware.md
+```
+
+## Contributing
+
+The project is being built phase by phase per
+[`docs/phases.md`](docs/phases.md). Each phase is independently buildable
+and testable. PRs that complete deferred items in earlier phases (the
+"deferred" lists in `docs/phases.md`) are very welcome — the most useful
+near-term targets are the BCH + P25 trellis tables (so the P25 control
+channel decodes live IQ end-to-end) and the demod-pipeline composer that
+glues SDR → channelizer → demod → control-channel state machine.
+
+## License
+
+See [`LICENSE`](LICENSE).
