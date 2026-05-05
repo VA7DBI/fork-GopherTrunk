@@ -9,7 +9,7 @@ buildable and testable; the project stays useful even if work pauses partway.
 | 1     | SDR hardware layer (CGO librtlsdr)     | done        |
 | 2     | DSP core (channelizer, demods)         | done        |
 | 3     | P25 trunking (Phase 1 then Phase 2)    | partial     |
-| 3.5   | System ID & control-channel hunting    | upcoming    |
+| 3.5   | System ID & control-channel hunting    | done        |
 | 4     | DMR trunking (Tier II + Tier III)      | upcoming    |
 | 5     | NXDN trunking                          | upcoming    |
 | 6     | Trunking engine (grant follower)       | upcoming    |
@@ -95,6 +95,30 @@ Deferred to follow-up phases:
 - LDU1/LDU2 (voice frames) — they need Reed-Solomon and the IMBE
   decoder, both Phase 7 territory.
 - P25 Phase 2 (TDMA H-DQPSK superframes) — separate phase.
+
+## Phase 3.5 — System Identification & Control Channel Hunting
+
+Landed in this phase:
+
+- `internal/trunking/site.go` — `System` type (Name, Protocol enum,
+  candidate ControlChannels list, WACN/SYSID/RFSS/Site identifiers) +
+  `HuntOrder()` which biases scanning toward the cached last-known CC.
+- `internal/trunking/cache.go` — JSON-on-disk cache of last-known CC
+  frequency + NAC per system, with atomic rename on write.
+- `internal/trunking/cchunt.go` — `Hunter` coordinator. Subscribes to
+  the events bus, walks the candidate frequency list, retunes the
+  control-role SDR (via a narrow `Tuner` interface so unit tests can
+  use a fake), parks on the first matching `cc.locked` event within
+  the per-frequency dwell window, and persists the locked frequency.
+- Tests cover validation, cache round-trip + atomic write, biased
+  hunt order, lock-on-first-responsive-frequency, full-sweep with no
+  response, lock priority for cached frequency, freq mismatch
+  rejection, and context-cancel propagation.
+
+Wiring into the daemon (`cmd/gophertrunk`) belongs to Phase 6 along
+with the demod pipeline that ultimately publishes `cc.locked` for the
+hunter to consume — in this phase the hunter is library-ready and
+unit-tested but not yet reachable from the CLI.
 
 …subsequent phases follow the plan in
 `/root/.claude/plans/using-the-readme-md-as-sleepy-fairy.md`.
