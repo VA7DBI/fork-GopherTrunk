@@ -8,7 +8,7 @@ buildable and testable; the project stays useful even if work pauses partway.
 | 0     | Foundation                             | done        |
 | 1     | SDR hardware layer (CGO librtlsdr)     | done        |
 | 2     | DSP core (channelizer, demods)         | done        |
-| 3     | P25 trunking (Phase 1 then Phase 2)    | upcoming    |
+| 3     | P25 trunking (Phase 1 then Phase 2)    | partial     |
 | 3.5   | System ID & control-channel hunting    | upcoming    |
 | 4     | DMR trunking (Tier II + Tier III)      | upcoming    |
 | 5     | NXDN trunking                          | upcoming    |
@@ -68,6 +68,33 @@ Verification:
   channel k with adjacent-channel rejection > 20 dB); AGC convergence;
   RRC unit-energy and matched-filter peak-at-center; FM demod against a
   linear chirp; D-QPSK against constant phase steps.
+
+## Phase 3 — P25 trunking (in progress)
+
+Landed in this phase:
+
+- `internal/radio/framing` shared FEC primitives — bit packing,
+  CRC-CCITT/FALSE, Hamming(15,11,3), extended Golay(24,12,8), and a
+  generic 4-state 1/2-rate convolutional Viterbi parameterised by next-
+  state and output-dibit tables (P25 trellis polynomials plug in here).
+- `internal/radio/p25/phase1`:
+  - `sync.go` — 48-bit P25 frame-sync word, dibit-stream sync detector,
+    and TIA-102 C4FM symbol-to-dibit mapping.
+  - `nid.go` — Network ID parser (NAC + DUID enum).
+  - `tsbk.go` — Trunking Signaling Block parse/assemble with CRC trailer.
+  - `opcodes.go` — TSBK opcode constants and payload parsers for
+    GroupVoiceChannelGrant (0x00), GroupVoiceChannelUpdate (0x02),
+    NetworkStatusBroadcast (0x3B), and RFSSStatusBroadcast (0x3A).
+  - `control.go` — control-channel state that emits `cc.locked` and
+    `cc.lost` on the events bus.
+
+Deferred to follow-up phases:
+- Full BCH(63,16,11) decoder for NID validation.
+- P25-specific trellis next-state / output-dibit tables (TIA-102.BAAA
+  Annex A) and the TSBK block interleaver.
+- LDU1/LDU2 (voice frames) — they need Reed-Solomon and the IMBE
+  decoder, both Phase 7 territory.
+- P25 Phase 2 (TDMA H-DQPSK superframes) — separate phase.
 
 …subsequent phases follow the plan in
 `/root/.claude/plans/using-the-readme-md-as-sleepy-fairy.md`.
