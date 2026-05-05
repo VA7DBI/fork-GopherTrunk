@@ -166,11 +166,27 @@ What's wired:
   active-call detection, no-republish-on-same-group, no-resolver
   fallback, and the cc.locked / cc.lost emissions. The 300-baud
   sub-audible status-word demodulator is the honest deferral.
+- **MPT 1327.** `internal/radio/mpt1327/` — 64-bit address-codeword
+  parser (38 information bits + 26 BCH parity, with BCH consumed
+  by the upstream FEC), CodewordKind enum
+  (Aloha / Ahoy / AhoyChan / GoToChannel / Ack / Disconnect /
+  Data / Emergency), per-kind payload accessors that surface
+  the GTC voice-grant channel + the AHYC system-broadcast
+  identifier, channel-number → Hz band-plan resolver
+  (linear and table), and a control-channel state machine that
+  publishes `cc.locked` on the first ALH or AHYC frame and
+  `grant` (with `trunking.Grant.Protocol = "mpt1327"`) on each
+  GoToChannel codeword. The grant's `GroupID` packs
+  `(prefix << 16) | ident` so prefixes that re-use idents stay
+  disambiguated. Tests cover codeword round-trip in bytes + bits,
+  Kind + payload extraction, both lock paths (ALH and AHYC),
+  the GTC grant publication, no-resolver fallback, data-codeword
+  filtering, and `MarkLost`. The 1200-baud FFSK demodulator and
+  BCH(63,38) decoder are honest deferrals, listed in the package's
+  doc comment.
 
 Still ahead:
 
-- **MPT-1327.** UK / Commonwealth utility trunking; cleanly
-  documented MAP-27 messages.
 - **P25 Phase 2 (TDMA H-DQPSK superframes).** The H-DQPSK demod and
   most framing primitives are already in place; what's missing is
   the TDMA superframe sync and the superframe / voice slot
