@@ -134,11 +134,25 @@ What's wired:
   are honest deferrals — the package's doc comment lists them
   explicitly so a contributor can pick them up. Same pattern as
   the P25 trellis-tables / TSBK-interleaver gap.
+- **EDACS / GE-Marc.** `internal/radio/edacs/` — 40-bit Control
+  Channel Word (CCW) parser, command enum
+  (Idle, GroupVoiceGrant, ProVoiceGrant, IndividualCall,
+  DataGrant, SystemID, AdjacentSite, Emergency, Affiliation,
+  Encryption), per-command payload accessors that surface
+  encrypted / emergency status flags, an `LCN → Hz` band-plan
+  resolver mirroring the Motorola one, and a control-channel
+  state machine that publishes `cc.locked` on SystemID and
+  `grant` (with `trunking.Grant.Protocol = "edacs"`) on voice
+  grants. Tests cover CCW round-trip in bytes + bits, command
+  + LCN + status extraction, the per-command accessors
+  (including the ProVoice flag), both band-plan strategies,
+  sync detection with tolerance, and the full control-channel
+  emission path. The 9600-baud GMSK demodulator + the
+  interleaved Reed-Solomon-derived FEC are honest deferrals,
+  spelled out in the package's doc comment.
 
 Still ahead:
 
-- **EDACS / GE-Marc (9600 baud control channel).** Public format;
-  similar shape to Motorola Type II.
 - **LTR (Logic Trunked Radio).** Each repeater carries its own
   status word at 300 baud; no central control channel. The engine
   supports the per-repeater "trunk-as-conventional" pattern via the
