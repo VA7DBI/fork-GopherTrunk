@@ -55,6 +55,11 @@ jobs:
         with:
           msystem: MINGW64
           update: true
+          # Inherit the runner's Windows PATH so the Go binary
+          # placed by actions/setup-go is visible inside the msys2
+          # shell (default `minimal` strips it and `go build` fails
+          # with "command not found").
+          path-type: inherit
           install: >-
             git
             mingw-w64-x86_64-toolchain
