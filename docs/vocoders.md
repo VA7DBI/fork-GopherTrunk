@@ -43,7 +43,7 @@ type Vocoder interface {
 | ------------------------ | ------------ | -------- | ----------------------------------------------- |
 | `null` (silence)         | none         | yes      | Always available                                |
 | `imbe` (pure-Go, P25 P1) | none         | yes      | Producing intelligible audio; calibration TODO  |
-| `ambe2` (pure-Go)        | none         | yes      | Producing audio; calibration TODO; tones → silence |
+| `ambe2` (pure-Go)        | none         | yes      | Producing audio; calibration TODO; dual-tone → silence |
 | `dvsi` (USB-3000 chip)   | `-tags dvsi` | **no**   | Hardware backend, planned                       |
 
 The recorder always emits a raw-frame sidecar (`.raw` next to the WAV)
@@ -51,6 +51,30 @@ when configured, so users can run their own decoder on the captured
 frames without trusting the in-binary vocoders. This is the escape
 hatch for operators who want bit-exact mbelib / DSD-FME / OP25 output
 or who prefer to defer the decoding choice to post-processing.
+
+### Decoding a captured .raw sidecar
+
+The daemon ships a `decode` subcommand that runs the registered
+in-binary vocoders against a `.raw` frame stream out-of-band:
+
+```sh
+gophertrunk decode -in call.raw -out call.wav -vocoder imbe
+gophertrunk decode -in dmr.raw  -out dmr.wav  -vocoder ambe2
+gophertrunk decode -list-vocoders   # enumerate registered names
+```
+
+Stdin / stdout work for the input via `-in -`, so capture pipelines
+can stream into the decoder without a temporary file:
+
+```sh
+some-source | gophertrunk decode -vocoder imbe -out out.wav
+```
+
+The library function backing this — `voice.DecodeStream(in,
+vocoderName, out)` — is exported from `internal/voice` so other
+consumers (web UIs, batch processors, post-mortem analysis tools)
+can reuse the same decode path without spawning a binary. See
+`internal/voice/streamdecode.go`.
 
 ## Implementation notes
 
