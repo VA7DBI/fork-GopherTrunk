@@ -1,23 +1,20 @@
 package phase1
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestParseNID(t *testing.T) {
-	// NAC = 0x293, DUID = TSDU (0x7).
 	const wantNAC = uint16(0x293)
 	const wantDUID = DUIDTrunkingSignaling
-	bits := make([]byte, 64)
-	v := uint16(wantNAC)
-	for i := 0; i < 12; i++ {
-		bits[i] = byte((v >> uint(11-i)) & 1)
-	}
-	d := uint8(wantDUID)
-	for i := 0; i < 4; i++ {
-		bits[12+i] = (d >> uint(3-i)) & 1
-	}
-	nid, err := ParseNID(bits)
+	bits := EncodeNIDBits(wantNAC, wantDUID)
+	nid, errs, err := ParseNID(bits)
 	if err != nil {
 		t.Fatalf("ParseNID: %v", err)
+	}
+	if errs != 0 {
+		t.Errorf("clean codeword reported %d errors", errs)
 	}
 	if nid.NAC != wantNAC {
 		t.Errorf("NAC = %X, want %X", nid.NAC, wantNAC)
@@ -40,19 +37,71 @@ func TestDUIDString(t *testing.T) {
 }
 
 func TestNIDFromDibits(t *testing.T) {
-	bits := make([]byte, 64)
-	bits[3] = 1   // NAC bit 8
-	bits[14] = 1  // DUID bit 1
+	bits := EncodeNIDBits(0x456, DUIDLogicalLink1)
 	dibits := make([]uint8, 32)
 	for i := 0; i < 32; i++ {
 		dibits[i] = (bits[2*i] << 1) | bits[2*i+1]
 	}
-	nid, err := NIDFromDibits(dibits)
+	nid, errs, err := NIDFromDibits(dibits)
 	if err != nil {
 		t.Fatalf("NIDFromDibits: %v", err)
 	}
-	want, _ := ParseNID(bits)
-	if nid != want {
-		t.Errorf("NIDFromDibits = %+v, want %+v", nid, want)
+	if errs != 0 {
+		t.Errorf("clean codeword reported %d errors", errs)
+	}
+	if nid.NAC != 0x456 || nid.DUID != DUIDLogicalLink1 {
+		t.Errorf("NID = %+v", nid)
+	}
+}
+
+func TestParseNIDCorrectsErrors(t *testing.T) {
+	// 5 bit-flips spread across the codeword should still recover.
+	bits := EncodeNIDBits(0x7AB, DUIDTrunkingSignaling)
+	for _, idx := range []int{1, 9, 25, 40, 55} {
+		bits[idx] ^= 1
+	}
+	nid, errs, err := ParseNID(bits)
+	if err != nil {
+		t.Fatalf("ParseNID: %v", err)
+	}
+	if errs != 5 {
+		t.Errorf("errs = %d, want 5", errs)
+	}
+	if nid.NAC != 0x7AB || nid.DUID != DUIDTrunkingSignaling {
+		t.Errorf("NID = %+v", nid)
+	}
+}
+
+func TestParseNIDRejectsUncorrectable(t *testing.T) {
+	bits := EncodeNIDBits(0x000, DUIDTrunkingSignaling)
+	// Flip 12 bits (one beyond t=11) plus the parity bit. The decoder
+	// must surface the failure rather than returning bogus data.
+	for i := 0; i < 12; i++ {
+		bits[i*5] ^= 1
+	}
+	bits[63] ^= 1
+	_, _, err := ParseNID(bits)
+	if err == nil {
+		t.Fatal("expected error on >11-bit corruption")
+	}
+	if !errors.Is(err, ErrNIDUncorrectable) && !errors.Is(err, ErrNIDParity) {
+		t.Errorf("error = %v, want ErrNIDUncorrectable or ErrNIDParity", err)
+	}
+}
+
+func TestEncodeNIDBitsRoundTrip(t *testing.T) {
+	// Validate a handful of NACs across the full 12-bit space, all DUIDs.
+	for _, nac := range []uint16{0x000, 0x001, 0x293, 0x7AB, 0xFFF} {
+		for _, duid := range []DUID{DUIDHeader, DUIDTrunkingSignaling, DUIDLogicalLink1, DUIDTerminatorWithLC} {
+			bits := EncodeNIDBits(nac, duid)
+			nid, errs, err := ParseNID(bits)
+			if err != nil {
+				t.Errorf("nac=%03x duid=%X: %v", nac, uint8(duid), err)
+				continue
+			}
+			if errs != 0 || nid.NAC != nac || nid.DUID != duid {
+				t.Errorf("nac=%03x duid=%X: round-trip = %+v errs=%d", nac, uint8(duid), nid, errs)
+			}
+		}
 	}
 }

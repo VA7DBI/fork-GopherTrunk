@@ -94,11 +94,15 @@ func New(bus *events.Bus, version string) (*Metrics, error) {
 		Help:      "Times the SDR USB driver had to re-open a device after a transient error.",
 	}, []string{"driver", "serial"})
 
+	// Stage names for decodeErrors are an open taxonomy — see
+	// events.DecodeError for the canonical list. Protocol packages either
+	// call RecordDecodeError directly or publish events.KindDecodeError on
+	// the bus; both paths land in this counter.
 	m.decodeErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: "decode",
 		Name:      "errors_total",
-		Help:      "Decode failures by protocol and stage (e.g. p25/tsbk-crc, dmr/bptc).",
+		Help:      "Decode failures by protocol and stage (e.g. p25/nid-bch, dmr/slottype-hamming).",
 	}, []string{"protocol", "stage"})
 
 	m.sdrAttached = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -203,6 +207,10 @@ func (m *Metrics) observeEvent(ev events.Event) {
 		m.ccLockedGauge.WithLabelValues(systemLabel(ev)).Set(1)
 	case events.KindCCLost:
 		m.ccLockedGauge.WithLabelValues(systemLabel(ev)).Set(0)
+	case events.KindDecodeError:
+		if de, ok := ev.Payload.(events.DecodeError); ok {
+			m.decodeErrors.WithLabelValues(de.Protocol, de.Stage).Inc()
+		}
 	}
 }
 

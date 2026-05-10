@@ -20,8 +20,26 @@ const (
 	KindCallEnd     Kind = "call.end"
 	KindGrant       Kind = "grant"
 	KindToneAlert   Kind = "tone.alert"
+	KindDecodeError Kind = "decode.error"
 	KindError       Kind = "error"
 )
+
+// DecodeError is the payload published with KindDecodeError. Protocol
+// packages publish this when an FEC primitive returns errCount == -1 so
+// the metrics collector can increment gophertrunk_decode_errors_total
+// without each package having to hold a *metrics.Metrics handle.
+//
+// Stage taxonomy (extend, don't rename — these become Prometheus labels):
+//
+//   - "nid-bch"          P25 Phase 1 NID BCH(63,16,11)
+//   - "tsbk-trellis"     P25 Phase 1 TSBK ½-rate trellis
+//   - "tsbk-crc"         P25 Phase 1 TSBK CRC trailer
+//   - "slottype-hamming" DMR slot-type Hamming(20,8)
+//   - "sacch-trellis"    NXDN SACCH ½-rate trellis
+type DecodeError struct {
+	Protocol string
+	Stage    string
+}
 
 type Event struct {
 	Kind      Kind

@@ -10,12 +10,15 @@ import (
 // time-recovered and mapped via SymbolToDibit) and emits trunking events
 // onto an events.Bus.
 //
-// This is the minimum scaffold: dibit window → FSW detect → NID parse →
-// (placeholder) TSBK extraction. Trellis decoding and TSBK CRC validation
-// for the live stream land alongside the interleaver work in a follow-up
-// — for now the state machine emits CCLocked / CCLost events when a NID
-// with a TSDU DUID is observed, which is enough to drive the CC hunter
-// and gives downstream layers a stable surface to subscribe to.
+// This is the minimum scaffold: dibit window → FSW detect → NID parse
+// (with BCH(63,16,11) error correction) → (placeholder) TSBK extraction.
+// Trellis decoding and TSBK CRC validation for the live stream land
+// alongside the interleaver work in a follow-up — for now the state
+// machine emits CCLocked / CCLost events when a corrected NID with a
+// TSDU DUID is observed, which is enough to drive the CC hunter and
+// gives downstream layers a stable surface to subscribe to. Uncorrectable
+// NIDs publish a KindDecodeError event so the metrics collector can
+// count them.
 type ControlChannel struct {
 	bus     *events.Bus
 	log     *slog.Logger
@@ -57,10 +60,17 @@ func (c *ControlChannel) Process(dibits []uint8, baseIdx int) int {
 			continue
 		}
 		nidDibits := dibits[startInWindow : startInWindow+32]
-		nid, err := NIDFromDibits(nidDibits)
+		nid, errs, err := NIDFromDibits(nidDibits)
 		if err != nil {
-			c.log.Debug("nid parse failed", "err", err)
+			c.log.Debug("nid parse failed", "err", err, "errs", errs)
+			c.bus.Publish(events.Event{
+				Kind:    events.KindDecodeError,
+				Payload: events.DecodeError{Protocol: "p25", Stage: "nid-bch"},
+			})
 			continue
+		}
+		if errs > 0 {
+			c.log.Debug("nid corrected", "errs", errs, "nac", nid.NAC)
 		}
 		if nid.DUID != DUIDTrunkingSignaling {
 			// Some non-control DUID — record but don't lock.

@@ -1,19 +1,24 @@
 package phase1
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/MattCheramie/GopherTrunk/internal/radio/framing"
+)
 
 // DUID is the 4-bit Data Unit ID that identifies the kind of frame
 // following the NID (TIA-102.BAAA §6.2).
 type DUID uint8
 
 const (
-	DUIDHeader              DUID = 0x0 // HDU
-	DUIDTerminator          DUID = 0x3 // TDU (without LC)
-	DUIDLogicalLink1        DUID = 0x5 // LDU1
-	DUIDTrunkingSignaling   DUID = 0x7 // TSDU (control channel)
-	DUIDLogicalLink2        DUID = 0xA // LDU2
-	DUIDPacketDataUnit      DUID = 0xC // PDU
-	DUIDTerminatorWithLC    DUID = 0xF // TDULC
+	DUIDHeader            DUID = 0x0 // HDU
+	DUIDTerminator        DUID = 0x3 // TDU (without LC)
+	DUIDLogicalLink1      DUID = 0x5 // LDU1
+	DUIDTrunkingSignaling DUID = 0x7 // TSDU (control channel)
+	DUIDLogicalLink2      DUID = 0xA // LDU2
+	DUIDPacketDataUnit    DUID = 0xC // PDU
+	DUIDTerminatorWithLC  DUID = 0xF // TDULC
 )
 
 func (d DUID) String() string {
@@ -38,35 +43,57 @@ func (d DUID) String() string {
 }
 
 // NID is the 64-bit Network ID immediately following the FSW. Bits 0..11
-// are the NAC (Network Access Code), bits 12..15 are the DUID, and bits
-// 16..63 are a BCH(63,16) parity field plus a single parity bit.
+// are the NAC (Network Access Code), bits 12..15 are the DUID, bits
+// 16..62 are the BCH(63,16,11) parity field, and bit 63 is even parity
+// over the 63 BCH bits.
 type NID struct {
 	NAC  uint16
 	DUID DUID
 }
 
-// ParseNID extracts the NAC and DUID from 64 received bits (MSB-first).
-// It does NOT yet perform full BCH(63,16,11) error correction; callers may
-// validate with a future framing.BCH63_16 decoder.
-func ParseNID(bits []byte) (NID, error) {
+// ErrNIDUncorrectable is returned by ParseNID when the BCH decoder
+// cannot recover the codeword within its t=11 error-correction radius.
+var ErrNIDUncorrectable = errors.New("p25/phase1: NID BCH uncorrectable")
+
+// ErrNIDParity is returned by ParseNID when the BCH decoder accepted a
+// codeword but the trailing even-parity bit disagrees with the
+// corrected codeword. Treated as uncorrectable.
+var ErrNIDParity = errors.New("p25/phase1: NID parity mismatch")
+
+// ParseNID extracts the NAC and DUID from 64 received bits (MSB-first),
+// running BCH(63,16,11) error correction over the first 63 bits and
+// validating the trailing even-parity bit. Returns the corrected NID,
+// the number of bit errors corrected (0 on a clean codeword), and a
+// non-nil error if the codeword is uncorrectable.
+func ParseNID(bits []byte) (NID, int, error) {
 	if len(bits) < 64 {
-		return NID{}, fmt.Errorf("p25/phase1: NID requires 64 bits, got %d", len(bits))
+		return NID{}, -1, fmt.Errorf("p25/phase1: NID requires 64 bits, got %d", len(bits))
 	}
-	var nac uint16
-	for i := 0; i < 12; i++ {
-		nac = (nac << 1) | uint16(bits[i]&1)
+	var cw uint64
+	for i := 0; i < 63; i++ {
+		if bits[i]&1 != 0 {
+			cw |= uint64(1) << uint(62-i)
+		}
 	}
-	var duid uint8
-	for i := 12; i < 16; i++ {
-		duid = (duid << 1) | (bits[i] & 1)
+	rxParity := bits[63] & 1
+
+	data, errs := framing.BCHDecode63_16(cw)
+	if errs < 0 {
+		return NID{}, -1, ErrNIDUncorrectable
 	}
-	return NID{NAC: nac, DUID: DUID(duid)}, nil
+	corrected := framing.BCHEncode63_16(data)
+	if framing.BCH6316ParityBit(corrected) != rxParity {
+		return NID{}, errs, ErrNIDParity
+	}
+	nac := uint16((data >> 4) & 0xFFF)
+	duid := DUID(data & 0xF)
+	return NID{NAC: nac, DUID: duid}, errs, nil
 }
 
 // NIDFromDibits is a convenience wrapper that takes 32 dibits (= 64 bits).
-func NIDFromDibits(dibits []uint8) (NID, error) {
+func NIDFromDibits(dibits []uint8) (NID, int, error) {
 	if len(dibits) < 32 {
-		return NID{}, fmt.Errorf("p25/phase1: NID requires 32 dibits, got %d", len(dibits))
+		return NID{}, -1, fmt.Errorf("p25/phase1: NID requires 32 dibits, got %d", len(dibits))
 	}
 	bits := make([]byte, 64)
 	for i := 0; i < 32; i++ {
@@ -74,4 +101,20 @@ func NIDFromDibits(dibits []uint8) (NID, error) {
 		bits[2*i+1] = dibits[i] & 1
 	}
 	return ParseNID(bits)
+}
+
+// EncodeNIDBits builds the 64 transmitted NID bits (MSB-first) for a
+// given NAC + DUID. Useful for tests and synthetic streams.
+func EncodeNIDBits(nac uint16, duid DUID) []byte {
+	info := (uint16(nac&0x0FFF) << 4) | uint16(uint8(duid)&0x0F)
+	cw := framing.BCHEncode63_16(info)
+	parity := framing.BCH6316ParityBit(cw)
+	bits := make([]byte, 64)
+	for i := 0; i < 63; i++ {
+		if cw&(uint64(1)<<uint(62-i)) != 0 {
+			bits[i] = 1
+		}
+	}
+	bits[63] = parity
+	return bits
 }
