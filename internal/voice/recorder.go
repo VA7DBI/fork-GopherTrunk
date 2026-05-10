@@ -29,7 +29,8 @@ import (
 //
 // The raw sidecar is appended once per WriteRawFrame call. It is
 // intentionally a flat concatenation of frames so users can BYO decoder
-// (mbelib, DVSI, etc.) without parsing surrounding metadata.
+// (external libmbe, DVSI hardware, etc.) without parsing surrounding
+// metadata.
 //
 // EDACS ProVoice grants (Grant.ProVoice == true) always force a `.raw`
 // sidecar even when WriteRaw is false. The vocoder is patent +

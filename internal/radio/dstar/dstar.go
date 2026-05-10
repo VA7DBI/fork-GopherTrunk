@@ -40,10 +40,11 @@
 //   - The PCH FEC: convolutional rate-1/2 inner + scrambler outer +
 //     interleaver. Parsing here assumes upstream FEC has corrected
 //     errors.
-//   - Voice frame extraction → AMBE vocoder (note: original AMBE,
-//     not AMBE+2 — separate algorithm, same patent family). The
-//     `mbelib` build-tagged wrapper supports IMBE 4400 and AMBE+2;
-//     plain AMBE is a future deferral.
+//   - Voice frame extraction → original AMBE vocoder (note: original
+//     AMBE, not AMBE+2 — separate algorithm, same DVSI patent family).
+//     IMBE lives in internal/voice/imbe and AMBE+2 in
+//     internal/voice/ambe2; plain AMBE is a future deferral with no
+//     pure-Go decoder shipped yet.
 //
 // As with the other protocol packages: ship a clean structured
 // surface now, leave the analogue / FEC / vocoder pieces as named

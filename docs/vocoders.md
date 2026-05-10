@@ -5,8 +5,8 @@ DVSI-derived vocoders:
 
 - **IMBE** — used by P25 Phase 1 LDU1/LDU2 voice frames. Core US patents
   (filed early-to-mid-1990s, 20-year term) have **expired**. The
-  algorithm is implementable in pure Go without licence concerns; this
-  is the path GopherTrunk plans to take in `internal/voice/imbe`.
+  algorithm is implementable in pure Go without licence concerns;
+  GopherTrunk ships a pure-Go decoder at `internal/voice/imbe`.
 - **AMBE+2** — used by P25 Phase 2, DMR (Tier II / III), and NXDN. AMBE+2
   is **patent-encumbered**. DVSI sells hardware vocoders (USB-3000 /
   AMBE-3003) and licences software ports. Open-source software
@@ -14,7 +14,13 @@ DVSI-derived vocoders:
   is permissively licensed (mbelib is ISC) but the *patents* are the
   user's risk to evaluate.
 
-GopherTrunk does not ship an AMBE+2 implementation in default builds.
+Re-implementing AMBE+2 in pure Go does not change the patent posture —
+the algorithm itself is what the patents cover, regardless of
+implementation language. Operators in licence-restrictive jurisdictions
+should evaluate with counsel before deploying. GopherTrunk's default
+build ships the pure-Go AMBE+2 decoder default-on; the legal
+responsibility for operating it falls on the deployer, not the
+project.
 
 ## How GopherTrunk handles this
 
@@ -33,104 +39,62 @@ type Vocoder interface {
 }
 ```
 
-| Backend                  | Build tag       | Default? | Status                            |
-| ------------------------ | --------------- | -------- | --------------------------------- |
-| `null` (silence)         | none            | yes      | Always available                  |
-| `imbe` (pure-Go, P25 P1) | none            | yes      | Stubbed; full decoder in progress |
-| `mbelib` (AMBE+2 / IMBE) | `-tags mbelib`  | **no**   | CGO wrapper, off by default       |
-| `dvsi` (USB-3000 chip)   | `-tags dvsi`    | **no**   | Hardware backend, planned         |
+| Backend                  | Build tag    | Default? | Status                                          |
+| ------------------------ | ------------ | -------- | ----------------------------------------------- |
+| `null` (silence)         | none         | yes      | Always available                                |
+| `imbe` (pure-Go, P25 P1) | none         | yes      | Producing intelligible audio; calibration TODO  |
+| `ambe2` (pure-Go)        | none         | yes      | Producing audio; calibration TODO; tones → silence |
+| `dvsi` (USB-3000 chip)   | `-tags dvsi` | **no**   | Hardware backend, planned                       |
 
 The recorder always emits a raw-frame sidecar (`.raw` next to the WAV)
 when configured, so users can run their own decoder on the captured
-frames without any vocoder linked into the daemon.
+frames without trusting the in-binary vocoders. This is the escape
+hatch for operators who want bit-exact mbelib / DSD-FME / OP25 output
+or who prefer to defer the decoding choice to post-processing.
 
-## Building with `mbelib`
+## Implementation notes
 
-`internal/voice/mbelib` ships a CGO wrapper around the szechyjs
-[`mbelib`](https://github.com/szechyjs/mbelib) library, gated behind
-the `mbelib` build tag. With `libmbe.so` and `mbelib.h` installed
-on the host, opt in by running:
+- `internal/voice/mbe/` is the shared MBE-family synthesis core:
+  cross-frame log-amplitude prediction, voiced harmonic generator,
+  unvoiced FFT excitation + §6.4 overlap-add window, §6.2 spectral
+  enhancement, and a per-frame fast-attack / slow-release AGC.
+  Consumed by both `imbe` and `ambe2`.
+- `internal/voice/imbe/` holds the IMBE-specific front half: 88-bit
+  unpack, Golay/Hamming FEC inverse, scrambler, PRBA/HOC + inverse
+  DCTs producing the spectral residuals the shared core consumes.
+- `internal/voice/ambe2/` holds the AMBE+2-specific front half:
+  49-bit unpack, codebook lookups (auto-generated from
+  szechyjs/mbelib's `ambe3600x2400_const.h` under ISC,
+  regenerable via `scripts/gen-ambe2-tables.sh`), inverse DCTs
+  producing the spectral residuals, and the cross-frame `gamma`
+  bookkeeping AMBE+2 requires.
 
-```sh
-make build TAGS=mbelib
-```
-
-This registers two factories on `voice.DefaultRegistry`:
-
-- `imbe`  — IMBE 4400 bps for P25 Phase 1 LDU1 / LDU2 voice frames
-  (88-bit input, 11-byte packed). Targets `mbe_processImbe4400Dataf`.
-- `ambe2` — AMBE+2 2400 bps for P25 Phase 2, DMR, and NXDN voice
-  frames (49-bit input, 7-byte packed with 7 padding bits).
-  Targets `mbe_processAmbe2400Dataf`.
-
-Both produce 8 kHz / 20 ms / 160 samples of int16 PCM per call,
-matching the recorder's PCM contract.
-
-The default `make build` target compiles the stub at
-`internal/voice/mbelib/cgo_stub.go` instead, registers nothing, and
-links no extra libraries. CI exercises the stub path only — the
-wrapper is verified at build time when an operator opts in.
-
-If `make build TAGS=mbelib` fails with `mbelib.h: No such file or
-directory`, install the library. The repo ships an automated
-installer that wraps the documented build-from-source procedure:
-
-```sh
-make mbelib-install        # clones, builds, sudo-installs, ldconfig
-make build TAGS=mbelib
-```
-
-Override the install prefix or skip sudo (for non-root /
-container builds) by setting environment variables on the script
-directly:
-
-```sh
-PREFIX=$HOME/.local USE_SUDO=0 scripts/install-mbelib.sh
-```
-
-After install, the library lands at:
-
-- `$PREFIX/include/mbelib.h`
-- `$PREFIX/lib/libmbe.so` (+ `.so.1`, `.so.1.3`, `.a`)
-- `$PREFIX/lib/pkgconfig/libmbe.pc`
-
-The CGO wrapper at `internal/voice/mbelib/cgo_mbelib.go` links
-via the explicit `#cgo LDFLAGS: -lmbe -lm` directive (not
-pkg-config), so non-default install prefixes need their `lib`
-directory on `LD_LIBRARY_PATH` (or in `/etc/ld.so.conf.d/`)
-before `go test -tags mbelib` will load the shared object at
-runtime.
-
-Verify the install end-to-end with:
-
-```sh
-make test TAGS=mbelib              # exercises internal/voice/mbelib
-```
-
-The doing-by-hand equivalent of `make mbelib-install` is:
-
-```sh
-git clone https://github.com/szechyjs/mbelib && cd mbelib
-mkdir build && cd build && cmake .. && make && sudo make install
-sudo ldconfig
-```
+Both decoders share the same constructor surface
+(`New()` / `NewWithSeed(seed)` / `NewWithConfig(seed, mbe.AGCConfig)`)
+so operators can pin reproducibility for tests or tune the AGC for
+their downstream chain.
 
 ## Why a plugin model
 
 This is exactly what SDR# / OP25 / DSD do. The key benefits:
 
-1. The default GopherTrunk binary has zero patent exposure and no
-   external library dependencies for voice.
-2. Users in jurisdictions where they hold (or don't need) AMBE+2
-   licences can opt in by building with `-tags mbelib` or wiring a
-   hardware DVSI dongle.
+1. The default binary has no external library dependencies for voice
+   (no CGO, no system shared library, no install scripts).
+2. Users with DVSI hardware can opt in by building with `-tags dvsi`
+   once that backend lands.
 3. Captures contain raw frames so a researcher can defer the decoding
    choice to post-processing.
 
 ## Future work
 
-- Pure-Go IMBE decoder for P25 Phase 1 (TIA-102.BABA reference).
-- mbelib CGO wrapper (build-tag gated).
-- DVSI USB-3000 / AMBE-3003 hardware backend.
+- Absolute-level calibration against a DSD-FME or OP25 reference
+  recording for both `imbe` and `ambe2` decoders; AGC per-frame gain
+  tweaks if real frames show systematic level offset.
+- Proper AMBE+2 tone-frame synthesis (single + dual sinewave) replacing
+  the current silence path — the tone-index extraction is already
+  preserved on `ambe2.Params.B1` / `B2` for the follow-up.
+- DVSI USB-3000 / AMBE-3003 hardware backend (`-tags dvsi`).
 - Optional Opus / FLAC re-encoding of the recorded WAVs to shrink
   long-running archives.
+- Plain AMBE decoder for D-STAR voice (different algorithm from AMBE+2;
+  same DVSI patent family).

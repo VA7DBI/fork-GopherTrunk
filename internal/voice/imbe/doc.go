@@ -1,9 +1,7 @@
-// Package imbe is the in-progress pure-Go IMBE 4400 bps voice
-// decoder used by P25 Phase 1 LDU1 / LDU2 frames. The intent is to
-// remove the CGO dependency on libmbe for the most-common digital
-// voice scanner setup; the build-tagged internal/voice/mbelib path
-// continues to exist for operators who prefer the C reference
-// implementation or want AMBE+2 (P25 Phase 2 / DMR / NXDN).
+// Package imbe is the pure-Go IMBE 4400 bps voice decoder used by
+// P25 Phase 1 LDU1 / LDU2 frames. Sole IMBE backend in default
+// builds — the CGO dependency on libmbe has been removed. AMBE+2
+// (P25 Phase 2 / DMR / NXDN) lives in internal/voice/ambe2.
 //
 // Roadmap (each item lands as its own self-contained PR so review
 // stays tractable):

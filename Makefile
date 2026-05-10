@@ -5,7 +5,7 @@ TAGS    ?=
 GO      ?= go
 PKGS    := ./...
 
-.PHONY: all build test integration lint tidy vet clean run proto mbelib-install
+.PHONY: all build test integration lint tidy vet clean run proto
 
 all: build
 
@@ -35,15 +35,6 @@ clean:
 
 run: build
 	./bin/gophertrunk
-
-# mbelib-install builds + system-installs szechyjs/mbelib so
-# `make build TAGS=mbelib` (and `make test TAGS=mbelib`) can link
-# the libmbe.so / mbelib.h that internal/voice/mbelib's CGO wrapper
-# requires. AMBE+2 (DMR / NXDN / P25 Phase 2 vocoder) is patent-
-# encumbered; building this library is at the operator's
-# discretion. See docs/vocoders.md for the licensing situation.
-mbelib-install:
-	scripts/install-mbelib.sh
 
 # Regenerate Go bindings under internal/api/pb/v1 from proto/*.proto.
 # Requires:

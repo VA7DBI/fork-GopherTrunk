@@ -29,8 +29,8 @@
 //     superframes are scheduled in 12 sub-frames per 360 ms, with
 //     the two timeslots interleaved at the symbol level.
 //   - Voice frame extraction → AMBE+2 vocoder. The frame layout is
-//     here; the AMBE+2 decode lives behind the `mbelib` build tag
-//     (see internal/voice/mbelib).
+//     here; the AMBE+2 decode lives in internal/voice/ambe2 (pure-Go,
+//     default-on).
 //   - Reed-Solomon / Trellis FEC over the MAC PDU bits. The
 //     parsing here assumes the upstream caller has already
 //     corrected errors.

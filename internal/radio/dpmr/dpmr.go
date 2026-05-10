@@ -39,7 +39,7 @@
 //     coding; the parsing here assumes the upstream caller has
 //     already corrected errors.
 //   - Voice frame extraction → AMBE+2 vocoder. The vocoder lives
-//     behind the `mbelib` build tag (see internal/voice/mbelib).
+//     in internal/voice/ambe2 (pure-Go, default-on).
 //
 // As with the other trunking packages: ship a clean structured
 // surface now, leave the analogue / FEC pieces as named follow-ups
