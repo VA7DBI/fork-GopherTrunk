@@ -57,14 +57,14 @@
 //     synthesizer (step 4c) extends with voicing + phase memory.
 //     See synth.go.
 //
-//  4b. Speech synthesis — amplitude prep. ← THIS PR.
+//  4b. Speech synthesis — amplitude prep.
 //     log2(Ml) → linear Ml = 2^log2(Ml), the spectral moments
 //     R_M0 = Σ Ml² and R_M1 = Σ Ml² · cos(ω₀·l) feeding §6.2
 //     enhancement, and a voicing-fraction summary used as a
 //     coarse voiced/unvoiced hint by the upcoming synthesis
 //     combiner. See amps.go.
 //
-//  4c. Speech synthesis — voiced harmonic generator. ← THIS PR.
+//  4c. Speech synthesis — voiced harmonic generator.
 //     For each harmonic that's voiced this frame OR was voiced
 //     last frame, a sinusoid at l · ω₀ with linear amplitude tilt
 //     between M_prev[l] and M_curr[l] across 160 samples + a
@@ -74,14 +74,22 @@
 //     gains PrevPhase + PrevMl for the cross-frame continuity.
 //     TIA-102.BABA §6.3. See synth_voiced.go.
 //
-//  4d. Speech synthesis — unvoiced excitation. White-noise
-//     spectrum shaped by the unvoiced bands of Ml, IFFT, overlap-add
-//     window. TIA-102.BABA §6.4.
+//  4d. Speech synthesis — unvoiced excitation. ← THIS PR.
+//     A 256-point FFT noise spectrum (caller-supplied so unit
+//     tests stay deterministic) is shaped by the §6.4 rules: bins
+//     under voiced harmonics are zeroed (those go through 4c),
+//     bins under unvoiced harmonics are scaled by Ml[l], bins
+//     outside [1..L] are zeroed. The conjugate-mirror invariant
+//     is preserved by applying the same real scale to (k, N−k)
+//     pairs so the IFFT produces a real-valued time-domain
+//     contribution. See synth_unvoiced.go.
 //
 //  4e. Speech synthesis — combine + final PCM. §6.2 spectral
-//     amplitude enhancement (R_M0 / R_M1 / ω₀ closed form), voiced
-//     + unvoiced sum, hard-clip to int16, → 160 PCM samples /
-//     20 ms / 8 kHz mono per frame.
+//     amplitude enhancement (R_M0 / R_M1 / ω₀ closed form), §6.4
+//     overlap-add window for the unvoiced step, voiced + unvoiced
+//     sum, hard-clip to int16, → 160 PCM samples / 20 ms / 8 kHz
+//     mono per frame, plus the Decode() wiring that pulls noise
+//     from a per-call seeded source.
 //
 //  5. Quality polish: enhancement filter, frame-repeat on bad-frame
 //     indicator, gain smoothing across frames.
