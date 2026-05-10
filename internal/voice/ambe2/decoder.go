@@ -56,6 +56,12 @@ type Decoder struct {
 	// resolved gamma so the next frame's fold has it available.
 	prevGamma float64
 
+	// Tone-frame sine oscillator phase. Carried across consecutive
+	// tone frames so a sustained tone at one frequency is
+	// click-free between frame boundaries. Cleared on any non-tone
+	// frame (voice / silence / dual-tone fallback) and on Reset.
+	tonePhase float64
+
 	// One-frame cache for the bad-frame replay path. Holds the
 	// post-fold mbe.Params (Tl values already centered + gamma
 	// folded in) so a replay can call mbe.PredictLog2Ml + the
@@ -164,22 +170,41 @@ func (d *Decoder) Decode(frame []byte) ([]int16, error) {
 		d.agc.Apply(pcm, out, true)
 		return out, nil
 
+	case p.Tone && !p.Silent && p.B1 >= 5 && p.B1 <= 122:
+		// Single tone: synthesise a sinewave at b1·31.25 Hz scaled
+		// by b2. Phase is carried across consecutive tone frames
+		// in d.tonePhase so a held tone is click-free. Voice
+		// SynthState resets — voice + tone state are orthogonal.
+		// AGC tracks (no freeze) so b2 volume changes are audible.
+		d.synthSingleTone(p.B1, p.B2, pcm)
+		d.state.Reset()
+		d.clearLastGood()
+		d.prevGamma = 0
+		d.agc.Apply(pcm, out, false)
+		return out, nil
+
 	case p.Tone || p.Silent:
-		// Tone-frame path: for now, emit the OA tail fade-out into
-		// pcm[0..95] and reset state. Proper tone synthesis (single +
-		// dual sinewave) is a follow-up; the tone-index extraction is
-		// already preserved on p.B1/p.B2 for that work. Silent
-		// frames (invalid tone index) hit the same path.
+		// Dual-tone (b1 in [128, 163]), invalid tone, or explicit
+		// silence: emit the §6.4 OA tail fade-out into pcm[0..95]
+		// and reset state. Dual-tone synthesis requires an
+		// AMBE+2-specific (b1, freq_a, freq_b) lookup table that
+		// the public spec doesn't document — those route through
+		// silence until a reference is available. Silent frames
+		// (invalid tone index) hit the same path.
 		mbe.SynthUnvoicedOverlapAdd(&d.state, p.Params, nil, nil, pcm)
 		d.state.Reset()
 		d.clearLastGood()
 		d.prevGamma = 0
+		d.tonePhase = 0
 		d.agc.Apply(pcm, out, true)
 		return out, nil
 	}
 
-	// Good voice frame.
+	// Good voice frame. Clear tonePhase so a tone → voice → tone
+	// sequence doesn't pick up the pre-voice phase on the second
+	// tone (the voice frame breaks oscillator continuity).
 	d.badFrameCount = 0
+	d.tonePhase = 0
 
 	// Combine the per-frame delta with prev-frame gamma to recover
 	// the absolute gain, then fold gamma + DC removal into Tl so
@@ -217,6 +242,44 @@ func (d *Decoder) Decode(frame []byte) ([]int16, error) {
 
 	d.agc.Apply(pcm, out, false)
 	return out, nil
+}
+
+// synthSingleTone fills pcm[0..mbe.SamplesPerFrame-1] with a
+// sinewave at b1·31.25 Hz scaled by b2-derived amplitude. The
+// oscillator phase is carried across frames in d.tonePhase so two
+// consecutive tone frames at the same b1 are click-free.
+//
+// b1 is the AMBE+2 single-tone index in [5, 122] (callers gate
+// for that range). The corresponding frequency is b1·31.25 Hz,
+// covering 156.25 Hz at b1=5 up to 3812.5 Hz at b1=122 — the
+// audible band an 8 kHz Nyquist supports.
+//
+// b2 is the 8-bit volume index from the AMBE+2 tone-frame
+// extraction. We map it to a peak amplitude of (b2/255)·8192 —
+// the absolute level is mostly cosmetic since the AGC normalises
+// to AGCConfig.TargetPeak, but the b2 scaling makes per-frame
+// volume changes audible within a single tone sequence (before
+// the AGC has time to compensate).
+func (d *Decoder) synthSingleTone(b1, b2 int, pcm []float64) {
+	const (
+		toneStepHz   = 31.25  // b1 step from §AMBE+2 tone-frame definition
+		peakAmpScale = 8192.0 // pre-AGC headroom for the synthesised tone
+		volMax       = 255.0  // b2 is 8-bit
+	)
+	freqHz := float64(b1) * toneStepHz
+	amp := peakAmpScale * float64(b2) / volMax
+	twoPi := 2 * math.Pi
+	phaseStep := twoPi * freqHz / float64(mbe.PCMSampleRate)
+	for n := 0; n < mbe.SamplesPerFrame; n++ {
+		pcm[n] = amp * math.Sin(d.tonePhase)
+		d.tonePhase += phaseStep
+	}
+	// Wrap phase to keep it bounded across long-running tone
+	// sequences so the float64 accumulator doesn't drift.
+	d.tonePhase = math.Mod(d.tonePhase, twoPi)
+	if d.tonePhase < 0 {
+		d.tonePhase += twoPi
+	}
 }
 
 // synthFrame runs the §6.3 voiced + §6.4 unvoiced overlap-add legs
@@ -306,6 +369,7 @@ func (d *Decoder) Reset() {
 	d.agc.Reset()
 	d.clearLastGood()
 	d.prevGamma = 0
+	d.tonePhase = 0
 }
 
 // Close releases any resources held by the decoder. The pure-Go

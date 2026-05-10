@@ -63,11 +63,14 @@ SQLite. The honest gaps:
   pipeline (49-bit parameter unpack → cross-frame gamma fold →
   `mbe.PredictLog2Ml` → linear M → unvoiced `Unvc` scaling →
   `mbe.EnhanceAmplitudes` → voiced + unvoiced OA synthesis →
-  state roll-forward → per-frame AGC). Remaining polish:
-  calibration against a DSD-FME-decoded DMR reference WAV (AGC
-  defaults are tuned for IMBE and AMBE+2 quantisation may need a
-  per-frame gain tweak); proper tone-frame synthesis (single +
-  dual sinewave) replacing the current silence-out path. The
+  state roll-forward → per-frame AGC). Single-tone synthesis
+  (b₁ ∈ [5, 122] ⇒ sinewave at b₁·31.25 Hz with phase carried
+  across frames) is wired; dual-tone (b₁ ∈ [128, 163]) still
+  routes through silence pending a frequency-pair lookup the
+  public spec doesn't document. Remaining polish: calibration
+  against a DSD-FME-decoded DMR reference WAV (AGC defaults are
+  tuned for IMBE and AMBE+2 quantisation may need a per-frame
+  gain tweak). The
   AMBE+2 algorithm carries active patents in some jurisdictions;
   re-implementing it in pure Go does not change that posture —
   see [docs/vocoders.md](docs/vocoders.md).
@@ -202,13 +205,18 @@ to its own package and lands independently.
   (0.2046/√ω₀) between log2Ml→Ml and the §6.2 enhancement,
   then runs `mbe.SynthVoiced` + `mbe.SynthUnvoicedOverlapAdd`
   + state roll-forward + per-frame AGC into int16 PCM. Tone
-  frames route through the §6.4 OA fade-out + state reset;
-  bad-frame replay uses the shared `mbe.MaxBadFrames` /
-  `mbe.BadFrameAttenuation`. **Remaining polish**: calibration
-  against a DSD-FME-decoded DMR reference recording (testdata
-  follow-up); proper tone-frame synthesis (single + dual
-  sinewave from preserved B1/B2) replacing the current silence
-  path.
+  frames (b₀ ∈ {0x7E, 0x7F}) decode b₁/b₂ via the
+  AMBE+2-specific bit layout (t5/t6/t7 table lookup on
+  info[6,7,8] feeding bits 5..7 of b₁); valid single-tone
+  indices (b₁ ∈ [5, 122]) synthesise a sinewave at b₁·31.25 Hz
+  scaled by b₂, with oscillator phase carried across frames in
+  the Decoder so a held tone is click-free. Dual-tone
+  (b₁ ∈ [128, 163]) and invalid tone indices route through the
+  §6.4 OA fade-out + state reset. Bad-frame replay uses the
+  shared `mbe.MaxBadFrames` / `mbe.BadFrameAttenuation`.
+  **Remaining polish**: calibration against a DSD-FME-decoded
+  DMR reference recording (testdata follow-up); dual-tone
+  synthesis once a frequency-pair lookup is sourced.
 - **DVSI USB-3000 / AMBE-3003 hardware backend.** A `Vocoder`
   factory that opens a connected DVSI USB chip. Same plug-in shape
   as `internal/voice/ambe2`; the daemon picks the factory by name

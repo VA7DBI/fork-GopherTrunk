@@ -70,6 +70,20 @@ type Params struct {
 // info-bit slice isn't exactly InfoBits long.
 var ErrInfoLength = errors.New("ambe2: info buffer must be 49 bits")
 
+// Tone-frame b1 lookup tables, per szechyjs/mbelib's
+// mbe_decodeAmbe2400Parms tone branch. Three info bits at
+// positions [6, 7, 8] index these tables; the outputs become
+// bits 5..7 of the tone-frame b1. mbelib annotates the "V = verified,
+// G = guessed" status: bits 4..0 are verified against captured
+// frames; bits 7..5 derive from the (verified) DTMF tone-index
+// mapping. The numeric values below mirror mbelib's t5tab / t6tab /
+// t7tab arrays 1:1.
+var (
+	toneT5 = [8]int{0, 0, 1, 0, 1, 1, 0, 1}
+	toneT6 = [8]int{0, 0, 0, 1, 1, 1, 1, 0}
+	toneT7 = [8]int{1, 0, 0, 0, 0, 1, 1, 1}
+)
+
 // UnpackParams reads 49 information bits and produces the
 // AMBE+2 model-parameter struct. Bits are stored one per byte
 // (0/1) — the same shape the libmbe wrapper accepts and the
@@ -101,15 +115,24 @@ func UnpackParams(info []byte) (Params, error) {
 		int(info[48])
 
 	// Tone-frame branch — short-circuit and let the synthesizer
-	// handle tone vs. silence in PR-E. Preserve b1/b2 raw so the
-	// follow-up tone synthesis can read the tone index + volume.
+	// pick up the tone vs. silence handling. Tone frames carry a
+	// different b1/b2 bit layout than voice frames: b1 is 8 bits
+	// with the upper 3 bits coming from a t5/t6/t7 table lookup,
+	// b2 is 8 bits drawn from a different scatter pattern.
+	// Reference: mbelib mbe_decodeAmbe2400Parms tone branch.
 	if (b0 & 0x7E) == 0x7E {
-		b1 := int(info[38])<<3 | int(info[39])<<2 | int(info[40])<<1 | int(info[41])
-		b2 := int(info[6])<<5 | int(info[7])<<4 | int(info[8])<<3 |
-			int(info[9])<<2 | int(info[42])<<1 | int(info[43])
+		idx := int(info[6])<<2 | int(info[7])<<1 | int(info[8])
+		b1 := toneT7[idx]<<7 | toneT6[idx]<<6 | toneT5[idx]<<5 |
+			int(info[9])<<4 | int(info[42])<<3 | int(info[43])<<2 |
+			int(info[10])<<1 | int(info[11])
+		b2 := int(info[12])<<7 | int(info[13])<<6 | int(info[14])<<5 |
+			int(info[15])<<4 | int(info[16])<<3 | int(info[44])<<2 |
+			int(info[45])<<1 | int(info[17])
 		p := Params{Tone: true, B0: b0, B1: b1, B2: b2}
 		// mbelib flags an invalid tone index as silence; mirror that
 		// so the synthesizer's silence path runs cleanly.
+		// Valid single-tone range is [5, 122]; valid dual-tone
+		// range is [128, 163]; everything else is silence.
 		if b1 < 5 || (b1 > 122 && b1 < 128) || b1 > 163 {
 			p.Params.Silent = true
 		}

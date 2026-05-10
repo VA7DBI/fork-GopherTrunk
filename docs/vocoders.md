@@ -90,9 +90,10 @@ This is exactly what SDR# / OP25 / DSD do. The key benefits:
 - Absolute-level calibration against a DSD-FME or OP25 reference
   recording for both `imbe` and `ambe2` decoders; AGC per-frame gain
   tweaks if real frames show systematic level offset.
-- Proper AMBE+2 tone-frame synthesis (single + dual sinewave) replacing
-  the current silence path — the tone-index extraction is already
-  preserved on `ambe2.Params.B1` / `B2` for the follow-up.
+- AMBE+2 dual-tone synthesis (b₁ ∈ [128, 163]) — single tones
+  already synthesise a sinewave at b₁·31.25 Hz with cross-frame
+  phase continuity; dual-tone requires an AMBE+2-specific
+  (b₁ → freq_a, freq_b) lookup the public spec doesn't document.
 - DVSI USB-3000 / AMBE-3003 hardware backend (`-tags dvsi`).
 - Optional Opus / FLAC re-encoding of the recorded WAVs to shrink
   long-running archives.

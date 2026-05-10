@@ -55,13 +55,25 @@
 //     mbe.PredictLog2Ml produces AMBE+2-spec output without an
 //     AMBE+2-aware variant.
 //
-//  4. Remaining polish: calibration against a DSD-FME or OP25
+//  4. Single-tone synthesis. Tone frames (b₀ ∈ {0x7E, 0x7F}) with
+//     b₁ ∈ [5, 122] synthesise a sinewave at b₁·31.25 Hz scaled
+//     by the b₂ volume index. Oscillator phase is carried across
+//     consecutive tone frames in Decoder.tonePhase so held tones
+//     are click-free. The AMBE+2 tone-frame b₁/b₂ extraction
+//     uses a different bit layout than the voice-frame branch:
+//     b₁ is 8 bits with the upper 3 mapped via t5tab/t6tab/t7tab
+//     lookup on info[6,7,8]; b₂ is 8 bits scattered across
+//     info[12..17,44,45]. Reference: mbelib's
+//     mbe_decodeAmbe2400Parms tone branch.
+//
+//  5. Remaining polish: calibration against a DSD-FME or OP25
 //     reference WAV at testdata/ (capture a known DMR voice frame
 //     + decode through both, compare RMS + cross-correlation);
 //     tune the per-frame gain constant if AGC shows systematic
 //     level offset against the reference (AGC defaults are tuned
 //     for IMBE and AMBE+2 quantization may produce different
-//     per-frame energy); proper tone-frame synthesis (single +
-//     dual sinewave from the preserved B1/B2 indices) replacing
-//     the current silence-out path.
+//     per-frame energy); dual-tone synthesis (b₁ ∈ [128, 163])
+//     requires an AMBE+2-specific (b₁ → freq_a, freq_b) lookup
+//     table the public spec doesn't document — those route
+//     through silence until a reference is available.
 package ambe2
