@@ -51,9 +51,11 @@ SQLite. The honest gaps:
 
 - **Digital voice** (P25 Phase 1 IMBE; AMBE+2 for P25 Phase 2 / DMR
   / NXDN) is gated on the vocoders. The `Vocoder` plugin interface
-  + raw-frame sidecar are in place; pure-Go IMBE is in progress
-  ([patents have expired](docs/vocoders.md)) and AMBE+2 stays
-  behind the `mbelib` build tag.
+  + raw-frame sidecar are in place; pure-Go IMBE now produces
+  intelligible audio end-to-end ([patents have expired](docs/vocoders.md)),
+  with §6.4 overlap-add windowing + §6.2 spectral enhancement +
+  spec-derived gain calibration as quality follow-ups. AMBE+2
+  stays behind the `mbelib` build tag.
 - **Higher-fidelity audio**: the FM chain now has opt-in 75/50µs
   de-emphasis, a Kaiser-windowed audio LPF, audio AGC, and a
   polyphase L/M audio resampler — the full polish stack ships.
@@ -99,11 +101,22 @@ to its own package and lands independently.
   zeroed, conjugate-mirror invariant preserved so the IFFT
   output stays real-valued) is in (`synth_unvoiced.go`);
   caller supplies the noise buffer so unit tests stay
-  deterministic. Currently still emits silence per frame because
-  the decoder hasn't been wired through the synthesis chain yet;
-  the next PR lands §6.2 enhancement + the §6.4 overlap-add
-  window + the Decode() pipeline that combines voiced + unvoiced
-  into 160-sample PCM per frame.
+  deterministic. **`Decode()` now emits real audio**: it runs the
+  full pipeline (88 info bits → params → §6.1 prediction → linear
+  Ml → §6.3 voiced harmonic sum + §6.4 unvoiced FFT excitation
+  additive into one buffer → state roll-forward → hard-clip ×
+  placeholder gain → int16 PCM at 8 kHz). Two decoder constructors
+  are exposed: `New()` seeds the unvoiced noise source from a
+  fixed default for reproducibility; `NewWithSeed(seed)` lets
+  parallel calls + production callers spread noise. Bad-b_0
+  frames return graceful silence without disturbing the prediction
+  history; explicit silence-window frames (b_0 ∈ [216, 219])
+  reset the synth state. **Audio quality is "first pass"**: the
+  §6.4 overlap-add synthesis window, the §6.2 spectral-amplitude
+  enhancement, and a spec-derived gain calibration are quality
+  follow-ups (see roadmap step 5) — without them the output has
+  frame-edge click artifacts and an untilted envelope, but is
+  otherwise intelligible voice.
 - **DVSI USB-3000 / AMBE-3003 hardware backend.** A `Vocoder`
   factory that opens a connected DVSI USB chip. Same plug-in shape
   as `internal/voice/mbelib`; the daemon picks the factory by name
