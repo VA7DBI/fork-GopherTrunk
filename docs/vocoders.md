@@ -46,11 +46,60 @@ type Vocoder interface {
 | `ambe2` (pure-Go)        | none         | yes      | Producing audio; calibration TODO; dual-tone → silence |
 | `dvsi` (USB-3000 chip)   | `-tags dvsi` | **no**   | Hardware backend, planned                       |
 
-The recorder always emits a raw-frame sidecar (`.raw` next to the WAV)
-when configured, so users can run their own decoder on the captured
-frames without trusting the in-binary vocoders. This is the escape
-hatch for operators who want bit-exact mbelib / DSD-FME / OP25 output
-or who prefer to defer the decoding choice to post-processing.
+### Live-pipeline auto-decode
+
+When CallStart fires, the recorder maps `Grant.Protocol` to a
+vocoder name and instantiates a fresh vocoder per call. Each
+`WriteRawFrame` call decodes its frame and appends the resulting
+PCM to the call's WAV, alongside the optional `.raw` sidecar.
+
+Default mapping (see `voice.DefaultVocoderForProtocol`):
+
+| Grant.Protocol | Vocoder | Notes                            |
+| -------------- | ------- | -------------------------------- |
+| `p25`          | `imbe`  | P25 Phase 1 LDU1 / LDU2          |
+| `p25-phase2`   | `ambe2` | P25 Phase 2                      |
+| `dmr-tier2`    | `ambe2` | DMR Tier II conventional         |
+| `dmr-tier3`    | `ambe2` | DMR Tier III trunked             |
+| `nxdn`         | `ambe2` |                                  |
+| `dpmr`         | `ambe2` | dPMR Mode 3                      |
+| `tetra`        | `ambe2` |                                  |
+
+Analog protocols (`motorola`, `edacs`, `ltr`, `mpt1327`, etc.)
+have no entry — for those, the composer's FM chain feeds
+`WritePCM` directly. EDACS ProVoice (`Grant.ProVoice == true`)
+has no in-binary decoder either; it always gets a `.raw` sidecar
+regardless of the global `WriteRaw` flag, so researchers can
+decode out-of-band.
+
+Operators override the mapping via
+`RecorderOptions.VocoderForProtocol`:
+
+```go
+voice.NewRecorder(voice.RecorderOptions{
+    // …other fields…
+    // Replace the IMBE mapping with the silence vocoder for
+    // testing, leave AMBE+2 alone:
+    VocoderForProtocol: map[string]string{
+        "p25":        "null",
+        "p25-phase2": "ambe2",
+        // …other defaults…
+    },
+})
+```
+
+Pass an explicit empty (non-nil) map to disable auto-decode
+entirely — the `.raw` sidecar then becomes the only audio
+output for digital calls.
+
+### Raw sidecar (escape hatch)
+
+The recorder emits a raw-frame sidecar (`.raw` next to the WAV)
+when `WriteRaw` is enabled or for ProVoice grants, so users can
+run their own decoder on the captured frames without trusting
+the in-binary vocoders. This is the escape hatch for operators
+who want bit-exact mbelib / DSD-FME / OP25 output or who prefer
+to defer the decoding choice to post-processing.
 
 ### Decoding a captured .raw sidecar
 

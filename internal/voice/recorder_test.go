@@ -311,3 +311,286 @@ func TestSanitize(t *testing.T) {
 		}
 	}
 }
+
+// TestRecorderInstantiatesVocoderForMappedProtocol: a CallStart
+// with Grant.Protocol = "test-null" + a custom map mapping that
+// protocol to the always-registered "null" vocoder must produce
+// a session with an active vocoder. We use "null" (instead of
+// "imbe" or "ambe2") because the voice package can't import the
+// real decoder packages without creating a cycle — those
+// integration tests live in internal/voice/imbe and
+// internal/voice/ambe2.
+func TestRecorderInstantiatesVocoderForMappedProtocol(t *testing.T) {
+	bus := events.NewBus(8)
+	dir := t.TempDir()
+	r, err := NewRecorder(RecorderOptions{
+		Bus:                bus,
+		OutDir:             dir,
+		SampleRate:         8000,
+		WriteRaw:           true,
+		VocoderForProtocol: map[string]string{"test-null": "null"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer bus.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	cs := trunking.CallStart{
+		Grant:        trunking.Grant{System: "S", Protocol: "test-null", GroupID: 1, SourceID: 1},
+		DeviceSerial: "VOICE-1",
+		StartedAt:    time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC),
+	}
+	bus.Publish(events.Event{Kind: events.KindCallStart, Payload: cs})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.HasSession("VOICE-1") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Inspect the session under the recorder's lock.
+	r.mu.Lock()
+	s, ok := r.sessions["VOICE-1"]
+	r.mu.Unlock()
+	if !ok {
+		t.Fatal("session not opened")
+	}
+	if s.vocoder == nil {
+		t.Errorf("vocoder = nil, want non-nil for protocol=test-null → null")
+	}
+	if s.vocoderName != "null" {
+		t.Errorf("vocoderName = %q, want %q", s.vocoderName, "null")
+	}
+}
+
+// TestRecorderWriteRawFrameDecodesIntoWav: feeding raw frames to
+// WriteRawFrame on a session with a NullVocoder writes silence
+// samples into the WAV. Pins that the decode → WAV path is wired.
+func TestRecorderWriteRawFrameDecodesIntoWav(t *testing.T) {
+	bus := events.NewBus(8)
+	dir := t.TempDir()
+	r, err := NewRecorder(RecorderOptions{
+		Bus:                bus,
+		OutDir:             dir,
+		SampleRate:         8000,
+		VocoderForProtocol: map[string]string{"test-null": "null"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer bus.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	cs := trunking.CallStart{
+		Grant:        trunking.Grant{System: "S", Protocol: "test-null", GroupID: 1, SourceID: 2},
+		DeviceSerial: "VOICE-1",
+		StartedAt:    time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC),
+	}
+	bus.Publish(events.Event{Kind: events.KindCallStart, Payload: cs})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.HasSession("VOICE-1") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// NullVocoder.FrameSize is 11 by default (set by the
+	// package's init); send 3 frames worth of zero bytes.
+	for i := 0; i < 3; i++ {
+		if err := r.WriteRawFrame("VOICE-1", make([]byte, 11)); err != nil {
+			t.Fatalf("WriteRawFrame: %v", err)
+		}
+	}
+
+	bus.Publish(events.Event{
+		Kind: events.KindCallEnd,
+		Payload: trunking.CallEnd{
+			Grant: cs.Grant, DeviceSerial: "VOICE-1",
+			StartedAt: cs.StartedAt, EndedAt: cs.StartedAt.Add(time.Second),
+			Reason: trunking.EndReasonNormal,
+		},
+	})
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if !r.HasSession("VOICE-1") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	wavPath := filepath.Join(dir, "S", "1", "20260505T000000Z_src2.wav")
+	st, err := os.Stat(wavPath)
+	if err != nil {
+		t.Fatalf("wav at %s: %v", wavPath, err)
+	}
+	// 3 frames × 160 samples × 2 bytes = 960 bytes payload + 44 header.
+	wantSize := int64(wavHeaderSize + 3*160*2)
+	if st.Size() != wantSize {
+		t.Errorf("wav size = %d, want %d", st.Size(), wantSize)
+	}
+}
+
+// TestRecorderEmptyVocoderMapDisablesAutoDecode: passing a
+// non-nil but empty VocoderForProtocol disables auto-decode for
+// every protocol — the .raw sidecar (when enabled) is still the
+// only audio output for digital calls.
+func TestRecorderEmptyVocoderMapDisablesAutoDecode(t *testing.T) {
+	bus := events.NewBus(8)
+	dir := t.TempDir()
+	r, err := NewRecorder(RecorderOptions{
+		Bus:                bus,
+		OutDir:             dir,
+		SampleRate:         8000,
+		VocoderForProtocol: map[string]string{}, // explicit empty
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer bus.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	cs := trunking.CallStart{
+		Grant:        trunking.Grant{System: "S", Protocol: "p25", GroupID: 1, SourceID: 1},
+		DeviceSerial: "VOICE-1",
+		StartedAt:    time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC),
+	}
+	bus.Publish(events.Event{Kind: events.KindCallStart, Payload: cs})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.HasSession("VOICE-1") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	r.mu.Lock()
+	s, ok := r.sessions["VOICE-1"]
+	r.mu.Unlock()
+	if !ok {
+		t.Fatal("session not opened")
+	}
+	if s.vocoder != nil {
+		t.Errorf("vocoder = %v, want nil with empty VocoderForProtocol map", s.vocoderName)
+	}
+}
+
+// TestRecorderUnmappedProtocolSkipsVocoder: protocols not in the
+// map (typically analog protocols like "motorola" / "ltr") should
+// produce no vocoder. The composer's FM chain feeds WritePCM
+// directly for those calls.
+func TestRecorderUnmappedProtocolSkipsVocoder(t *testing.T) {
+	r, bus, _ := mkRecorder(t, false)
+	defer r.Close()
+	defer bus.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	// "motorola" is intentionally absent from
+	// DefaultVocoderForProtocol — the trunking decoder publishes
+	// it for analog-passthrough calls.
+	cs := trunking.CallStart{
+		Grant:        trunking.Grant{System: "S", Protocol: "motorola", GroupID: 1, SourceID: 1},
+		DeviceSerial: "VOICE-1",
+		StartedAt:    time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC),
+	}
+	bus.Publish(events.Event{Kind: events.KindCallStart, Payload: cs})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.HasSession("VOICE-1") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	r.mu.Lock()
+	s, ok := r.sessions["VOICE-1"]
+	r.mu.Unlock()
+	if !ok {
+		t.Fatal("session not opened")
+	}
+	if s.vocoder != nil {
+		t.Errorf("vocoder = %q, want nil for unmapped protocol", s.vocoderName)
+	}
+}
+
+// TestRecorderUnknownVocoderNameLogsAndProceeds: a Protocol mapping
+// pointing at a registry name no factory has registered must not
+// panic — the recorder logs and continues with vocoder = nil.
+func TestRecorderUnknownVocoderNameLogsAndProceeds(t *testing.T) {
+	bus := events.NewBus(8)
+	dir := t.TempDir()
+	r, err := NewRecorder(RecorderOptions{
+		Bus:                bus,
+		OutDir:             dir,
+		SampleRate:         8000,
+		VocoderForProtocol: map[string]string{"x": "no-such-vocoder"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer bus.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	cs := trunking.CallStart{
+		Grant:        trunking.Grant{System: "S", Protocol: "x", GroupID: 1, SourceID: 1},
+		DeviceSerial: "VOICE-1",
+		StartedAt:    time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC),
+	}
+	bus.Publish(events.Event{Kind: events.KindCallStart, Payload: cs})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.HasSession("VOICE-1") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	r.mu.Lock()
+	s, ok := r.sessions["VOICE-1"]
+	r.mu.Unlock()
+	if !ok {
+		t.Fatal("session not opened")
+	}
+	if s.vocoder != nil {
+		t.Errorf("vocoder should be nil after registry miss, got %q", s.vocoderName)
+	}
+}
+
+// TestDefaultVocoderForProtocolMappings: pin the default
+// Protocol → vocoder mapping so a future refactor doesn't
+// silently drop a digital protocol from the auto-decode path.
+func TestDefaultVocoderForProtocolMappings(t *testing.T) {
+	got := DefaultVocoderForProtocol()
+	want := map[string]string{
+		"p25":        "imbe",
+		"p25-phase2": "ambe2",
+		"dmr-tier2":  "ambe2",
+		"dmr-tier3":  "ambe2",
+		"nxdn":       "ambe2",
+		"dpmr":       "ambe2",
+		"tetra":      "ambe2",
+	}
+	if len(got) != len(want) {
+		t.Errorf("len = %d, want %d", len(got), len(want))
+	}
+	for k, v := range want {
+		if g := got[k]; g != v {
+			t.Errorf("Default[%q] = %q, want %q", k, g, v)
+		}
+	}
+}

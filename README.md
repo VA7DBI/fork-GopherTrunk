@@ -70,10 +70,19 @@ SQLite. The honest gaps:
   public spec doesn't document. Remaining polish: calibration
   against a DSD-FME-decoded DMR reference WAV (AGC defaults are
   tuned for IMBE and AMBE+2 quantisation may need a per-frame
-  gain tweak). The
-  AMBE+2 algorithm carries active patents in some jurisdictions;
-  re-implementing it in pure Go does not change that posture —
-  see [docs/vocoders.md](docs/vocoders.md).
+  gain tweak). **Live-pipeline wiring**: when CallStart fires for
+  a digital protocol mapped in
+  `voice.DefaultVocoderForProtocol` (P25 Phase 1 → IMBE; P25
+  Phase 2 / DMR / NXDN / dPMR / TETRA → AMBE+2), the recorder
+  auto-instantiates the right vocoder and decodes each
+  WriteRawFrame into PCM that lands in the call's WAV alongside
+  the optional `.raw` sidecar. Operators can override the
+  mapping per-recorder via `RecorderOptions.VocoderForProtocol`
+  (pass an empty non-nil map to disable auto-decode entirely;
+  the `.raw` sidecar then becomes the only path for digital
+  voice). The AMBE+2 algorithm carries active patents in some
+  jurisdictions; re-implementing it in pure Go does not change
+  that posture — see [docs/vocoders.md](docs/vocoders.md).
 - **Higher-fidelity audio**: the FM chain now has opt-in 75/50µs
   de-emphasis, a Kaiser-windowed audio LPF, audio AGC, and a
   polyphase L/M audio resampler — the full polish stack ships.

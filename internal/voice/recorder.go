@@ -18,9 +18,9 @@ import (
 // Recorder writes per-call audio + raw-frame files. It subscribes to
 // events.KindCallStart and events.KindCallEnd from the trunking engine,
 // opens a WAV (and optional raw-frame sidecar) for each new call, and
-// closes them on call end. A future demod-pipeline composer will push
-// PCM samples in via WritePCM and raw vocoder frames in via
-// WriteRawFrame, keyed by device serial.
+// closes them on call end. The demod-pipeline composer pushes PCM
+// samples in via WritePCM (analog protocols) and raw vocoder frames
+// in via WriteRawFrame (digital protocols), keyed by device serial.
 //
 // Layout under OutDir (Trunk-Recorder-style):
 //
@@ -32,16 +32,26 @@ import (
 // (external libmbe, DVSI hardware, etc.) without parsing surrounding
 // metadata.
 //
+// Per-call vocoder: when Grant.Protocol matches an entry in the
+// configured VocoderForProtocol map, the recorder instantiates a
+// fresh Vocoder from voice.DefaultRegistry on CallStart and decodes
+// each WriteRawFrame call through it, writing the resulting PCM into
+// the WAV. This makes captures of P25 / DMR / NXDN voice produce
+// playable WAVs alongside the optional raw sidecar — out-of-band
+// decode via `gophertrunk decode` remains available for operators
+// who want bit-exact mbelib / DSD-FME output.
+//
 // EDACS ProVoice grants (Grant.ProVoice == true) always force a `.raw`
-// sidecar even when WriteRaw is false. The vocoder is patent +
-// trade-secret encumbered so we cannot ship a built-in decoder; the
-// sidecar lets researchers feed frames into an external decoder.
+// sidecar even when WriteRaw is false. The ProVoice vocoder is patent
+// + trade-secret encumbered so we cannot ship a built-in decoder;
+// the sidecar lets researchers feed frames into an external decoder.
 type Recorder struct {
-	bus        *events.Bus
-	log        *slog.Logger
-	outDir     string
-	sampleRate uint32
-	writeRaw   bool
+	bus                *events.Bus
+	log                *slog.Logger
+	outDir             string
+	sampleRate         uint32
+	writeRaw           bool
+	vocoderForProtocol map[string]string
 
 	mu        sync.Mutex
 	sessions  map[string]*recordingSession // by device serial
@@ -57,6 +67,41 @@ type RecorderOptions struct {
 	OutDir     string
 	SampleRate uint32 // 8000 typical
 	WriteRaw   bool   // emit a .raw sidecar alongside each .wav
+
+	// VocoderForProtocol maps a Grant.Protocol value to a vocoder
+	// registry name used to decode raw frames into PCM that's
+	// written to the call's WAV. nil means "use the package
+	// defaults" (DefaultVocoderForProtocol). Pass an explicit empty
+	// (non-nil) map to disable auto-decode entirely; the .raw
+	// sidecar then becomes the only path for digital voice.
+	//
+	// Protocols not in the map produce no decoded audio — typically
+	// analog protocols (motorola, edacs, ltr, mpt1327) where the
+	// composer's FM chain feeds WritePCM directly, and ProVoice
+	// where no in-binary decoder is available.
+	VocoderForProtocol map[string]string
+}
+
+// DefaultVocoderForProtocol returns the Protocol → vocoder-name
+// mapping NewRecorder uses when RecorderOptions.VocoderForProtocol
+// is nil. The keys match the strings the radio decoders set on
+// Grant.Protocol; the values match factory names registered into
+// voice.DefaultRegistry by the imbe / ambe2 package init()s.
+//
+// Callers wanting to override one entry should start with a copy of
+// this map (DefaultVocoderForProtocol() returns a fresh map per
+// call) and mutate from there — RecorderOptions.VocoderForProtocol
+// is taken as-is, no merging.
+func DefaultVocoderForProtocol() map[string]string {
+	return map[string]string{
+		"p25":        "imbe",  // P25 Phase 1 — IMBE 4400
+		"p25-phase2": "ambe2", // P25 Phase 2 — AMBE+2 2400
+		"dmr-tier2":  "ambe2", // DMR Tier II conventional
+		"dmr-tier3":  "ambe2", // DMR Tier III trunked
+		"nxdn":       "ambe2",
+		"dpmr":       "ambe2", // dPMR Mode 3 (digital)
+		"tetra":      "ambe2", // TETRA voice
+	}
 }
 
 // NewRecorder validates options and returns a recorder ready to Run.
@@ -78,14 +123,19 @@ func NewRecorder(opts RecorderOptions) (*Recorder, error) {
 	if err := os.MkdirAll(opts.OutDir, 0o755); err != nil {
 		return nil, fmt.Errorf("voice/recorder: mkdir: %w", err)
 	}
+	vocoderMap := opts.VocoderForProtocol
+	if vocoderMap == nil {
+		vocoderMap = DefaultVocoderForProtocol()
+	}
 	r := &Recorder{
-		bus:        opts.Bus,
-		log:        opts.Log,
-		outDir:     opts.OutDir,
-		sampleRate: opts.SampleRate,
-		writeRaw:   opts.WriteRaw,
-		sessions:   make(map[string]*recordingSession),
-		runDone:    make(chan struct{}),
+		bus:                opts.Bus,
+		log:                opts.Log,
+		outDir:             opts.OutDir,
+		sampleRate:         opts.SampleRate,
+		writeRaw:           opts.WriteRaw,
+		vocoderForProtocol: vocoderMap,
+		sessions:           make(map[string]*recordingSession),
+		runDone:            make(chan struct{}),
 	}
 	r.sub = opts.Bus.Subscribe()
 	return r, nil
@@ -171,19 +221,44 @@ func (r *Recorder) WritePCM(deviceSerial string, samples []int16) error {
 	return s.wav.WriteSamples(samples)
 }
 
-// WriteRawFrame appends a raw vocoder frame to the per-call sidecar.
-// The session decides whether a sidecar exists: it is opened either when
-// WriteRaw is globally enabled or when the call's grant is flagged
-// ProVoice. Frames for a session without a sidecar are dropped silently.
+// WriteRawFrame consumes a raw vocoder frame for the named device
+// serial. Two outputs are produced when applicable:
+//
+//   - The .raw sidecar (when one was opened — see handleStart). The
+//     frame bytes are appended verbatim so external decoders can
+//     consume the file with no surrounding metadata.
+//   - The .wav (when a vocoder was instantiated for the call's
+//     Grant.Protocol). The frame is decoded into PCM and the
+//     samples are appended to the WAV. A per-frame Decode error is
+//     logged and the frame is dropped from PCM but still written to
+//     the sidecar.
+//
+// Frames for a session without either output (no sidecar, no
+// vocoder) are dropped silently.
 func (r *Recorder) WriteRawFrame(deviceSerial string, frame []byte) error {
 	r.mu.Lock()
 	s, ok := r.sessions[deviceSerial]
 	r.mu.Unlock()
-	if !ok || s.raw == nil {
+	if !ok {
 		return nil
 	}
-	_, err := s.raw.Write(frame)
-	return err
+	if s.raw != nil {
+		if _, err := s.raw.Write(frame); err != nil {
+			return err
+		}
+	}
+	if s.vocoder != nil {
+		samples, err := s.vocoder.Decode(frame)
+		if err != nil {
+			r.log.Warn("recorder: vocoder decode failed; dropping frame from PCM",
+				"device", deviceSerial, "vocoder", s.vocoder.Name(), "err", err)
+			return nil
+		}
+		if err := s.wav.WriteSamples(samples); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Recorder) handleStart(cs trunking.CallStart) {
@@ -221,10 +296,26 @@ func (r *Recorder) handleStart(cs trunking.CallStart) {
 			s.rawPath = rawPath
 		}
 	}
+	// Instantiate a vocoder for the protocol if one is mapped.
+	// Construction failure (unknown registry name) logs a warning and
+	// proceeds with no auto-decode — the sidecar (if any) is still the
+	// safety net.
+	if name, ok := r.vocoderForProtocol[cs.Grant.Protocol]; ok && name != "" {
+		v, err := DefaultRegistry.New(name)
+		if err != nil {
+			r.log.Warn("recorder: cannot instantiate vocoder; auto-decode disabled for this call",
+				"device", cs.DeviceSerial, "protocol", cs.Grant.Protocol,
+				"vocoder", name, "err", err)
+		} else {
+			s.vocoder = v
+			s.vocoderName = name
+		}
+	}
 	r.sessions[cs.DeviceSerial] = s
 	r.log.Info("recorder: call started",
 		"device", cs.DeviceSerial, "wav", wavPath,
-		"tg", cs.Grant.GroupID, "provoice", cs.Grant.ProVoice)
+		"tg", cs.Grant.GroupID, "provoice", cs.Grant.ProVoice,
+		"vocoder", s.vocoderName)
 }
 
 func (r *Recorder) handleEnd(ce trunking.CallEnd) {
@@ -292,16 +383,23 @@ func sanitize(s string) string {
 }
 
 type recordingSession struct {
-	wav       *WavWriter
-	wavPath   string
-	raw       *os.File
-	rawPath   string
-	startedAt time.Time
+	wav         *WavWriter
+	wavPath     string
+	raw         *os.File
+	rawPath     string
+	vocoder     Vocoder
+	vocoderName string
+	startedAt   time.Time
 }
 
 func (s *recordingSession) close() error {
 	var firstErr error
-	if err := s.wav.Close(); err != nil {
+	if s.vocoder != nil {
+		if err := s.vocoder.Close(); err != nil {
+			firstErr = err
+		}
+	}
+	if err := s.wav.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	if s.raw != nil {
