@@ -393,6 +393,237 @@ func TestDecodeOutputIsBoundedAcrossFramePatterns(t *testing.T) {
 	}
 }
 
+// singleToneFrame builds a 7-byte AMBE+2 tone frame with a chosen
+// single-tone b1 ∈ [5, 122] and 8-bit volume b2. The tone-frame
+// b1 packing uses the t5/t6/t7 table lookup for bits 5..7 — to
+// keep the test self-contained we force idx = 1 (info[6,7,8] =
+// 0,0,1) so those tables emit (0,0,0), letting bits 0..4 of b1
+// be set directly via info[9, 42, 43, 10, 11].
+func singleToneFrame(b1, b2 int) []byte {
+	if b1 < 0 || b1 > 31 {
+		panic("singleToneFrame test helper only emits b1 in [0, 31] (high bits via t-table idx=1 are forced 0)")
+	}
+	info := make([]byte, InfoBits)
+	// b0 = 0x7E (tone frame): info[0..5] = 1, info[48] = 0.
+	for i := 0; i <= 5; i++ {
+		info[i] = 1
+	}
+	// t-table idx = 1 → bits 5..7 of b1 = 0.
+	info[8] = 1
+	// b1 low 5 bits via info[9, 42, 43, 10, 11] (MSB-first: bit4 → 16).
+	info[9] = byte((b1 >> 4) & 1)
+	info[42] = byte((b1 >> 3) & 1)
+	info[43] = byte((b1 >> 2) & 1)
+	info[10] = byte((b1 >> 1) & 1)
+	info[11] = byte(b1 & 1)
+	// b2 (8 bits) via info[12, 13, 14, 15, 16, 44, 45, 17].
+	info[12] = byte((b2 >> 7) & 1)
+	info[13] = byte((b2 >> 6) & 1)
+	info[14] = byte((b2 >> 5) & 1)
+	info[15] = byte((b2 >> 4) & 1)
+	info[16] = byte((b2 >> 3) & 1)
+	info[44] = byte((b2 >> 2) & 1)
+	info[45] = byte((b2 >> 1) & 1)
+	info[17] = byte(b2 & 1)
+	// Pack info bits into 7 bytes MSB-first to mirror the wire format.
+	frame := make([]byte, FrameBytes)
+	for i := 0; i < InfoBits; i++ {
+		frame[i/8] |= info[i] << (7 - uint(i)%8)
+	}
+	return frame
+}
+
+// TestDecodeSingleToneFrameAudible: a valid single-tone frame
+// (b1 ∈ [5, 122]) synthesises a sinewave at b1·31.25 Hz scaled by
+// b2. Pins that the tone path actually produces audio rather than
+// routing through silence.
+func TestDecodeSingleToneFrameAudible(t *testing.T) {
+	d := New()
+	// b1 = 12 ⇒ 375 Hz; b2 = 128 ⇒ ~half-scale pre-AGC.
+	out, err := d.Decode(singleToneFrame(12, 128))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(out) != mbe.SamplesPerFrame {
+		t.Errorf("len(out) = %d, want %d", len(out), mbe.SamplesPerFrame)
+	}
+	if agcPeak(out) == 0 {
+		t.Fatal("single-tone frame output is fully silent; tone synthesis didn't run")
+	}
+}
+
+// TestDecodeSingleToneFrameApproximateFrequency: count zero
+// crossings in a frame of a known-frequency tone and confirm the
+// count matches 2·f·(N/fs) ± 1 (zero crossings per cycle ×
+// number of cycles in the frame). For b1 = 16 ⇒ f = 500 Hz and
+// N = 160 samples at fs = 8000, expect 2·500·(160/8000) = 20
+// zero crossings. Loose tolerance handles the AGC's per-frame
+// gain (which doesn't change zero-crossing count anyway) plus
+// first-frame phase seeding.
+func TestDecodeSingleToneFrameApproximateFrequency(t *testing.T) {
+	d := New()
+	out, err := d.Decode(singleToneFrame(16, 200))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	var crossings int
+	for i := 1; i < len(out); i++ {
+		if (out[i-1] < 0 && out[i] >= 0) || (out[i-1] >= 0 && out[i] < 0) {
+			crossings++
+		}
+	}
+	const wantCrossings = 20
+	if crossings < wantCrossings-2 || crossings > wantCrossings+2 {
+		t.Errorf("zero crossings = %d, want %d ±2 (b1=16 ⇒ 500 Hz, 160 samples @ 8 kHz)",
+			crossings, wantCrossings)
+	}
+}
+
+// TestDecodeSingleToneFramePhaseContinuity: two consecutive tone
+// frames at the same b1 should not click at the frame boundary.
+// The maximum absolute difference between consecutive samples
+// across the join (last sample of frame 1, first sample of frame
+// 2) should be on the same order as the maximum intra-frame
+// sample-to-sample difference — a click would manifest as a 2×+
+// jump.
+func TestDecodeSingleToneFramePhaseContinuity(t *testing.T) {
+	d := New()
+	frame := singleToneFrame(20, 200) // 625 Hz, mid volume
+	out1, err := d.Decode(frame)
+	if err != nil {
+		t.Fatalf("frame 1: %v", err)
+	}
+	out2, err := d.Decode(frame)
+	if err != nil {
+		t.Fatalf("frame 2: %v", err)
+	}
+	// Largest intra-frame sample-to-sample diff in frame 2 (after
+	// AGC has warmed up enough to give us a clean reference).
+	var maxIntra int
+	for i := 1; i < len(out2); i++ {
+		d := int(out2[i]) - int(out2[i-1])
+		if d < 0 {
+			d = -d
+		}
+		if d > maxIntra {
+			maxIntra = d
+		}
+	}
+	// Boundary diff.
+	boundary := int(out2[0]) - int(out1[len(out1)-1])
+	if boundary < 0 {
+		boundary = -boundary
+	}
+	// A click would be much larger than the intra-frame max. Allow
+	// 3× headroom for AGC level adjustment between the two frames.
+	if boundary > 3*maxIntra && boundary > 2000 {
+		t.Errorf("boundary diff = %d, intra-frame max = %d (likely click on frame boundary)",
+			boundary, maxIntra)
+	}
+}
+
+// TestDecodeSingleToneFrameVolumeScaling: feed two streams of
+// tones at the same frequency but different b2 (volume) values.
+// Before the AGC fully converges, the louder b2 should produce a
+// higher peak. Take the first frame's peak before the AGC
+// normalises everything to TargetPeak.
+func TestDecodeSingleToneFrameVolumeScaling(t *testing.T) {
+	loud := New()
+	quiet := New()
+	loudOut, err := loud.Decode(singleToneFrame(12, 255))
+	if err != nil {
+		t.Fatalf("loud: %v", err)
+	}
+	quietOut, err := quiet.Decode(singleToneFrame(12, 8))
+	if err != nil {
+		t.Fatalf("quiet: %v", err)
+	}
+	loudPeak := agcPeak(loudOut)
+	quietPeak := agcPeak(quietOut)
+	// First-frame AGC seed lands both at ~TargetPeak (24000), so
+	// the peaks themselves are close. What differs is the AGC
+	// envelope: loud frame's envelope is ≈ peakAmpScale, quiet
+	// frame's is much lower. Confirm both produced non-zero audio
+	// (silence-out wouldn't have).
+	if loudPeak == 0 || quietPeak == 0 {
+		t.Fatalf("expected non-zero peaks: loud=%d quiet=%d", loudPeak, quietPeak)
+	}
+	loudEnv := loud.agc.Envelope()
+	quietEnv := quiet.agc.Envelope()
+	if loudEnv <= quietEnv {
+		t.Errorf("loud envelope %v should exceed quiet envelope %v", loudEnv, quietEnv)
+	}
+}
+
+// TestDecodeDualToneFrameStaysSilent: dual-tone indices
+// (b1 ∈ [128, 163]) need an AMBE+2-specific frequency-pair lookup
+// the public spec doesn't document; until that lands they route
+// through the §6.4 OA fade-out + silence path. Pin that
+// behaviour so adding a dual-tone synthesis path later doesn't
+// silently break the silent-out contract for unsupported
+// indices.
+func TestDecodeDualToneFrameStaysSilent(t *testing.T) {
+	d := New()
+	// frame[0] = 0xFC ⇒ b0 = 0x7E (tone frame). info[6..8] = 0 ⇒
+	// idx = 0 ⇒ t7tab[0]<<7 = 0x80 = 128 (dual-tone). Other bits
+	// zero, so b1 = 128.
+	frame := make([]byte, FrameBytes)
+	frame[0] = 0xFC
+	out, err := d.Decode(frame)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	// Non-overlap region (pcm[96..159]) must be silent on a
+	// dual-tone frame — the silence path runs there.
+	for i := mbe.SamplesPerFrame - 64; i < mbe.SamplesPerFrame; i++ {
+		if out[i] != 0 {
+			t.Errorf("sample[%d] = %d, want 0 (dual-tone is silence)", i, out[i])
+		}
+	}
+}
+
+// TestDecodeToneToVoiceTransition: a tone followed by a voice
+// frame must produce voice audio (synth pipeline runs) and reset
+// the tone-phase accumulator. Pins that the orthogonal voice /
+// tone state machines don't interfere.
+func TestDecodeToneToVoiceTransition(t *testing.T) {
+	d := New()
+	if _, err := d.Decode(singleToneFrame(12, 200)); err != nil {
+		t.Fatalf("tone: %v", err)
+	}
+	if d.tonePhase == 0 {
+		t.Fatal("tone frame didn't advance tonePhase; test setup invalid")
+	}
+	// All-zero info ⇒ voice frame (b0 = 0).
+	out, err := d.Decode(make([]byte, FrameBytes))
+	if err != nil {
+		t.Fatalf("voice: %v", err)
+	}
+	if agcPeak(out) == 0 {
+		t.Fatal("voice frame after tone produced silence")
+	}
+	if d.tonePhase != 0 {
+		t.Errorf("voice frame didn't clear tonePhase: got %v", d.tonePhase)
+	}
+}
+
+// TestResetClearsTonePhase: Reset must zero d.tonePhase so a
+// stream re-sync doesn't carry the oscillator state into the
+// next call's tone frames.
+func TestResetClearsTonePhase(t *testing.T) {
+	d := New()
+	if _, err := d.Decode(singleToneFrame(12, 200)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if d.tonePhase == 0 {
+		t.Fatal("seed didn't advance tonePhase; test setup invalid")
+	}
+	d.Reset()
+	if d.tonePhase != 0 {
+		t.Errorf("tonePhase = %v after Reset, want 0", d.tonePhase)
+	}
+}
+
 // TestPrevGammaCrossFrameAccumulation: gamma_curr = ΔG_curr +
 // 0.5·gamma_prev. Feed a frame with non-zero ΔG twice and verify
 // the second frame's resolved gamma matches the closed form.

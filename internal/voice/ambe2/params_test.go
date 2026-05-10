@@ -138,12 +138,19 @@ func TestUnpackParamsToneFrameDetection(t *testing.T) {
 // TestUnpackParamsToneFrameInvalidIndexFlagsSilent: a tone frame with
 // b1 < 5 (or in the reserved windows) is flagged silent by mbelib;
 // we mirror that so the synthesizer's silence path runs cleanly.
+//
+// Reaching b1 = 0 requires the t5/t6/t7 table inputs to all map to
+// 0. From the tables, only idx = 1 (info[6,7,8] = 0,0,1) yields
+// (t5, t6, t7) = (0, 0, 0). With the remaining 5 b1 bits also
+// zero, b1 = 0 which falls in the invalid (< 5) window.
 func TestUnpackParamsToneFrameInvalidIndexFlagsSilent(t *testing.T) {
 	info := make([]byte, InfoBits)
-	// Tone frame, b1 = 0 (invalid: b1 < 5).
+	// Tone frame (b0 = 0x7E).
 	for i := 0; i <= 5; i++ {
 		info[i] = 1
 	}
+	// idx = 1 → all three t-tables emit 0 → high 3 bits of b1 = 0.
+	info[8] = 1
 	p, err := UnpackParams(info)
 	if err != nil {
 		t.Fatalf("UnpackParams: %v", err)
@@ -151,8 +158,54 @@ func TestUnpackParamsToneFrameInvalidIndexFlagsSilent(t *testing.T) {
 	if !p.Tone {
 		t.Fatal("expected Tone=true")
 	}
+	if p.B1 != 0 {
+		t.Errorf("B1 = %d, want 0 (invalid tone index)", p.B1)
+	}
 	if !p.Silent {
 		t.Errorf("tone frame with b1=0 should flag Silent=true (mbelib parity)")
+	}
+}
+
+// TestUnpackParamsToneFrameB1TableLookup: the t5/t6/t7 tables map
+// the 3-bit input (info[6,7,8]) to bits 5..7 of the tone-frame b1.
+// Pin the exact mapping mbelib transcribes from the AMBE+2 tone-
+// frame definition — a regression here changes which tone index a
+// frame decodes to, which would silently break tone synthesis.
+func TestUnpackParamsToneFrameB1TableLookup(t *testing.T) {
+	// (info[6], info[7], info[8]) → idx → bits 7,6,5 of b1 → high
+	// 3 bits as a single integer (bits[7..5] << 5).
+	cases := []struct {
+		i6, i7, i8 byte
+		wantHigh   int // (t7 << 7) | (t6 << 6) | (t5 << 5)
+	}{
+		{0, 0, 0, (1 << 7)},                     // idx 0: t7=1, t6=0, t5=0
+		{0, 0, 1, 0},                            // idx 1: all zero
+		{0, 1, 0, (1 << 5)},                     // idx 2: t5=1
+		{0, 1, 1, (1 << 6)},                     // idx 3: t6=1
+		{1, 0, 0, (1 << 6) | (1 << 5)},          // idx 4: t6=1, t5=1
+		{1, 0, 1, (1 << 7) | (1 << 6) | (1 << 5)}, // idx 5: all 1
+		{1, 1, 0, (1 << 7) | (1 << 6)},          // idx 6: t7=1, t6=1
+		{1, 1, 1, (1 << 7) | (1 << 5)},          // idx 7: t7=1, t5=1
+	}
+	for _, c := range cases {
+		info := make([]byte, InfoBits)
+		// Tone frame.
+		for i := 0; i <= 5; i++ {
+			info[i] = 1
+		}
+		info[6], info[7], info[8] = c.i6, c.i7, c.i8
+		p, err := UnpackParams(info)
+		if err != nil {
+			t.Fatalf("idx=(%d,%d,%d): %v", c.i6, c.i7, c.i8, err)
+		}
+		if !p.Tone {
+			t.Fatalf("idx=(%d,%d,%d): not flagged Tone", c.i6, c.i7, c.i8)
+		}
+		// Lower 5 bits of b1 come from info[9,42,43,10,11], all zero.
+		if p.B1 != c.wantHigh {
+			t.Errorf("info[6,7,8]=(%d,%d,%d): B1 = %d (0x%02X), want %d (0x%02X)",
+				c.i6, c.i7, c.i8, p.B1, p.B1, c.wantHigh, c.wantHigh)
+		}
 	}
 }
 
