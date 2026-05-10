@@ -94,6 +94,34 @@ func TestCallsActiveTracksStartAndEnd(t *testing.T) {
 	}
 }
 
+func TestDecodeErrorEventIncrementsCounter(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	m, _ := New(bus, "test")
+	defer m.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.Run(ctx)
+
+	for i := 0; i < 4; i++ {
+		bus.Publish(events.Event{
+			Kind:    events.KindDecodeError,
+			Payload: events.DecodeError{Protocol: "p25", Stage: "nid-bch"},
+		})
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if testutil.ToFloat64(m.decodeErrors.WithLabelValues("p25", "nid-bch")) >= 4 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := testutil.ToFloat64(m.decodeErrors.WithLabelValues("p25", "nid-bch")); got != 4 {
+		t.Errorf("decode_errors{p25,nid-bch} = %v, want 4", got)
+	}
+}
+
 func TestRecordHooks(t *testing.T) {
 	m, _ := New(nil, "test")
 	defer m.Close()

@@ -16,8 +16,8 @@ gRPC, HTTP/SSE, or WebSocket.
 | ----------------- | ---------------------------------------------------------- |
 | Hardware          | CGO `librtlsdr` binding, multi-device pool, role assignment, DC blocker, IQ-imbalance correction, file-backed IQ replay (mock) |
 | DSP               | Polyphase channelizer, FIR + Kaiser LPF designer + RRC, CIC, halfband, AGC, rational resampler, FM / C4FM / H-DQPSK demods, Mueller-Müller clock recovery, frame-sync correlator |
-| FEC primitives    | CRC-CCITT/FALSE, Hamming(15,11,3), Hamming(13,9,3), extended Golay(24,12,8), BPTC(196,96), 4-state ½-rate Viterbi |
-| P25 Phase 1       | 48-bit FSW + sync detector, NID parser (NAC + DUID), TSBK with CRC trailer, payload parsers for GroupVoiceChannelGrant / Update / NetworkStatus / RFSSStatus, control-channel state machine |
+| FEC primitives    | CRC-CCITT/FALSE, Hamming(15,11,3), Hamming(13,9,3), extended Golay(24,12,8), BCH(63,16,11), BPTC(196,96), 4-state ½-rate Viterbi |
+| P25 Phase 1       | 48-bit FSW + sync detector, NID parser (NAC + DUID) with BCH(63,16,11) error correction + even-parity check, TSBK with CRC trailer, payload parsers for GroupVoiceChannelGrant / Update / NetworkStatus / RFSSStatus, control-channel state machine emitting `decode.error` events on uncorrectable NIDs |
 | P25 Phase 2       | Outbound + inbound 20-dibit sync, 360 ms / 12-subframe superframe + SlotType enum, MAC PDU parser + opcode enum, GroupVoiceChannelGrant accessor, control-channel state machine emitting `protocol = "p25-phase2"` grants |
 | DMR (Tier III)    | All 9 ETSI sync patterns, burst layout (132 dibits), Color Code + Data Type, CSBK with CRC, payload parsers for TalkGroup/Private Voice grants + Aloha + AdjacentSiteStatus + SystemInfoBroadcast, control-channel state machine |
 | NXDN              | 192-dibit frame layout (4800 BFSK / 9600 4-FSK), LICH parse with parity + 16-bit doubled-wire decoder, FSW correlator, CAC parser with CRC, RCCH opcode enum + payload parsers, control-channel state machine |
@@ -49,8 +49,9 @@ SQLite. The honest gaps:
 
 - **Live P25 control-channel decoding** still needs the
   TIA-102.BAAA-A trellis tables and the TSBK block interleaver
-  before the existing TSBK parser receives real data. BCH(63,16,11)
-  for the NID is also stubbed.
+  before the existing TSBK parser receives real data. (NID BCH(63,16,11)
+  + even-parity check is wired; uncorrectable codewords publish
+  `decode.error` events that fan out to Prometheus.)
 - **DMR Tier II** is mostly a configuration variation on the Tier
   III scaffolding that's already in place; both share the burst,
   slot-type, and BPTC pieces.

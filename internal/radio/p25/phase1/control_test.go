@@ -8,18 +8,12 @@ import (
 )
 
 // buildLockedStream constructs a synthetic dibit window that places the
-// FSW at the given offset followed by a NID encoding the supplied NAC and
-// the TSDU DUID.
+// FSW at the given offset followed by a properly BCH-encoded NID for
+// the supplied NAC and DUID.
 func buildLockedStream(offset int, nac uint16, duid DUID) []uint8 {
 	out := make([]uint8, offset+24+32+16)
 	copy(out[offset:], FrameSyncWord[:])
-	bits := make([]byte, 64)
-	for i := 0; i < 12; i++ {
-		bits[i] = byte((nac >> uint(11-i)) & 1)
-	}
-	for i := 0; i < 4; i++ {
-		bits[12+i] = byte((uint8(duid) >> uint(3-i)) & 1)
-	}
+	bits := EncodeNIDBits(nac, duid)
 	for i := 0; i < 32; i++ {
 		out[offset+24+i] = (bits[2*i] << 1) | bits[2*i+1]
 	}
@@ -88,5 +82,44 @@ func TestControlChannelMarkLost(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no CCLost event")
+	}
+}
+
+func TestControlChannelPublishesDecodeErrorOnUncorrectable(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	// Stream with FSW followed by 32 dibits of garbage (not a valid NID).
+	stream := make([]uint8, 10+24+32+16)
+	copy(stream[10:], FrameSyncWord[:])
+	for i := 0; i < 32; i++ {
+		stream[10+24+i] = uint8(i*7) & 0x3
+	}
+
+	cc := NewControlChannel(bus, nil, 851_000_000)
+	cc.Process(stream, 0)
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindDecodeError {
+				de, ok := ev.Payload.(events.DecodeError)
+				if !ok {
+					t.Fatalf("payload type = %T, want DecodeError", ev.Payload)
+				}
+				if de.Protocol != "p25" || de.Stage != "nid-bch" {
+					t.Errorf("DecodeError = %+v", de)
+				}
+				return
+			}
+			// Any non-DecodeError event means the garbage somehow decoded
+			// to a valid TSDU — extremely unlikely (~2^-47) but treat as
+			// a wash and keep waiting.
+		case <-deadline:
+			t.Fatal("no decode-error event published")
+		}
 	}
 }
