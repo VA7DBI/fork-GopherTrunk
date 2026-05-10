@@ -8,9 +8,8 @@ import (
 )
 
 // Vocoder is implemented by every voice decoder GopherTrunk can use:
-// pure-Go IMBE, the build-tagged mbelib AMBE+2 wrapper, the future DVSI
-// hardware backend, and the NullVocoder used when no decoder is
-// available.
+// pure-Go IMBE, pure-Go AMBE+2, the future DVSI hardware backend, and
+// the NullVocoder used when no decoder is available.
 //
 // Decode consumes one compressed frame and returns 16-bit PCM samples at
 // 8 kHz mono (one frame is 20 ms = 160 samples for IMBE/AMBE+2). Decoders

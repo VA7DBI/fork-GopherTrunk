@@ -46,7 +46,7 @@
 //     traffic on most operational networks is encrypted; the
 //     `Encrypted` flag on a grant just records what the CC said.
 //   - Voice frame extraction → AMBE+2 vocoder. The vocoder lives
-//     behind the `mbelib` build tag (see internal/voice/mbelib).
+//     in internal/voice/ambe2 (pure-Go, default-on).
 //
 // As with the other trunking packages: ship a clean structured
 // surface now, leave the analogue / FEC / encryption pieces as named

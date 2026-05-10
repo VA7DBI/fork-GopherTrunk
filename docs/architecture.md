@@ -71,9 +71,13 @@ to. `cmd/gophertrunk` blank-imports the drivers it ships with.
 
 ## Build tags
 
-- *(default)* — links librtlsdr, no AMBE+2 vocoder.
-- `-tags mbelib` — links libmbe via CGO for AMBE+2 (P25 P2 / DMR / NXDN
-  voice). Off by default for distribution-license clarity.
+- *(default)* — links librtlsdr; registers the pure-Go IMBE
+  (`internal/voice/imbe`) and AMBE+2 (`internal/voice/ambe2`)
+  vocoders. No CGO dependencies for voice decoding.
+- `-tags integration` — enables the wired end-to-end daemon test
+  under `cmd/gophertrunk` (no real SDR; synthetic call on the bus).
+- `-tags dvsi` — *planned* — links a DVSI USB-3000 / AMBE-3003
+  hardware backend through the same `Vocoder` interface.
 
 See `docs/hardware.md` for the hardware setup checklist,
 `docs/hardening.md` for the operations playbook, and

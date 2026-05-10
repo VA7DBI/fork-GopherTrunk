@@ -88,15 +88,14 @@ to its own package and lands independently.
 - **Pure-Go IMBE vocoder.** A native-Go IMBE 4400 bps decoder for
   default builds without a CGO dependency. Core US patents are
   expired; the algorithm is implementable from TIA-102.BABA. The
-  `mbelib` build-tagged path already covers IMBE for operators with
-  libmbe installed. The synthesis half of the pipeline (cross-frame
-  log-amplitude prediction, voiced harmonic generator, unvoiced
-  FFT excitation + overlap-add window, §6.2 spectral-amplitude
-  enhancement, per-frame AGC) lives in `internal/voice/mbe/` so
-  the in-progress AMBE+2 decoder can consume the same primitives
-  via `mbe.SynthState` + `mbe.Params`. Status: skeleton + Vocoder
-  interface registered as `imbe` (the canonical name; the pure-Go
-  decoder is the sole IMBE backend in default builds); per-vector
+  synthesis half of the pipeline (cross-frame log-amplitude
+  prediction, voiced harmonic generator, unvoiced FFT excitation
+  + overlap-add window, §6.2 spectral-amplitude enhancement,
+  per-frame AGC) lives in `internal/voice/mbe/` so the AMBE+2
+  decoder consumes the same primitives via `mbe.SynthState` +
+  `mbe.Params`. Status: skeleton + Vocoder interface registered
+  as `imbe` (the canonical name; the pure-Go decoder is the sole
+  IMBE backend in default builds); per-vector
   channel-coding FEC inverse (Golay(23,12) for u_0..u_3 +
   Hamming(15,11) for u_4..u_6 + no-FEC u_7 passthrough) is in
   (`internal/voice/imbe/channel.go`); the TIA-102.BABA §7.4
