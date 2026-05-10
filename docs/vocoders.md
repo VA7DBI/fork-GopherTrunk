@@ -72,15 +72,48 @@ links no extra libraries. CI exercises the stub path only — the
 wrapper is verified at build time when an operator opts in.
 
 If `make build TAGS=mbelib` fails with `mbelib.h: No such file or
-directory`, install the library:
+directory`, install the library. The repo ships an automated
+installer that wraps the documented build-from-source procedure:
+
+```sh
+make mbelib-install        # clones, builds, sudo-installs, ldconfig
+make build TAGS=mbelib
+```
+
+Override the install prefix or skip sudo (for non-root /
+container builds) by setting environment variables on the script
+directly:
+
+```sh
+PREFIX=$HOME/.local USE_SUDO=0 scripts/install-mbelib.sh
+```
+
+After install, the library lands at:
+
+- `$PREFIX/include/mbelib.h`
+- `$PREFIX/lib/libmbe.so` (+ `.so.1`, `.so.1.3`, `.a`)
+- `$PREFIX/lib/pkgconfig/libmbe.pc`
+
+The CGO wrapper at `internal/voice/mbelib/cgo_mbelib.go` links
+via the explicit `#cgo LDFLAGS: -lmbe -lm` directive (not
+pkg-config), so non-default install prefixes need their `lib`
+directory on `LD_LIBRARY_PATH` (or in `/etc/ld.so.conf.d/`)
+before `go test -tags mbelib` will load the shared object at
+runtime.
+
+Verify the install end-to-end with:
+
+```sh
+make test TAGS=mbelib              # exercises internal/voice/mbelib
+```
+
+The doing-by-hand equivalent of `make mbelib-install` is:
 
 ```sh
 git clone https://github.com/szechyjs/mbelib && cd mbelib
 mkdir build && cd build && cmake .. && make && sudo make install
 sudo ldconfig
 ```
-
-Then re-run the build.
 
 ## Why a plugin model
 

@@ -53,9 +53,13 @@ SQLite. The honest gaps:
   / NXDN) is gated on the vocoders. The `Vocoder` plugin interface
   + raw-frame sidecar are in place; pure-Go IMBE now produces
   intelligible audio end-to-end ([patents have expired](docs/vocoders.md)),
-  with §6.4 overlap-add windowing + §6.2 spectral enhancement +
-  spec-derived gain calibration as quality follow-ups. AMBE+2
-  stays behind the `mbelib` build tag.
+  with operator-tunable AGC + §6.4 overlap-add windowing + §6.2
+  spectral enhancement + frame-repeat on bad-frame indicator
+  shipped — only mbelib-bit-equivalent absolute-level calibration
+  remains as a follow-up. AMBE+2 stays behind the `mbelib` build
+  tag; operators who hold (or don't need) the patent licence run
+  `make mbelib-install && make build TAGS=mbelib` to get both
+  IMBE + AMBE+2 via the C reference implementation.
 - **Higher-fidelity audio**: the FM chain now has opt-in 75/50µs
   de-emphasis, a Kaiser-windowed audio LPF, audio AGC, and a
   polyphase L/M audio resampler — the full polish stack ships.
