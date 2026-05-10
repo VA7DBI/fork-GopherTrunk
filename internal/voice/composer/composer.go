@@ -342,11 +342,15 @@ func (c *Composer) ActiveChains() []string {
 
 func (c *Composer) handleStart(parent context.Context, cs trunking.CallStart) {
 	if cs.Grant.Protocol != "" && cs.Grant.Protocol != "fm" && cs.Grant.Protocol != "analog" {
-		// Digital protocols need a vocoder we don't have yet. The
-		// recorder still gets the CallStart event itself, so the .raw
-		// sidecar (when configured) and the call_log row land. We
-		// simply don't push PCM.
-		c.log.Info("composer: digital protocol; skipping FM chain",
+		// Digital protocols are decoded out of the recorder's
+		// WriteRawFrame path: the recorder auto-instantiates the
+		// vocoder for the call's protocol (see
+		// voice.DefaultVocoderForProtocol) and writes the decoded
+		// PCM into the WAV. The composer's job for digital is the
+		// IQ → vocoder-frame extraction (in the protocol-specific
+		// radio decoder); FM demod doesn't apply because the IQ
+		// carries C4FM / H-DQPSK / 4FSK symbols, not analog audio.
+		c.log.Info("composer: digital protocol; FM chain bypassed (vocoder decode runs in recorder)",
 			"device", cs.DeviceSerial, "protocol", cs.Grant.Protocol,
 			"group", cs.Grant.GroupID)
 		return
