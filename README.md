@@ -292,6 +292,13 @@ make integration   # boots the wired daemon end-to-end (no SDR needed)
 ./bin/gophertrunk version
 ./bin/gophertrunk sdr list                # enumerates attached dongles
 ./bin/gophertrunk run -config config.yaml
+
+# Out-of-band: decode a captured .raw frame sidecar to a WAV using
+# the pure-Go IMBE / AMBE+2 vocoders. The .raw sidecar is written
+# alongside each call's WAV when the recorder's raw-frames option
+# is enabled.
+./bin/gophertrunk decode -in call.raw -out call.wav -vocoder imbe
+./bin/gophertrunk decode -list-vocoders
 ```
 
 A starter [`config.example.yaml`](config.example.yaml) is in the
