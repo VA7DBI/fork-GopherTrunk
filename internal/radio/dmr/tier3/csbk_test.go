@@ -34,9 +34,10 @@ func TestCSBKDetectsCRCError(t *testing.T) {
 }
 
 func TestParseTVGrant(t *testing.T) {
-	p := [8]byte{0x80, 0x12, 0x34, 0x56, 0xAB, 0xCD, 0xEF, 0x00}
+	// byte 7 = 0x95 → bit 7 set (TS2) + low 7 bits = 0x15 = LCN 21.
+	p := [8]byte{0xC0, 0x12, 0x34, 0x56, 0xAB, 0xCD, 0xEF, 0x95}
 	g := ParseTVGrant(p)
-	if g.ServiceOptions != 0x80 {
+	if g.ServiceOptions != 0xC0 {
 		t.Errorf("ServiceOptions = %02X", g.ServiceOptions)
 	}
 	if g.GroupAddress != 0x123456 {
@@ -44,6 +45,27 @@ func TestParseTVGrant(t *testing.T) {
 	}
 	if g.SourceID != 0xABCDEF {
 		t.Errorf("Source = %06X, want ABCDEF", g.SourceID)
+	}
+	if g.LCN != 0x15 {
+		t.Errorf("LCN = %d, want 21 (0x15)", g.LCN)
+	}
+	if g.Timeslot != 1 {
+		t.Errorf("Timeslot = %d, want 1 (TS2)", g.Timeslot)
+	}
+}
+
+func TestParsePVGrant(t *testing.T) {
+	// LCN 5, TS1.
+	p := [8]byte{0x40, 0x00, 0x12, 0x34, 0x00, 0x56, 0x78, 0x05}
+	g := ParsePVGrant(p)
+	if g.ServiceOptions != 0x40 {
+		t.Errorf("ServiceOptions = %02X", g.ServiceOptions)
+	}
+	if g.DestinationID != 0x001234 || g.SourceID != 0x005678 {
+		t.Errorf("dst/src = %X/%X", g.DestinationID, g.SourceID)
+	}
+	if g.LCN != 5 || g.Timeslot != 0 {
+		t.Errorf("LCN/TS = %d/%d, want 5/0", g.LCN, g.Timeslot)
 	}
 }
 

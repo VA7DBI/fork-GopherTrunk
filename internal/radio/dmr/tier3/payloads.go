@@ -2,26 +2,23 @@ package tier3
 
 import "encoding/binary"
 
-// TVGrant (CSBKO 0x30) is the TalkGroup Voice Channel Grant.
+// TVGrant (CSBKO 0x30) is the TalkGroup Voice Channel Grant per ETSI
+// TS 102 361-4 §7.1.2.1. Payload layout (8 octets):
 //
-// Payload layout (8 octets):
-//   bytes 0-1 : LCN (Logical Channel Number, 16 bits)
-//   byte  2   : Service options
-//   bytes 3-5 : Destination address (24 bits)
-//   bytes 6-8 : Source address (24 bits) — note: only 5 octets fit, so the
-//               low byte sits in payload[8]? In ETSI Tier III the source
-//               is actually 24-bit packed in payload[5..7]; we expose both
-//               the destination and source as 24-bit values.
+//	octet 0   : Service Options
+//	octet 1-3 : Destination address (talkgroup, 24-bit)
+//	octet 4-6 : Source address (subscriber, 24-bit)
+//	octet 7   : bit 7 = Timeslot (0 = TS1, 1 = TS2)
+//	            bits 6-0 = LCN (Logical Channel Number, 7-bit)
 //
-// We follow the ETSI TS 102 361-4 §7.1.1.2 reference layout:
-//   payload[0]   = service options
-//   payload[1-3] = destination address (TG, 24-bit)
-//   payload[4-6] = source address (subscriber unit, 24-bit)
-//   payload[7]   = (vendor-defined / reserved)
+// The LCN feeds a per-system band-plan resolver to recover the
+// downlink frequency the engine retunes a Voice device to.
 type TVGrant struct {
 	ServiceOptions uint8
 	GroupAddress   uint32 // 24-bit
 	SourceID       uint32 // 24-bit
+	LCN            uint8  // 7-bit logical channel number
+	Timeslot       uint8  // 0 = TS1, 1 = TS2
 }
 
 func ParseTVGrant(p [8]byte) TVGrant {
@@ -29,15 +26,20 @@ func ParseTVGrant(p [8]byte) TVGrant {
 		ServiceOptions: p[0],
 		GroupAddress:   uint32(p[1])<<16 | uint32(p[2])<<8 | uint32(p[3]),
 		SourceID:       uint32(p[4])<<16 | uint32(p[5])<<8 | uint32(p[6]),
+		LCN:            p[7] & 0x7F,
+		Timeslot:       (p[7] >> 7) & 0x01,
 	}
 }
 
-// PVGrant (CSBKO 0x31) is the Private Voice Channel Grant. Layout matches
-// TVGrant but the destination address is a subscriber rather than a TG.
+// PVGrant (CSBKO 0x31) is the Private Voice Channel Grant. Layout
+// matches TVGrant but the destination address is a subscriber rather
+// than a talkgroup. The same LCN + Timeslot encoding applies.
 type PVGrant struct {
-	ServiceOptions  uint8
-	DestinationID   uint32 // 24-bit
-	SourceID        uint32 // 24-bit
+	ServiceOptions uint8
+	DestinationID  uint32 // 24-bit
+	SourceID       uint32 // 24-bit
+	LCN            uint8
+	Timeslot       uint8
 }
 
 func ParsePVGrant(p [8]byte) PVGrant {
@@ -45,6 +47,8 @@ func ParsePVGrant(p [8]byte) PVGrant {
 		ServiceOptions: p[0],
 		DestinationID:  uint32(p[1])<<16 | uint32(p[2])<<8 | uint32(p[3]),
 		SourceID:       uint32(p[4])<<16 | uint32(p[5])<<8 | uint32(p[6]),
+		LCN:            p[7] & 0x7F,
+		Timeslot:       (p[7] >> 7) & 0x01,
 	}
 }
 
