@@ -74,7 +74,7 @@
 //     gains PrevPhase + PrevMl for the cross-frame continuity.
 //     TIA-102.BABA §6.3. See synth_voiced.go.
 //
-//  4d. Speech synthesis — unvoiced excitation. ← THIS PR.
+//  4d. Speech synthesis — unvoiced excitation.
 //     A 256-point FFT noise spectrum (caller-supplied so unit
 //     tests stay deterministic) is shaped by the §6.4 rules: bins
 //     under voiced harmonics are zeroed (those go through 4c),
@@ -84,15 +84,27 @@
 //     pairs so the IFFT produces a real-valued time-domain
 //     contribution. See synth_unvoiced.go.
 //
-//  4e. Speech synthesis — combine + final PCM. §6.2 spectral
-//     amplitude enhancement (R_M0 / R_M1 / ω₀ closed form), §6.4
-//     overlap-add window for the unvoiced step, voiced + unvoiced
-//     sum, hard-clip to int16, → 160 PCM samples / 20 ms / 8 kHz
-//     mono per frame, plus the Decode() wiring that pulls noise
-//     from a per-call seeded source.
+//  4e. Speech synthesis — combine + Decode() wiring. ← THIS PR.
+//     Decoder gains a SynthState + math/rand source per call.
+//     Decode() runs the full pipeline: bytes → 88 info bits →
+//     UnpackParams → PredictLog2Ml → AmplitudesFromLog2Ml →
+//     SynthVoiced + SynthUnvoicedFromNoise (additive into one
+//     buffer) → state roll-forward → hard-clip × placeholder gain
+//     → int16 PCM. b_0 silence-window frames short-circuit to
+//     all-zero PCM and reset the state; bad b_0 returns silence
+//     without resetting state so the next valid frame can pick up
+//     from the last-known-good prediction history. The §6.4
+//     overlap-add synthesis window + the §6.2 spectral-amplitude
+//     enhancement become quality-polish PRs (see step 5) — the
+//     synthesizer produces intelligible voice without them, just
+//     with frame-edge click artifacts and an untilted envelope.
 //
-//  5. Quality polish: enhancement filter, frame-repeat on bad-frame
-//     indicator, gain smoothing across frames.
+//  5. Quality polish: §6.4 overlap-add synthesis window for the
+//     unvoiced step, §6.2 spectral-amplitude enhancement (closed
+//     form over R_M0 + R_M1 + ω₀ + l), spec-derived gain
+//     calibration (replacing the placeholder pcmGain), enhancement
+//     filter, frame-repeat on bad-frame indicator, gain smoothing
+//     across frames.
 //
 // Patent + licensing context lives in docs/vocoders.md. The core US
 // IMBE patents have expired; this implementation is built from the

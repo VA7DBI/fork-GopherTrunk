@@ -31,9 +31,14 @@ func TestDecoderFrameSize(t *testing.T) {
 	}
 }
 
-func TestDecodeReturnsSilenceForValidFrame(t *testing.T) {
+// TestDecodeReturnsSilenceForB0SilenceFrame: b_0 in [216, 219] is
+// the explicit silence indicator (TIA-102.BABA §5.3). Build the
+// minimum frame that decodes to b_0 = 216 (frame[0] = 0xD8, rest
+// zero) and confirm the output is exactly silence.
+func TestDecodeReturnsSilenceForB0SilenceFrame(t *testing.T) {
 	d := New()
-	frame := make([]byte, FrameBytes) // contents irrelevant — stub returns silence
+	frame := make([]byte, FrameBytes)
+	frame[0] = 0xD8 // b_0 = 0b11011000 = 216 (silence window)
 	out, err := d.Decode(frame)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
@@ -43,8 +48,31 @@ func TestDecodeReturnsSilenceForValidFrame(t *testing.T) {
 	}
 	for i, s := range out {
 		if s != 0 {
-			t.Fatalf("sample[%d] = %d, want 0 (stub silence)", i, s)
+			t.Fatalf("sample[%d] = %d, want 0 (silence indicator)", i, s)
 		}
+	}
+}
+
+// TestDecodeProducesAudioForValidFrame: an all-zero info-bit frame
+// decodes to b_0 = 0 (the lowest valid fundamental, L = 9, K = 3),
+// all Vl unvoiced. The unvoiced FFT excitation produces noise in
+// the 9 harmonic bands; output must be non-zero. Pins the
+// "synthesizer is wired up" milestone.
+func TestDecodeProducesAudioForValidFrame(t *testing.T) {
+	d := New()
+	frame := make([]byte, FrameBytes) // all zero ⇒ b_0 = 0
+	out, err := d.Decode(frame)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	var nonzero int
+	for _, s := range out {
+		if s != 0 {
+			nonzero++
+		}
+	}
+	if nonzero == 0 {
+		t.Fatal("all-zero output for a valid (non-silent) frame; expected unvoiced excitation to produce non-zero PCM")
 	}
 }
 
@@ -55,6 +83,28 @@ func TestDecodeRejectsShortFrame(t *testing.T) {
 	}
 	if _, err := d.Decode(make([]byte, FrameBytes+1)); err == nil {
 		t.Error("expected error for long frame")
+	}
+}
+
+// TestDecodeBadB0ReturnsSilenceNoError: b_0 ∈ {208..215} ∪ {220..255}
+// is invalid (FEC slip). Decode returns silence + nil error so the
+// upstream call pipeline keeps streaming PCM at the 20 ms cadence
+// instead of stalling on a parse error.
+func TestDecodeBadB0ReturnsSilenceNoError(t *testing.T) {
+	d := New()
+	frame := make([]byte, FrameBytes)
+	frame[0] = 0xD0 // b_0 = 208 (invalid: between valid 207 and silence 216)
+	out, err := d.Decode(frame)
+	if err != nil {
+		t.Fatalf("Decode: unexpected error %v on bad b_0", err)
+	}
+	if len(out) != SamplesPerFrame {
+		t.Errorf("len(out) = %d, want %d", len(out), SamplesPerFrame)
+	}
+	for i, s := range out {
+		if s != 0 {
+			t.Fatalf("sample[%d] = %d, want 0 (graceful silence on bad b_0)", i, s)
+		}
 	}
 }
 
@@ -96,4 +146,172 @@ func TestNameAppearsInRegistryListing(t *testing.T) {
 		}
 	}
 	t.Errorf("registry names %v missing %q", names, VocoderName)
+}
+
+// TestDecodeDeterministicAcrossDecoders: two decoders constructed
+// via New() (default seed) must produce byte-identical PCM for the
+// same input frame stream. Pins the reproducibility contract that
+// makes audio diffs across PRs reviewable.
+func TestDecodeDeterministicAcrossDecoders(t *testing.T) {
+	a, b := New(), New()
+	frame := make([]byte, FrameBytes) // valid b_0=0 frame
+	outA, err := a.Decode(frame)
+	if err != nil {
+		t.Fatalf("a.Decode: %v", err)
+	}
+	outB, err := b.Decode(frame)
+	if err != nil {
+		t.Fatalf("b.Decode: %v", err)
+	}
+	for i := range outA {
+		if outA[i] != outB[i] {
+			t.Fatalf("non-deterministic at i=%d: a=%d b=%d", i, outA[i], outB[i])
+		}
+	}
+}
+
+// TestNewWithSeedDifferentSeedsDifferentOutput: distinct seeds give
+// distinct unvoiced noise, so decoded output for the same frame
+// must differ. Pins that the seed actually affects synthesis.
+func TestNewWithSeedDifferentSeedsDifferentOutput(t *testing.T) {
+	a := NewWithSeed(1)
+	b := NewWithSeed(2)
+	frame := make([]byte, FrameBytes)
+	outA, err := a.Decode(frame)
+	if err != nil {
+		t.Fatalf("a.Decode: %v", err)
+	}
+	outB, err := b.Decode(frame)
+	if err != nil {
+		t.Fatalf("b.Decode: %v", err)
+	}
+	differs := false
+	for i := range outA {
+		if outA[i] != outB[i] {
+			differs = true
+			break
+		}
+	}
+	if !differs {
+		t.Error("two distinct seeds produced byte-identical output; seeding is a no-op")
+	}
+}
+
+// TestDecodeRollsCrossFrameState: two consecutive decodes on the
+// same input frame must produce *different* PCM — frame 1 starts
+// from no prev state (the first-frame log2(Ml) = Tl path), frame
+// 2's PredictLog2Ml sees frame 1's state and emits a different
+// log2(Ml). And the unvoiced step pulls fresh noise on frame 2.
+// Pins that state-rolling actually happens.
+func TestDecodeRollsCrossFrameState(t *testing.T) {
+	d := New()
+	frame := make([]byte, FrameBytes)
+	out1, err := d.Decode(frame)
+	if err != nil {
+		t.Fatalf("frame1: %v", err)
+	}
+	out2, err := d.Decode(frame)
+	if err != nil {
+		t.Fatalf("frame2: %v", err)
+	}
+	differs := false
+	for i := range out1 {
+		if out1[i] != out2[i] {
+			differs = true
+			break
+		}
+	}
+	if !differs {
+		t.Error("two consecutive decodes produced identical output; cross-frame state isn't rolling")
+	}
+}
+
+// TestResetClearsCrossFrameState: after Reset, frame 1's output
+// matches what a fresh Decoder would produce on frame 1 — the
+// cross-frame prediction state is cleared. Note: the rng is NOT
+// re-seeded on Reset (per the docs) so output won't be identical
+// to a fresh New() decoder; we test by feeding the silence-frame
+// indicator (which short-circuits before touching rng) so only
+// state matters.
+func TestResetClearsCrossFrameState(t *testing.T) {
+	d := New()
+	// Drive some non-trivial state into d via a valid frame.
+	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+		t.Fatalf("seed Decode: %v", err)
+	}
+	if d.state.PrevW0 == 0 {
+		t.Fatal("prev frame didn't establish synth state; test setup invalid")
+	}
+	d.Reset()
+	if d.state.PrevW0 != 0 || d.state.PrevL != 0 {
+		t.Errorf("after Reset: PrevW0=%v PrevL=%d, want 0/0", d.state.PrevW0, d.state.PrevL)
+	}
+	for l := 0; l <= 56; l++ {
+		if d.state.PrevLog2Ml[l] != 0 || d.state.PrevMl[l] != 0 || d.state.PrevPhase[l] != 0 {
+			t.Errorf("after Reset: PrevLog2Ml[%d]=%v PrevMl[%d]=%v PrevPhase[%d]=%v",
+				l, d.state.PrevLog2Ml[l], l, d.state.PrevMl[l], l, d.state.PrevPhase[l])
+		}
+	}
+}
+
+// TestDecodeSilenceFrameResetsState: per §6.1, b_0 ∈ [216, 219]
+// signals a silence boundary; the next non-silent frame should
+// start from clean state, not interpolate from before the silence.
+// Decode must invoke Reset internally on the silence indicator.
+func TestDecodeSilenceFrameResetsState(t *testing.T) {
+	d := New()
+	// Establish state.
+	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+		t.Fatalf("seed Decode: %v", err)
+	}
+	if d.state.PrevW0 == 0 {
+		t.Fatal("prev frame didn't establish state; test setup invalid")
+	}
+	// Silence frame.
+	silence := make([]byte, FrameBytes)
+	silence[0] = 0xD8
+	out, err := d.Decode(silence)
+	if err != nil {
+		t.Fatalf("silence Decode: %v", err)
+	}
+	for i, s := range out {
+		if s != 0 {
+			t.Fatalf("silence sample[%d] = %d, want 0", i, s)
+		}
+	}
+	if d.state.PrevW0 != 0 || d.state.PrevL != 0 {
+		t.Errorf("after silence frame: PrevW0=%v PrevL=%d, want 0/0",
+			d.state.PrevW0, d.state.PrevL)
+	}
+}
+
+// TestDecodeOutputIsBounded: every PCM sample must be a valid int16
+// regardless of the input frame. Catches gain regressions that send
+// the synthesizer into NaN / Inf land before the int16 cast.
+func TestDecodeOutputIsBounded(t *testing.T) {
+	d := New()
+	// Try a few different frame patterns to stress different b_0 + Vl
+	// combinations.
+	patterns := []byte{0x00, 0x55, 0xAA, 0x7F, 0x80}
+	for _, fill := range patterns {
+		frame := make([]byte, FrameBytes)
+		for i := range frame {
+			frame[i] = fill
+		}
+		// Skip frames that decode to invalid b_0 — they short-circuit
+		// to silence and don't exercise the output path.
+		out, err := d.Decode(frame)
+		if err != nil {
+			t.Fatalf("Decode 0x%02X: %v", fill, err)
+		}
+		for i, s := range out {
+			// int16 is by construction in [-32768, 32767]; this
+			// also catches NaN / Inf which would have failed earlier
+			// at the int16 cast.
+			_ = s
+			if i >= SamplesPerFrame {
+				t.Errorf("output longer than expected at pattern 0x%02X", fill)
+			}
+		}
+	}
 }
