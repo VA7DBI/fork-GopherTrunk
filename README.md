@@ -93,10 +93,17 @@ to its own package and lands independently.
   integration of the ω₀ drift, dual-frame iteration so
   voiced↔unvoiced transitions fade in / out cleanly) is in
   (`synth_voiced.go`, `SynthState` extended with `PrevPhase` +
-  `PrevMl`). Currently still emits silence per frame because the
-  decoder hasn't been wired through the synthesis chain yet;
-  follow-up PRs land the unvoiced FFT excitation (§6.4) and the
-  §6.2 enhancement + final PCM combine.
+  `PrevMl`); §6.4 unvoiced excitation (256-point FFT spectrum
+  shaping — bins under voiced harmonics zeroed, bins under
+  unvoiced harmonics scaled by Ml[l], bins outside [1..L]
+  zeroed, conjugate-mirror invariant preserved so the IFFT
+  output stays real-valued) is in (`synth_unvoiced.go`);
+  caller supplies the noise buffer so unit tests stay
+  deterministic. Currently still emits silence per frame because
+  the decoder hasn't been wired through the synthesis chain yet;
+  the next PR lands §6.2 enhancement + the §6.4 overlap-add
+  window + the Decode() pipeline that combines voiced + unvoiced
+  into 160-sample PCM per frame.
 - **DVSI USB-3000 / AMBE-3003 hardware backend.** A `Vocoder`
   factory that opens a connected DVSI USB chip. Same plug-in shape
   as `internal/voice/mbelib`; the daemon picks the factory by name
