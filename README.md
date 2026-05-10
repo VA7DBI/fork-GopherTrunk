@@ -272,6 +272,32 @@ to its own package and lands independently.
   factory that opens a connected DVSI USB chip. Same plug-in shape
   as `internal/voice/ambe2`; the daemon picks the factory by name
   from `voice.DefaultRegistry`.
+- **Pure-Go RTL-SDR driver.** A `CGO_ENABLED=0` replacement for
+  the `librtlsdr` + `libusb-1.0` C dependency, mirroring the
+  mbelib → pure-Go IMBE/AMBE+2 migration. The driver layers a
+  platform USB transport (`internal/sdr/rtlsdr/usb/` — Linux
+  USBDEVFS ioctls on `/dev/bus/usb/BBB/DDD`, Windows WinUSB via
+  lazy-loaded DLL, macOS IOKit via `purego`) under a pure-Go
+  RTL2832U register / I2C layer and per-tuner drivers (R820T,
+  R820T2, R828D, E4000, FC0012, FC0013, FC2580). The
+  `sdr.Device` interface and IQ-format conversion at
+  `internal/sdr/rtlsdr/rtlsdr_cgo.go:225-240` are preserved
+  bit-identically so the DSP chain is untouched. Status: PR-01
+  landed — `internal/sdr/rtlsdr/usb/` exposes the `Transport` +
+  `Enumerator` interfaces, a record/replay `MockTransport` for
+  unit tests, and the Linux USBDEVFS backend (ioctl encoding,
+  sysfs enumeration with VID/PID filtering, vendor-IN/OUT control
+  transfers, 32-deep URB ring on the bulk-IN endpoint with a
+  dedicated reaper goroutine, claim/release/reset/close
+  lifecycle); non-Linux platforms compile with a clear
+  `ErrUnsupportedPlatform` stub. PRs 02-10 land the Windows
+  WinUSB backend, the macOS stub + IOKit follow-up, the
+  RTL2832U register/I2C layer, the R820T2 tuner, the wire-up
+  under the alternate driver name `rtlsdr-go`, the remaining
+  five tuners, the default flip, and the deletion of
+  `rtlsdr_cgo.go` + every `librtlsdr` apt / MSYS2 / DLL-bundling
+  step in `Dockerfile`, `.github/workflows/*.yml`,
+  `installer/gophertrunk.iss`, and the install docs.
 - **YSF Trellis decode + grant emission.** Sync, frame layout, and
   the post-FEC FICH bit-level parser are in; what's left is the
   K=5 ½-rate Viterbi Trellis decoder over the on-air 100-bit FICH
@@ -366,7 +392,8 @@ tests.
 ```
 cmd/gophertrunk/        daemon entrypoint + sdr list CLI + read-only TUI
 internal/tui/           bubbletea TUI: 8 read-only panels over REST+SSE
-internal/sdr/           Driver interface, pool, CGO librtlsdr, mock
+internal/sdr/           Driver interface, pool, CGO librtlsdr (→ pure-Go), mock
+internal/sdr/rtlsdr/usb/ Pure-Go USB transport: Linux USBDEVFS, mock
 internal/dsp/           Channelizer, filters, demods, sync, FFT
 internal/radio/         framing/ + p25/phase1/ + dmr/ + nxdn/
 internal/trunking/      System, talkgroup DB, priority, engine, CC hunter
