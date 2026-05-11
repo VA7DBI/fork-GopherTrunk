@@ -199,6 +199,45 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **`ccdecoder` connector threads the remaining per-protocol
+  FEC opt-ins from per-system config.** Closes out the
+  connector-side FEC wiring for every protocol whose
+  ControlChannel exposes a tunable on-air FEC layer. Same
+  pattern as PRs #141 (TETRA channel coding) and #142 (LTR
+  FCS + Manchester) — operators set one YAML key per
+  protocol and the matching pipeline factory turns the FEC
+  layer on automatically:
+    - `p25_phase2_trellis_mode: on` → `SetTrellisMode(TrellisOn)`
+      on the 4-state ½-rate trellis decoder over P25 Phase 2
+      MAC PDUs (146 channel dibits → 72 info dibits per
+      TIA-102.AABF).
+    - `nxdn_viterbi_mode: on` → `SetViterbiMode(ViterbiOn)`
+      on the K=5 ½-rate Viterbi decoder over the NXDN CAC
+      region (92 dibits → 88 info bits + 4 tail zeros per
+      MMDVMHost's NXDNConvolution).
+    - `edacs_bch_mode: on` → `SetBCHMode(BCHOn)` on the
+      BCH(40, 28, 2) decoder over the EDACS CCW (generator
+      0x1539, single/double-bit correction).
+    - `mpt1327_bch_mode: on` → `SetBCHMode(BCHOn)` on the
+      BCH(63, 38) decoder over the MPT 1327 codeword
+      (64-bit on-wire → 38 info bits + 26 parity).
+  Each protocol also gains a `ParseXxxMode` helper +
+  `XxxMode()` accessor mirroring the TETRA / LTR pattern
+  shipped in PR #141 / #142 so tests + observability code
+  can introspect configured state. Empty strings preserve
+  the legacy raw-bit path across all four protocols so
+  existing synthesized-fixture tests stay green. Unknown
+  values warn-log and fall back to the off default rather
+  than failing the retune.
+
+  With this PR, the only connector wiring that remains is
+  protocol-by-protocol on-air interleaver / puncture
+  layers for protocols whose public specs don't fully
+  document them (NXDN CAC interleave / puncture, EDACS
+  CCW interleaved RS-derived FEC layer above the BCH).
+  The plain "lights up live trunked reception" path is now
+  unblocked end-to-end across every protocol whose CC
+  state machine + FEC chain has a public reference.
 - **`ccdecoder` connector threads LTR FCS + Manchester modes
   from per-system config.** Same pattern as the TETRA wiring in
   PR #141 — operators set `ltr_fcs_mode` + `ltr_manchester_mode`
