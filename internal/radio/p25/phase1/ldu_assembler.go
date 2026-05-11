@@ -13,6 +13,16 @@ const LDUDibitCount = LDUTotalBits / 2
 // ExtractLSDBlocks to get recorder-ready IMBE frames + metadata.
 type LDUSink func(ldu []byte)
 
+// DibitSink consumes the raw stream of dibits the receiver
+// decodes from IQ, before LDU framing. baseIdx is the absolute
+// dibit index of dibits[0] across the stream lifetime —
+// monotonically non-decreasing across calls, and reset to 0 by
+// Receiver.Reset so a retune produces a fresh baseline. Wire
+// this into ControlChannel.Process (which keeps its own
+// FSW / NID / TSBK pipeline) to drive the control-channel state
+// machine in parallel with — or instead of — the LDU voice path.
+type DibitSink func(dibits []uint8, baseIdx int)
+
 // LDUAssembler is a stateful stream consumer that turns a C4FM
 // dibit stream (post-demodulation, post-symbol-clock-recovery)
 // into complete 1728-bit LDU buffers ready for ExtractVoiceFrames.
