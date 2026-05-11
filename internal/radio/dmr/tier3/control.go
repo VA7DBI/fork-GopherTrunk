@@ -48,6 +48,12 @@ type ControlChannel struct {
 	now        func() time.Time
 	locked     bool
 	last       LockState
+
+	// proc is the cross-call dibit / sync state the Process adapter
+	// uses (see process.go). Lazily constructed on the first
+	// Process call so tests that drive IngestBurst directly don't
+	// pay the construction cost.
+	proc *processState
 }
 
 // Options configure a ControlChannel.

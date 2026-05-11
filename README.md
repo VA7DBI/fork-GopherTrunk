@@ -73,12 +73,14 @@ panel. The honest remaining gaps:
   pending), Motorola Type II / SmartZone (24-bit sync + 32-bit
   OSW only; BCH(64,16,11) FEC pending), LTR (41-bit Status
   alignment + state-machine dedup only; FCS verification +
-  Manchester decoding pending), and MPT 1327 (38-bit codeword
+  Manchester decoding pending), MPT 1327 (38-bit codeword
   alignment with auto-unlock on unrecognised-codeword runs;
-  64-bit on-air BCH(63,38) FEC pending). DMR / P25 P2 / TETRA
-  each have IQ → symbol receivers shipping but their CC state
-  machines still consume pre-parsed PDUs; adding the
-  `Process(stream, baseIdx)` adapter on each (sync detect →
+  64-bit on-air BCH(63,38) FEC pending), and DMR Tier III
+  (multi-pattern 9-sync detect + 132-dibit burst slice +
+  slot-type Hamming(20,8) + BPTC(196,96) → CSBK end-to-end).
+  P25 P2 / TETRA each have IQ → symbol receivers shipping but
+  their CC state machines still consume pre-parsed PDUs; adding
+  the `Process(stream, baseIdx)` adapter on each (sync detect →
   frame slice → existing parser → Ingest) lights up the rest.
   The adapter shape is ~30–50 lines per protocol and documented
   per-receiver in the relevant PR descriptions.
@@ -148,6 +150,20 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **DMR Tier III `ControlChannel.Process(stream, baseIdx)` adapter +
+  ccdecoder factory.** Closes the IQ → CC chain for DMR — the
+  most layered protocol in the family. The receiver's `DibitSink`
+  forwards C4FM dibits into the adapter, which buffers across
+  calls + runs `dmr.SyncDetector` against all 9 ETSI sync words
+  in parallel + slices the 132-dibit burst around each match
+  (49-dibit first half + 5-dibit slot type before + 24-dibit
+  sync + 5-dibit slot type after + 49-dibit second half) +
+  parses the slot-type Hamming(20,8) codeword + hands the
+  `(Burst, SlotType)` pair to the existing `IngestBurst`. From
+  there the dmr/tier3 package's BPTC(196,96) + CSBK CRC chain
+  runs end-to-end — no FEC is bypassed for DMR. The adapter
+  retains a 163-dibit cross-call buffer so bursts that straddle
+  chunk boundaries decode correctly.
 - **MPT 1327 `ControlChannel.Process(stream, baseIdx)` adapter +
   ccdecoder factory.** Closes the IQ → CC alignment layer for
   MPT 1327: the receiver's `BitSink` forwards FFSK bits into

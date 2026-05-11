@@ -4,6 +4,9 @@ import (
 	"log/slog"
 
 	"github.com/MattCheramie/GopherTrunk/internal/events"
+	"github.com/MattCheramie/GopherTrunk/internal/radio/dmr"
+	dmrrx "github.com/MattCheramie/GopherTrunk/internal/radio/dmr/receiver"
+	"github.com/MattCheramie/GopherTrunk/internal/radio/dmr/tier3"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/dpmr"
 	dpmrrx "github.com/MattCheramie/GopherTrunk/internal/radio/dpmr/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/edacs"
@@ -71,6 +74,7 @@ type PipelineFactory func(PipelineOptions) (ProtocolPipeline, error)
 // follow-up.
 var factories = map[trunking.Protocol]PipelineFactory{
 	trunking.ProtocolP25:      newP25Phase1Pipeline,
+	trunking.ProtocolDMR:      newDMRTier3Pipeline,
 	trunking.ProtocolDPMR:     newDPMRPipeline,
 	trunking.ProtocolNXDN:     newNXDNPipeline,
 	trunking.ProtocolEDACS:    newEDACSPipeline,
@@ -172,6 +176,41 @@ type dpmrPipeline struct {
 func (p *dpmrPipeline) Process(iq []complex64) { p.rx.Process(iq) }
 func (p *dpmrPipeline) Reset()                  { p.rx.Reset() }
 func (p *dpmrPipeline) Close() error            { return nil }
+
+// newDMRTier3Pipeline wires internal/radio/dmr/receiver into
+// dmr/tier3.ControlChannel.Process. The receiver's DibitSink
+// forwards dibits into the adapter (multi-pattern sync detect
+// across all 9 ETSI sync words → 132-dibit burst slice →
+// slot-type Hamming(20,8) decode → IngestBurst → BPTC(196,96) →
+// CSBK CRC → cc.locked / grant publication).
+func newDMRTier3Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
+	cc := tier3.New(tier3.Options{
+		Bus:         opts.Bus,
+		Log:         opts.Log,
+		SystemName:  opts.SystemName,
+		FrequencyHz: opts.FrequencyHz,
+	})
+	rx := dmrrx.New(dmrrx.Options{
+		SampleRateHz: opts.SampleRateHz,
+		DibitSink: func(dibits []uint8, baseIdx int) {
+			cc.Process(dibits, baseIdx)
+		},
+	})
+	return &dmrPipeline{rx: rx, cc: cc}, nil
+}
+
+type dmrPipeline struct {
+	rx *dmrrx.Receiver
+	cc *tier3.ControlChannel
+}
+
+// dmrPipeline holds dmr import alive for the package-level
+// import-grouping rule; the underlying Receiver type is in dmrrx.
+var _ = dmr.BurstDibits
+
+func (p *dmrPipeline) Process(iq []complex64) { p.rx.Process(iq) }
+func (p *dmrPipeline) Reset()                  { p.rx.Reset() }
+func (p *dmrPipeline) Close() error            { return nil }
 
 // newNXDNPipeline wires internal/radio/nxdn/receiver into
 // nxdn.ControlChannel.Process. The receiver's DibitSink forwards
