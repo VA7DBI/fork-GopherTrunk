@@ -95,10 +95,14 @@ The remaining gaps:
   single-bit correction; the 10-bit Op field that the spec
   carries between Ident and Function isn't modelled by the
   Codeword struct yet (the wiring extracts the 38 info bits
-  the existing struct cares about and drops Op). The remaining
-  protocols (EDACS, TETRA, LTR FCS) still have their
-  per-protocol FEC layers pending — see each adapter PR for
-  the specific FEC parameters.
+  the existing struct cares about and drops Op). **EDACS** has
+  a `framing.BCHEncodeEDACS` / `BCHDecodeEDACS` primitive in
+  `internal/radio/framing/bch_edacs.go` (BCH(40, 28, 2),
+  generator 0x1539, parameters from lwvmobile/edacs-fm's
+  bch3.h); wiring it into the EDACS adapter is the documented
+  follow-up. **TETRA** still has its RCPC + RM(1,5) channel
+  coding pending — needs ETSI EN 300 392-2 §8.2 to source the
+  generator polynomials + puncturing patterns.
 - **Symbol-time clock recovery on complex IQ.** The Gardner
   timing-recovery primitive in `internal/dsp/sync/gardner.go`
   is now threaded into both the **P25 Phase 2** and **TETRA**
@@ -176,6 +180,29 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **EDACS BCH(40, 28, 2) primitive in framing/.** New shared
+  `framing/bch_edacs.go` adds `BCHEncodeEDACS` /
+  `BCHDecodeEDACS` for the EDACS Standard control-channel word
+  check. Parameters confirmed from lwvmobile/edacs-fm's
+  `bch3.h` (the most-cited public reference for EDACS channel
+  coding): shortened BCH(40, 28, 2) derived from BCH(63, 51, 2)
+  over GF(2^6) with primitive polynomial x^6 + x + 1.
+  Generator polynomial `g(x) = m₁(x) · m₃(x) = x^12 + x^10 +
+  x^8 + x^5 + x^4 + x^3 + 1 = 0x1539`, designed minimum
+  distance d = 5, corrects up to t = 2 bit errors per
+  codeword. The decoder precomputes a 40-entry single-bit-
+  error syndrome table at package init, then handles
+  single-bit corrections via direct lookup and double-bit
+  corrections by iterating the 780 ordered pairs. Tests cover
+  round-trip cleanly across constants + 1024 random info
+  values, single-bit correction across all 40 positions,
+  double-bit correction across all (40 choose 2) = 780 pairs,
+  triple-bit error rejection (> 95% detected / mis-corrected),
+  syndrome-table uniqueness + bit-width sanity, and
+  encoded-codeword self-syndrome zero check. Not yet wired
+  into the EDACS `ControlChannel` adapter; the existing 40-bit
+  CCW struct needs cross-checking against this layout —
+  documented follow-up.
 - **LTR Standard CRC-7 primitive in framing/.** New shared
   `framing/crc_ltr.go` adds `CRC7LTR` / `VerifyCRC7LTR` for
   the LTR Standard message check (polynomial 0xFD, initial
