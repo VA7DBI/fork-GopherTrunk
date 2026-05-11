@@ -116,12 +116,17 @@ func (c *ControlChannel) tryIngestFrame(frame []uint8) {
 	if len(cacBytes) < 11 {
 		return
 	}
-	cac, _ := ParseCAC(cacBytes[:11])
-	// CRC mismatch is non-fatal — IngestFrame will simply not
-	// publish cc.locked unless the message type is one it
-	// recognises (RCCHSITEINFO / RCCHCCH). For real-air signals
-	// the CAC FEC layer (a documented follow-up) is required to
-	// pull valid info bits out of the 288-wire-bit Info field.
+	cac, err := ParseCAC(cacBytes[:11])
+	if err != nil {
+		// CRC-CCITT-16 mismatch — drop the frame. The Process
+		// adapter doesn't yet reverse the Viterbi + interleaver
+		// + puncture chain that the CAC FEC layer applies to
+		// the 288-wire-bit Info field, so on real on-air
+		// signals the CRC will almost always fail and this
+		// path silently skips. On test fixtures + clean
+		// fixtures the CRC validates and IngestFrame runs.
+		return
+	}
 	c.IngestFrame(lich, &cac)
 }
 

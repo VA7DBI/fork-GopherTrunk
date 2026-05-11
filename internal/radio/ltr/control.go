@@ -44,6 +44,11 @@ type ControlChannel struct {
 	// (see process.go). Lazily constructed on the first Process call.
 	proc *processState
 
+	// manchesterMode controls Manchester decoding of the input
+	// bit stream — set via SetManchesterMode. Default
+	// ManchesterOff treats the stream as raw NRZ.
+	manchesterMode ManchesterDecodeMode
+
 	mu     sync.Mutex
 	locked bool
 	last   LockState

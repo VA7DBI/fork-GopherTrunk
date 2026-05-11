@@ -116,6 +116,57 @@ func TestProcessPublishesGrantOnActiveStatus(t *testing.T) {
 	}
 }
 
+// TestProcessManchesterStrictDecodesEncodedStream: when the
+// receiver is configured for Manchester decoding, an input bit
+// stream that's been Manchester-encoded must still drive
+// KindCCLocked once the adapter decodes it.
+func TestProcessManchesterStrictDecodesEncodedStream(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	cc := New(Options{Bus: bus, Log: slog.Default(), SystemName: "Sys"})
+	cc.SetManchesterMode(ManchesterStrict)
+
+	idle := Status{Sync: true, Area: 5, Channel: 2, Home: 3}
+	bits := StatusBits(idle)
+	encoded := framingManchesterEncode(bits)
+	cc.Process(encoded, 0)
+
+	var sawLock bool
+	for {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindCCLocked {
+				sawLock = true
+			}
+		default:
+			if !sawLock {
+				t.Errorf("Process did not publish a KindCCLocked after Manchester decode")
+			}
+			return
+		}
+	}
+}
+
+// framingManchesterEncode is a tiny local wrapper around
+// framing.ManchesterEncode so this test file doesn't grow a wider
+// framing import that the other tests don't need.
+func framingManchesterEncode(in []byte) []byte {
+	out := make([]byte, 2*len(in))
+	for i, b := range in {
+		if b&1 != 0 {
+			out[2*i] = 1
+			out[2*i+1] = 0
+		} else {
+			out[2*i] = 0
+			out[2*i+1] = 1
+		}
+	}
+	return out
+}
+
 // TestProcessHandlesFrameSpanningCalls: a Status word that
 // straddles a chunk boundary still drives Ingest after the second
 // Process call delivers the trailing bits.

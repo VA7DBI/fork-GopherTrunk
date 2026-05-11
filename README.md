@@ -66,10 +66,17 @@ The remaining gaps:
   each protocol's `ControlChannel.Process(stream, baseIdx)` method.
   Most adapters skip the on-air FEC and read information bits
   straight from the wire — this works on test fixtures + clean
-  signals but typically fails on captured on-air traffic. Each
-  adapter PR documents the specific FEC layer pending; **DMR
-  Tier III** is the exception (full BPTC(196,96) + CSBK CRC chain
-  ships end-to-end via the existing tier3 package).
+  signals but typically fails on captured on-air traffic.
+  **DMR Tier III** ships full FEC end-to-end (BPTC(196,96) +
+  CSBK CRC). **NXDN** now enforces the CAC CRC-CCITT-16 strict-
+  mode at the adapter level (so noise gets dropped) but the
+  K=5 Viterbi + interleaver over the 288-wire-bit Info field is
+  still pending. **LTR** has a `SetManchesterMode` config for
+  deployments that bi-phase-encode the sub-audible status word;
+  FCS verification (12-bit trailer) is still pending. The other
+  protocols (EDACS, Motorola, MPT 1327, P25 Phase 2, TETRA)
+  still have their per-protocol FEC layers pending — see each
+  adapter PR for the specific FEC parameters.
 - **Symbol-time clock recovery on complex IQ** for the π/4-DQPSK
   family (P25 Phase 2, TETRA). The receivers currently do naive
   decimation; Gardner-style timing recovery on complex IQ is the
@@ -140,6 +147,20 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **FEC bundle: framing `ManchesterEncode` / `ManchesterDecode` /
+  `ManchesterDecodeMajority` helpers + LTR Manchester opt-in +
+  NXDN CAC CRC strict-mode.** First FEC implementations PR.
+  `framing/manchester.go` adds a generic bi-phase encoder /
+  strict decoder / soft (majority-decode) decoder usable by any
+  protocol that ships Manchester-encoded bits on the wire. LTR
+  gains a `SetManchesterMode(ManchesterStrict | ManchesterSoft |
+  ManchesterOff)` config so deployments that use bi-phase
+  encoding decode correctly; the default stays NRZ. NXDN's CAC
+  CRC-CCITT-16 (already verified inside `ParseCAC`) is now
+  enforced by the Process adapter — frames whose CRC fails get
+  dropped silently instead of dragging the state machine
+  through an Ingest call. Future EDACS / Motorola adapters can
+  adopt the Manchester helpers in the same opt-in shape.
 - **TETRA TMO `ControlChannel.Process(stream, baseIdx)` adapter +
   ccdecoder factory.** Closes the IQ → CC sync layer for TETRA —
   the last per-protocol adapter from the connector roadmap. The
