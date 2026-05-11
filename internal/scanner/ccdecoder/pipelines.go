@@ -21,6 +21,8 @@ import (
 	nxdnrx "github.com/MattCheramie/GopherTrunk/internal/radio/nxdn/receiver"
 	p25phase1 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
 	p25phase1rx "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1/receiver"
+	p25phase2 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase2"
+	p25phase2rx "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase2/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/ysf"
 	ysfrx "github.com/MattCheramie/GopherTrunk/internal/radio/ysf/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
@@ -73,14 +75,15 @@ type PipelineFactory func(PipelineOptions) (ProtocolPipeline, error)
 // detect sync + frame + dispatch into the existing parsers is a
 // follow-up.
 var factories = map[trunking.Protocol]PipelineFactory{
-	trunking.ProtocolP25:      newP25Phase1Pipeline,
-	trunking.ProtocolDMR:      newDMRTier3Pipeline,
-	trunking.ProtocolDPMR:     newDPMRPipeline,
-	trunking.ProtocolNXDN:     newNXDNPipeline,
-	trunking.ProtocolEDACS:    newEDACSPipeline,
-	trunking.ProtocolMotorola: newMotorolaPipeline,
-	trunking.ProtocolLTR:      newLTRPipeline,
-	trunking.ProtocolMPT1327:  newMPT1327Pipeline,
+	trunking.ProtocolP25:       newP25Phase1Pipeline,
+	trunking.ProtocolP25Phase2: newP25Phase2Pipeline,
+	trunking.ProtocolDMR:       newDMRTier3Pipeline,
+	trunking.ProtocolDPMR:      newDPMRPipeline,
+	trunking.ProtocolNXDN:      newNXDNPipeline,
+	trunking.ProtocolEDACS:     newEDACSPipeline,
+	trunking.ProtocolMotorola:  newMotorolaPipeline,
+	trunking.ProtocolLTR:       newLTRPipeline,
+	trunking.ProtocolMPT1327:   newMPT1327Pipeline,
 }
 
 // newP25Phase1Pipeline wires the existing
@@ -114,6 +117,40 @@ type p25Phase1Pipeline struct {
 func (p *p25Phase1Pipeline) Process(iq []complex64) { p.rx.Process(iq) }
 func (p *p25Phase1Pipeline) Reset()                  { p.rx.Reset() }
 func (p *p25Phase1Pipeline) Close() error            { return nil }
+
+// newP25Phase2Pipeline wires internal/radio/p25/phase2/receiver into
+// p25phase2.ControlChannel.Process. The receiver's DibitSink forwards
+// H-DQPSK dibits into the state machine (20-dibit outbound sync
+// detect → 72-dibit MAC PDU slice → ParseMACPDU → Ingest), which
+// publishes cc.locked on the first non-idle MAC PDU and grants on
+// GroupVoiceChannelGrant variants. Trellis FEC + slot-type
+// extraction across the full 180-dibit subframe are follow-ups;
+// without them the adapter works on test fixtures but typically
+// fails to lock on captured Phase 2 traffic.
+func newP25Phase2Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
+	cc := p25phase2.New(p25phase2.Options{
+		Bus:         opts.Bus,
+		Log:         opts.Log,
+		SystemName:  opts.SystemName,
+		FrequencyHz: opts.FrequencyHz,
+	})
+	rx := p25phase2rx.New(p25phase2rx.Options{
+		SampleRateHz: opts.SampleRateHz,
+		DibitSink: func(dibits []uint8, baseIdx int) {
+			cc.Process(dibits, baseIdx)
+		},
+	})
+	return &p25Phase2Pipeline{rx: rx, cc: cc}, nil
+}
+
+type p25Phase2Pipeline struct {
+	rx *p25phase2rx.Receiver
+	cc *p25phase2.ControlChannel
+}
+
+func (p *p25Phase2Pipeline) Process(iq []complex64) { p.rx.Process(iq) }
+func (p *p25Phase2Pipeline) Reset()                  { p.rx.Reset() }
+func (p *p25Phase2Pipeline) Close() error            { return nil }
 
 // newYSFPipeline wires the existing internal/radio/ysf/receiver
 // into ysf.ControlChannel.Process. YSF lacks a published
