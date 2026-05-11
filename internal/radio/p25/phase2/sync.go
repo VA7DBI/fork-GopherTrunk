@@ -1,5 +1,16 @@
 package phase2
 
+// DibitSink consumes the raw stream of dibits a Phase 2 receiver
+// decodes from IQ. baseIdx is the absolute dibit index of dibits[0]
+// across the stream lifetime — monotonically non-decreasing across
+// calls, and reset to 0 by Receiver.Reset so a retune produces a
+// fresh baseline. Phase 2 is dibit-oriented (H-DQPSK, 6000 sym/s,
+// 1 dibit per symbol). Wire this into a future
+// ControlChannel.Process adapter (20-dibit sync detect → MAC PDU
+// slice → MAC opcode dispatch) so the connector can drive the
+// Phase 2 CC state machine on live IQ.
+type DibitSink func(dibits []uint8, baseIdx int)
+
 // Phase 2 sync words per TIA-102.BBAB §6. Outbound (BS → MS) and
 // inbound (MS → BS) carry distinct patterns so a receiver can lock
 // onto the appropriate side of the link. Stored as the canonical
