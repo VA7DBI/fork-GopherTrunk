@@ -16,6 +16,14 @@
 // repeaters that operators want to see in the active-systems UI.
 package ysf
 
+// DibitSink consumes the raw stream of dibits a YSF receiver decodes
+// from IQ. baseIdx is the absolute dibit index of dibits[0] across
+// the stream lifetime — monotonically non-decreasing across calls,
+// and reset to 0 by Receiver.Reset so a retune produces a fresh
+// baseline. Wire this into ControlChannel.Process to drive the YSF
+// sync detector + state machine.
+type DibitSink func(dibits []uint8, baseIdx int)
+
 // FSW is the 40-bit Frame Sync Word that opens every YSF frame. The
 // pattern is fixed by the Yaesu specification and matches what every
 // open-source decoder (DSDcc, MMDVMHost, OP25) uses on-air.
