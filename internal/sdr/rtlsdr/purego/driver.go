@@ -11,9 +11,12 @@ import (
 )
 
 // DriverName is the [sdr.Driver.Name] this backend registers under.
-// Distinct from "rtlsdr" so the pure-Go and CGO drivers can coexist
-// during the transition (PR-08 will swap names).
-const DriverName = "rtlsdr-go"
+// PR-08 flipped this from "rtlsdr-go" to "rtlsdr" so the pure-Go
+// path is the default for downstream consumers (config files,
+// `gophertrunk sdr list` output, Prometheus labels). The CGO driver
+// — when explicitly enabled via -tags rtlsdr_cgo — now registers as
+// "rtlsdr-cgo" instead. PR-09 deletes the CGO file entirely.
+const DriverName = "rtlsdr"
 
 // Driver implements [sdr.Driver]. The optional Enumerator field lets
 // tests inject a [usb.MockEnumerator]; production code leaves it nil
@@ -34,7 +37,8 @@ func New(e usb.Enumerator) *Driver {
 	return &Driver{Enumerator: e}
 }
 
-// Name returns "rtlsdr-go".
+// Name returns "rtlsdr" — the canonical name the SDR registry
+// exposes this driver under as of PR-08.
 func (d *Driver) Name() string { return DriverName }
 
 func (d *Driver) enumerator() usb.Enumerator {
@@ -56,7 +60,7 @@ func (d *Driver) enumerator() usb.Enumerator {
 func (d *Driver) Enumerate() ([]sdr.Info, error) {
 	all, err := d.enumerator().List(0, 0)
 	if err != nil {
-		return nil, fmt.Errorf("rtlsdr-go: enumerate: %w", err)
+		return nil, fmt.Errorf("rtlsdr: enumerate: %w", err)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -105,14 +109,14 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 	d.mu.Lock()
 	if idx < 0 || idx >= len(d.detectCache) {
 		d.mu.Unlock()
-		return nil, fmt.Errorf("rtlsdr-go: index %d out of range (cache size %d; call Enumerate first)", idx, len(d.detectCache))
+		return nil, fmt.Errorf("rtlsdr: index %d out of range (cache size %d; call Enumerate first)", idx, len(d.detectCache))
 	}
 	desc := d.detectCache[idx]
 	d.mu.Unlock()
 
 	transport, err := d.enumerator().Open(desc)
 	if err != nil {
-		return nil, fmt.Errorf("rtlsdr-go: open USB %s: %w", desc.Path, err)
+		return nil, fmt.Errorf("rtlsdr: open USB %s: %w", desc.Path, err)
 	}
 
 	dev, err := openDevice(transport, desc, idx)
@@ -129,23 +133,23 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 // through the enumerator.
 func openDevice(transport usb.Transport, desc usb.Descriptor, idx int) (*Device, error) {
 	if err := transport.ClaimInterface(0); err != nil {
-		return nil, fmt.Errorf("rtlsdr-go: claim interface 0: %w", err)
+		return nil, fmt.Errorf("rtlsdr: claim interface 0: %w", err)
 	}
 
 	demod := rtl2832u.New(transport)
 	if err := demod.InitBaseband(); err != nil {
-		return nil, fmt.Errorf("rtlsdr-go: init baseband: %w", err)
+		return nil, fmt.Errorf("rtlsdr: init baseband: %w", err)
 	}
 
 	tuner, err := tuners.Detect(demod)
 	if err != nil {
-		return nil, fmt.Errorf("rtlsdr-go: tuner detect: %w", err)
+		return nil, fmt.Errorf("rtlsdr: tuner detect: %w", err)
 	}
 	if err := tuner.Init(); err != nil {
-		return nil, fmt.Errorf("rtlsdr-go: tuner init: %w", err)
+		return nil, fmt.Errorf("rtlsdr: tuner init: %w", err)
 	}
 	if err := demod.SetIFFreq(tuner.IFFreqHz()); err != nil {
-		return nil, fmt.Errorf("rtlsdr-go: set IF freq: %w", err)
+		return nil, fmt.Errorf("rtlsdr: set IF freq: %w", err)
 	}
 
 	kd := lookupKnown(desc.VID, desc.PID)

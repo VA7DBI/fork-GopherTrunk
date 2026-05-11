@@ -47,10 +47,10 @@ func (d *Device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 		return nil, ErrClosed
 	}
 	if d.out != nil {
-		return nil, errors.New("rtlsdr-go: stream already active")
+		return nil, errors.New("rtlsdr: stream already active")
 	}
 	if err := d.demod.ResetBuffer(); err != nil {
-		return nil, fmt.Errorf("rtlsdr-go: reset buffer: %w", err)
+		return nil, fmt.Errorf("rtlsdr: reset buffer: %w", err)
 	}
 	out := make(chan []complex64, streamChanDepth)
 	d.out = out
@@ -58,7 +58,7 @@ func (d *Device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 
 	if err := d.transport.StartBulkIn(bulkInEndpoint, asyncBufCount, asyncBufLen, d.deliver); err != nil {
 		d.out = nil
-		return nil, fmt.Errorf("rtlsdr-go: StartBulkIn: %w", err)
+		return nil, fmt.Errorf("rtlsdr: StartBulkIn: %w", err)
 	}
 
 	// Cancel goroutine: when ctx fires, tear the stream down. Mirrors

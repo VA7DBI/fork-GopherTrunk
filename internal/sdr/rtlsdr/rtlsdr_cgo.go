@@ -1,6 +1,17 @@
+//go:build rtlsdr_cgo
+
 // Package rtlsdr is a thin CGO binding to librtlsdr. It exposes the subset
 // of the C API required by GopherTrunk: enumeration, tuning, sample rate,
 // gain, PPM, and an async read loop bridged to a Go channel of complex64.
+//
+// PR-08 of the librtlsdr → pure-Go rewrite gated this file behind the
+// `rtlsdr_cgo` build tag and renamed its registration name to
+// "rtlsdr-cgo". The pure-Go driver in internal/sdr/rtlsdr/purego now
+// claims the default "rtlsdr" name. Operators who hit a regression in
+// the pure-Go path can rebuild with `-tags rtlsdr_cgo` (and
+// CGO_ENABLED=1 + librtlsdr-dev installed) to expose the C-backed
+// driver alongside, then select it via config or by serial. PR-09
+// deletes this file entirely.
 //
 // The build links against -lrtlsdr and requires librtlsdr-dev headers on
 // the build host. Runtime needs udev rules granting USB access (see
@@ -36,7 +47,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 )
 
-const driverName = "rtlsdr"
+const driverName = "rtlsdr-cgo"
 
 // Default async-buffer geometry. 32 buffers × 16 KiB → ~6 ms at 2.4 MS/s.
 const (

@@ -1,17 +1,16 @@
-//go:build rtlsdr_purego
-
 package purego
 
 import "github.com/MattCheramie/GopherTrunk/internal/sdr"
 
 // init registers the pure-Go RTL-SDR driver with the global SDR
-// registry. Gated by the rtlsdr_purego build tag so the CGO and
-// pure-Go drivers can coexist during the rewrite (PR-08 will swap
-// names; PR-09 will remove the CGO wrapper entirely).
+// registry under the canonical name "rtlsdr". PR-08 made this the
+// default (dropped the rtlsdr_purego build tag introduced in PR-06).
 //
-// Default builds (no -tags rtlsdr_purego) skip this file, leaving
-// the package importable but inert — the blank import in
-// cmd/gophertrunk/main.go is then a compile-time no-op for SDR
-// registration. Existing CGO builds keep registering as "rtlsdr"
-// from internal/sdr/rtlsdr/rtlsdr_cgo.go.
+// The existing CGO librtlsdr backend continues to compile during one
+// release of safety-net coexistence — with -tags rtlsdr_cgo it
+// registers under "rtlsdr-cgo" alongside the pure-Go entry, so
+// operators who hit a regression can fall back to the C library
+// without rolling back the binary. PR-09 deletes that path
+// entirely along with every `librtlsdr` apt / MSYS2 / DLL-bundling
+// step in the build system.
 func init() { sdr.Register(&Driver{}) }

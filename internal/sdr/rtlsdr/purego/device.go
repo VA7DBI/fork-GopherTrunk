@@ -21,7 +21,7 @@ import (
 const biasTeeGPIO uint8 = 0
 
 // ErrClosed is returned by [Device] methods invoked after [Device.Close].
-var ErrClosed = errors.New("rtlsdr-go: device closed")
+var ErrClosed = errors.New("rtlsdr: device closed")
 
 // Device implements [sdr.Device] for the pure-Go backend. It composes
 // the platform USB transport, the RTL2832U register layer, and the
@@ -54,7 +54,7 @@ func (d *Device) SetCenterFreq(hz uint32) error {
 		return ErrClosed
 	}
 	if err := d.tuner.SetFreq(hz); err != nil {
-		return fmt.Errorf("rtlsdr-go: SetCenterFreq(%d): %w", hz, err)
+		return fmt.Errorf("rtlsdr: SetCenterFreq(%d): %w", hz, err)
 	}
 	if r, ok := d.tuner.(interface{ SettleAfterRetune() }); ok {
 		r.SettleAfterRetune()
@@ -73,10 +73,10 @@ func (d *Device) SetSampleRate(hz uint32) error {
 	}
 	actual, err := d.demod.SetSampleRate(hz)
 	if err != nil {
-		return fmt.Errorf("rtlsdr-go: SetSampleRate(%d): %w", hz, err)
+		return fmt.Errorf("rtlsdr: SetSampleRate(%d): %w", hz, err)
 	}
 	if err := d.tuner.SetBandwidth(actual); err != nil {
-		return fmt.Errorf("rtlsdr-go: tuner bandwidth: %w", err)
+		return fmt.Errorf("rtlsdr: tuner bandwidth: %w", err)
 	}
 	return nil
 }
@@ -91,15 +91,15 @@ func (d *Device) SetGain(tenthDB int) error {
 	}
 	if tenthDB < 0 {
 		if err := d.tuner.SetGainMode(false); err != nil {
-			return fmt.Errorf("rtlsdr-go: SetGain auto: %w", err)
+			return fmt.Errorf("rtlsdr: SetGain auto: %w", err)
 		}
 		return nil
 	}
 	if err := d.tuner.SetGainMode(true); err != nil {
-		return fmt.Errorf("rtlsdr-go: SetGain manual mode: %w", err)
+		return fmt.Errorf("rtlsdr: SetGain manual mode: %w", err)
 	}
 	if err := d.tuner.SetGain(tenthDB); err != nil {
-		return fmt.Errorf("rtlsdr-go: SetGain(%d tenthDB): %w", tenthDB, err)
+		return fmt.Errorf("rtlsdr: SetGain(%d tenthDB): %w", tenthDB, err)
 	}
 	return nil
 }
@@ -111,7 +111,7 @@ func (d *Device) SetPPM(ppm int) error {
 		return ErrClosed
 	}
 	if err := d.demod.SetSampleFreqCorrection(ppm); err != nil {
-		return fmt.Errorf("rtlsdr-go: SetPPM(%d): %w", ppm, err)
+		return fmt.Errorf("rtlsdr: SetPPM(%d): %w", ppm, err)
 	}
 	return nil
 }
@@ -126,7 +126,7 @@ func (d *Device) SetBiasTee(enable bool) error {
 		return ErrClosed
 	}
 	if err := d.demod.SetBiasTee(biasTeeGPIO, enable); err != nil {
-		return fmt.Errorf("rtlsdr-go: SetBiasTee(%v): %w", enable, err)
+		return fmt.Errorf("rtlsdr: SetBiasTee(%v): %w", enable, err)
 	}
 	return nil
 }
@@ -141,16 +141,16 @@ func (d *Device) Close() error {
 	var firstErr error
 	if d.tuner != nil {
 		if err := d.tuner.Standby(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("rtlsdr-go: tuner standby: %w", err)
+			firstErr = fmt.Errorf("rtlsdr: tuner standby: %w", err)
 		}
 	}
 	if d.demod != nil {
 		if err := d.demod.DeinitBaseband(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("rtlsdr-go: demod deinit: %w", err)
+			firstErr = fmt.Errorf("rtlsdr: demod deinit: %w", err)
 		}
 	}
 	if err := d.transport.Close(); err != nil && firstErr == nil {
-		firstErr = fmt.Errorf("rtlsdr-go: transport close: %w", err)
+		firstErr = fmt.Errorf("rtlsdr: transport close: %w", err)
 	}
 	return firstErr
 }
