@@ -53,23 +53,24 @@ import (
 	"unsafe"
 )
 
-func init() {
-	if err := loadIOKit(); err != nil {
-		// Stash the error; platformEnumerator returns it from List/Open.
-		darwinLoadErr = err
-	}
-}
-
-// darwinLoadErr captures any failure from loadIOKit so the
-// enumerator can surface it instead of crashing on a nil function
-// pointer. Set once at init; read-only afterwards.
-var darwinLoadErr error
+// IOKit load is lazy: we don't want any framework-resolution glitch
+// to crash the test binary at startup. First call to
+// platformEnumerator runs loadIOKit under sync.Once and stashes the
+// outcome; subsequent calls return the cached result.
+var (
+	darwinLoadOnce sync.Once
+	darwinLoadErr  error
+)
 
 // platformEnumerator returns the IOKit-backed enumerator unless
-// IOKit/CoreFoundation failed to load (extremely unlikely on a
-// real macOS host, but possible on stripped-down test environments
-// or if Apple ever moves the framework).
+// IOKit/CoreFoundation failed to load. The load is performed lazily
+// here (not in init) so the test binary itself starts cleanly even
+// on macOS revisions where purego's Dlopen / fakecgo path
+// misbehaves; the failure surfaces from List/Open instead.
 func platformEnumerator() Enumerator {
+	darwinLoadOnce.Do(func() {
+		darwinLoadErr = loadIOKit()
+	})
 	if darwinLoadErr != nil {
 		return loadFailedEnumerator{err: darwinLoadErr}
 	}

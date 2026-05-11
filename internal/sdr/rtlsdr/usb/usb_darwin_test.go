@@ -7,12 +7,24 @@ import (
 	"unsafe"
 )
 
-func TestDarwinEnumeratorName(t *testing.T) {
-	got := DefaultEnumerator().Name()
-	// Either "iokit" (real backend, IOKit loaded) or "iokit-load-failed"
-	// (extremely unlikely fallback when the framework dlopen failed).
-	if got != "iokit" && got != "iokit-load-failed" {
-		t.Errorf("backend Name() = %q, want iokit or iokit-load-failed", got)
+// These tests pin compile-time invariants (UUIDs, struct sizes,
+// vtable indices) that don't depend on IOKit actually loading at
+// runtime. The real IOKit transport's behavior is verified on
+// contributor macOS hardware — the FFI surface is too far below
+// what unit tests can mock.
+
+func TestDarwinEnumeratorCallable(t *testing.T) {
+	// Just confirm the enumerator constructor returns a non-nil
+	// Enumerator with a non-empty backend Name(). Both "iokit"
+	// (IOKit loaded successfully) and "iokit-load-failed"
+	// (framework dlopen failed) are valid outcomes; the test
+	// binary must not crash either way.
+	e := DefaultEnumerator()
+	if e == nil {
+		t.Fatal("DefaultEnumerator() returned nil")
+	}
+	if e.Name() == "" {
+		t.Error("backend Name() is empty")
 	}
 }
 

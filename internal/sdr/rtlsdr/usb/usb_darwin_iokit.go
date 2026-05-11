@@ -176,10 +176,20 @@ const kCFAllocatorDefault cfAllocatorRef = 0
 const kCFStringEncodingASCII uint32 = 0x0600
 
 // loadIOKit opens IOKit + CoreFoundation and binds the function
-// pointers we use. Called once from init; failure leaves the
-// function pointers nil and platformEnumerator returns a clear
-// error from List/Open.
-func loadIOKit() error {
+// pointers we use. Lazy: called from platformEnumerator on first
+// access via sync.Once so the test binary's startup doesn't crash
+// if IOKit / purego ever misbehave on a given macOS revision —
+// the failure surfaces from List/Open with a clear error instead.
+//
+// purego.RegisterLibFunc panics on missing symbols; we wrap the
+// whole load in a recover so any such panic becomes a returned
+// error.
+func loadIOKit() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("usb: IOKit load panic: %v", r)
+		}
+	}()
 	const (
 		cfPath = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
 		ioPath = "/System/Library/Frameworks/IOKit.framework/IOKit"
