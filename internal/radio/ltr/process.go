@@ -1,5 +1,7 @@
 package ltr
 
+import "github.com/MattCheramie/GopherTrunk/internal/radio/framing"
+
 // processState is the cross-call bit buffering + frame-alignment
 // state the Process adapter holds. Lazily initialised.
 type processState struct {
@@ -14,6 +16,45 @@ type processState struct {
 	// start. Buffer trimming happens after each Process call so
 	// off resets to 0.
 	off int
+}
+
+// ManchesterDecodeMode controls whether the Process adapter
+// Manchester-decodes its input bit stream before frame alignment.
+// Some LTR variants transmit the sub-audible status word in bi-
+// phase / Manchester encoding (each bit doubled, requiring a mid-
+// bit transition); others ship raw NRZ. Operators configure the
+// mode at receiver construction; the default is ManchesterOff
+// since the dominant deployment is NRZ.
+type ManchesterDecodeMode uint8
+
+const (
+	// ManchesterOff treats the BitSink stream as raw NRZ — no
+	// Manchester decoding.
+	ManchesterOff ManchesterDecodeMode = iota
+	// ManchesterStrict requires every bit pair to carry a mid-
+	// bit transition (01 or 10). On any transition-less pair the
+	// adapter drops the current decode buffer + restarts at the
+	// next pair. Useful when the operator is confident the system
+	// uses Manchester so noise-pair detection is a strong filter.
+	ManchesterStrict
+	// ManchesterSoft majority-decodes each bit pair (01 → 0,
+	// 10 → 1, 00 / 11 → first sample) and counts invalid pairs
+	// per chunk. Falls back gracefully on bursts of noise.
+	ManchesterSoft
+)
+
+// SetManchesterMode configures whether the Process adapter
+// Manchester-decodes its input. Call before the first Process
+// call; switching mode mid-stream resets the adapter's buffer.
+func (c *ControlChannel) SetManchesterMode(m ManchesterDecodeMode) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.manchesterMode = m
+	if c.proc != nil {
+		c.proc.buf = c.proc.buf[:0]
+		c.proc.off = 0
+		c.proc.aligned = false
+	}
 }
 
 // statusBits is the on-air length of one LTR Status word (41 bits)
@@ -50,6 +91,25 @@ func (c *ControlChannel) Process(bits []byte, baseIdx int) int {
 		c.proc = &processState{}
 	}
 	p := c.proc
+
+	// Optional Manchester preprocess: each input bit pair decodes
+	// to one frame-level bit. Configure via SetManchesterMode.
+	switch c.manchesterMode {
+	case ManchesterStrict:
+		decoded, err := framing.ManchesterDecode(bits)
+		if err != nil {
+			// Transition-less pair detected — drop the rest of
+			// this chunk + reset alignment so the next call
+			// re-anchors. Partial decode is still pushed so
+			// alignment can pick up at the first good frame.
+			p.aligned = false
+		}
+		bits = decoded
+	case ManchesterSoft:
+		decoded, _ := framing.ManchesterDecodeMajority(bits)
+		bits = decoded
+	}
+
 	p.buf = append(p.buf, bits...)
 
 	for {
