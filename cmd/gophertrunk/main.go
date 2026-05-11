@@ -11,13 +11,17 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/config"
 	gtlog "github.com/MattCheramie/GopherTrunk/internal/log"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
-	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr"
-	// Pure-Go RTL-SDR driver (PR-06). Only its init() fires under
-	// -tags rtlsdr_purego; default builds get a no-op import so the
-	// CGO driver in internal/sdr/rtlsdr/rtlsdr_cgo.go stays the
-	// sole "rtlsdr" registrant. PR-08 will swap which side is
-	// default; PR-09 will delete the CGO file.
+	// Pure-Go RTL-SDR driver. Registers under the canonical name
+	// "rtlsdr" in every build (PR-08 made this the default; PR-06
+	// shipped it behind -tags rtlsdr_purego).
 	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/purego"
+	// Legacy CGO librtlsdr backend. Only compiled with -tags
+	// rtlsdr_cgo (and CGO_ENABLED=1 + librtlsdr-dev on the host);
+	// when present it registers as "rtlsdr-cgo" alongside the
+	// pure-Go entry. PR-09 deletes this path entirely along with
+	// every librtlsdr apt / MSYS2 / DLL-bundling step in the build
+	// system.
+	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr"
 	"github.com/MattCheramie/GopherTrunk/internal/version"
 
 	// Blank import: pulls in the pure-Go IMBE decoder so the daemon

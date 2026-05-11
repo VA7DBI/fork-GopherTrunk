@@ -5,18 +5,12 @@
 // (internal/sdr/rtlsdr/tuners). It is the consumer-facing layer of
 // the librtlsdr → pure-Go rewrite.
 //
-// Registration is gated by the rtlsdr_purego build tag so the driver
-// coexists with the existing CGO librtlsdr backend during the
-// transition. Default builds (no tag) exclude the [init] in
-// register.go, so importing this package is a compile-time no-op
-// for SDR registration. With -tags rtlsdr_purego the driver
-// registers under the name "rtlsdr-go" and the existing CGO driver
-// stays under "rtlsdr"; PR-08 will flip the default and PR-09 will
-// delete the CGO file entirely.
-//
-// All exported types are always defined regardless of build tag so
-// tests and explicit-construction callers (no auto-registration via
-// init) work identically across configurations.
+// As of PR-08 this driver registers under the canonical name
+// "rtlsdr" in every build. The legacy CGO librtlsdr backend
+// (internal/sdr/rtlsdr/rtlsdr_cgo.go) is gated behind the
+// rtlsdr_cgo build tag and, when explicitly enabled, registers as
+// "rtlsdr-cgo" so operators have one release of safety-net
+// coexistence to fall back to before PR-09 deletes the CGO path.
 package purego
 
 // knownDevice is one row of the VID/PID table librtlsdr maintains in

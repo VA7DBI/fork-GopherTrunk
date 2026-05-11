@@ -7,13 +7,16 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/usb"
 )
 
-func TestDriverNameIsRtlsdrGo(t *testing.T) {
+func TestDriverNameIsRtlsdr(t *testing.T) {
+	// PR-08 flipped the default from "rtlsdr-go" to "rtlsdr"; the
+	// CGO backend now registers as "rtlsdr-cgo" when explicitly
+	// enabled via -tags rtlsdr_cgo.
 	d := New(nil)
-	if got, want := d.Name(), "rtlsdr-go"; got != want {
+	if got, want := d.Name(), "rtlsdr"; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
 	}
-	if DriverName != "rtlsdr-go" {
-		t.Errorf("DriverName const = %q, want rtlsdr-go", DriverName)
+	if DriverName != "rtlsdr" {
+		t.Errorf("DriverName const = %q, want rtlsdr", DriverName)
 	}
 }
 
@@ -62,8 +65,8 @@ func TestEnumerate_FiltersToKnownDevices(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("Enumerate returned %d entries, want 2 (HackRF must be filtered)", len(got))
 	}
-	if got[0].Driver != "rtlsdr-go" {
-		t.Errorf("Info.Driver = %q, want rtlsdr-go", got[0].Driver)
+	if got[0].Driver != "rtlsdr" {
+		t.Errorf("Info.Driver = %q, want rtlsdr", got[0].Driver)
 	}
 	if got[0].Index != 0 || got[1].Index != 1 {
 		t.Errorf("indices = (%d, %d), want (0, 1)", got[0].Index, got[1].Index)
