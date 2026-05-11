@@ -74,16 +74,15 @@ panel. The honest remaining gaps:
   OSW only; BCH(64,16,11) FEC pending), LTR (41-bit Status
   alignment + state-machine dedup only; FCS verification +
   Manchester decoding pending), MPT 1327 (38-bit codeword
-  alignment with auto-unlock on unrecognised-codeword runs;
-  64-bit on-air BCH(63,38) FEC pending), and DMR Tier III
-  (multi-pattern 9-sync detect + 132-dibit burst slice +
-  slot-type Hamming(20,8) + BPTC(196,96) → CSBK end-to-end).
-  P25 P2 / TETRA each have IQ → symbol receivers shipping but
-  their CC state machines still consume pre-parsed PDUs; adding
-  the `Process(stream, baseIdx)` adapter on each (sync detect →
-  frame slice → existing parser → Ingest) lights up the rest.
-  The adapter shape is ~30–50 lines per protocol and documented
-  per-receiver in the relevant PR descriptions.
+  alignment with auto-unlock; 64-bit on-air BCH(63,38) FEC
+  pending), DMR Tier III (multi-pattern 9-sync detect +
+  132-dibit burst slice + slot-type Hamming(20,8) + BPTC(196,96)
+  → CSBK end-to-end), and P25 Phase 2 (20-dibit outbound sync +
+  18-byte MAC PDU slice; Trellis FEC + slot-type extraction
+  across the full 180-dibit subframe pending). Only **TETRA**
+  remains: the IQ → symbol receiver ships but its CC state
+  machine still consumes pre-parsed PDUs; the
+  `Process(stream, baseIdx)` adapter is the last piece.
 - **Digital-voice level calibration.** Pure-Go IMBE / AMBE+2 emit
   real audio end-to-end with shared AGC, frame-repeat on bad-frame
   indicator, phase-aware fade-in, and §6.2 spectral enhancement
@@ -150,6 +149,18 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **P25 Phase 2 `ControlChannel.Process(stream, baseIdx)` adapter +
+  ccdecoder factory.** Closes the IQ → CC sync layer for P25
+  Phase 2: the receiver's `DibitSink` forwards H-DQPSK dibits
+  into `phase2.ControlChannel.Process`, which buffers across
+  calls + detects the 20-dibit outbound sync + slices a 72-dibit
+  MAC PDU (1 opcode + 17 payload bytes = 144 bits) + parses it
+  via `ParseMACPDU` + dispatches through the existing `Ingest`.
+  `trunking.Protocol` gains `ProtocolP25Phase2` (config string
+  `"p25-phase2"`). Trellis FEC + slot-type extraction across the
+  full 180-dibit subframe are documented follow-ups; until they
+  land the adapter works on test fixtures but typically fails to
+  lock on captured Phase 2 traffic.
 - **DMR Tier III `ControlChannel.Process(stream, baseIdx)` adapter +
   ccdecoder factory.** Closes the IQ → CC chain for DMR — the
   most layered protocol in the family. The receiver's `DibitSink`

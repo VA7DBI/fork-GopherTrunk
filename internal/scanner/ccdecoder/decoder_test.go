@@ -269,6 +269,23 @@ func TestP25Phase1FactoryConstructs(t *testing.T) {
 	}
 }
 
+func TestP25Phase2FactoryConstructs(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	p, err := newP25Phase2Pipeline(PipelineOptions{
+		Bus: bus, SystemName: "Smoke",
+		FrequencyHz: 851_062_500, SampleRateHz: 48_000,
+	})
+	if err != nil {
+		t.Fatalf("newP25Phase2Pipeline: %v", err)
+	}
+	p.Process(make([]complex64, 4800))
+	p.Reset()
+	if err := p.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
 func TestDMRTier3FactoryConstructs(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()

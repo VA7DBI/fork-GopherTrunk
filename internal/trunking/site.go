@@ -13,15 +13,16 @@ import (
 type Protocol uint8
 
 const (
-	ProtocolUnknown  Protocol = iota
-	ProtocolP25               // P25 Phase 1 / Phase 2
-	ProtocolDMR               // DMR Tier II / III
-	ProtocolNXDN              // NXDN
-	ProtocolDPMR              // dPMR Mode 3 (digital PMR446 trunking)
-	ProtocolEDACS             // EDACS / GE-Marc
-	ProtocolMotorola          // Motorola Type II / SmartZone
-	ProtocolLTR               // Logic Trunked Radio (LTR / LTR-Net)
-	ProtocolMPT1327           // MPT 1327 (UK / Commonwealth utility trunking)
+	ProtocolUnknown   Protocol = iota
+	ProtocolP25                // P25 Phase 1 (config "p25" — Phase 2 uses ProtocolP25Phase2)
+	ProtocolDMR                // DMR Tier II / III
+	ProtocolNXDN               // NXDN
+	ProtocolDPMR               // dPMR Mode 3 (digital PMR446 trunking)
+	ProtocolEDACS              // EDACS / GE-Marc
+	ProtocolMotorola           // Motorola Type II / SmartZone
+	ProtocolLTR                // Logic Trunked Radio (LTR / LTR-Net)
+	ProtocolMPT1327            // MPT 1327 (UK / Commonwealth utility trunking)
+	ProtocolP25Phase2          // P25 Phase 2 (H-DQPSK TDMA, config "p25-phase2")
 )
 
 func (p Protocol) String() string {
@@ -42,13 +43,16 @@ func (p Protocol) String() string {
 		return "ltr"
 	case ProtocolMPT1327:
 		return "mpt1327"
+	case ProtocolP25Phase2:
+		return "p25-phase2"
 	default:
 		return "unknown"
 	}
 }
 
 // ParseProtocol maps a string ("p25", "dmr", "nxdn", "dpmr",
-// "edacs", "motorola", "ltr", "mpt1327") to a Protocol value.
+// "edacs", "motorola", "ltr", "mpt1327", "p25-phase2") to a
+// Protocol value.
 func ParseProtocol(s string) (Protocol, error) {
 	switch strings.ToLower(s) {
 	case "p25":
@@ -67,6 +71,8 @@ func ParseProtocol(s string) (Protocol, error) {
 		return ProtocolLTR, nil
 	case "mpt1327":
 		return ProtocolMPT1327, nil
+	case "p25-phase2", "p25_phase2", "p25p2":
+		return ProtocolP25Phase2, nil
 	default:
 		return ProtocolUnknown, fmt.Errorf("trunking: unknown protocol %q", s)
 	}
@@ -89,7 +95,7 @@ func (s System) Validate() error {
 		return errors.New("trunking: system name is required")
 	}
 	if s.Protocol == ProtocolUnknown {
-		return errors.New("trunking: protocol must be p25|dmr|nxdn|dpmr|edacs|motorola|ltr|mpt1327")
+		return errors.New("trunking: protocol must be p25|p25-phase2|dmr|nxdn|dpmr|edacs|motorola|ltr|mpt1327")
 	}
 	if len(s.ControlChannels) == 0 {
 		return errors.New("trunking: at least one control_channel frequency is required")
