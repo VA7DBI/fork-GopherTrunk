@@ -353,6 +353,153 @@ func TestFFSKConstructorPanicsOnBadParams(t *testing.T) {
 	}
 }
 
+// TestPiOver4DQPSKEncodingMap: walk through the four standard
+// π/4-DQPSK phase deltas and assert the decoder returns the right
+// dibit per the IS-136 / TETRA encoding table:
+//
+//	0b00 → +π/4   0b01 → +3π/4
+//	0b11 → −π/4   0b10 → −3π/4
+//
+// The test bypasses the matched filter (the differential decoder
+// only cares about phase deltas, not pulse shape) and feeds the
+// pre-shaped IQ directly into Decode.
+func TestPiOver4DQPSKEncodingMap(t *testing.T) {
+	encoding := []struct {
+		dibit      uint8
+		deltaPhase float64
+	}{
+		{0b00, math.Pi / 4},
+		{0b01, 3 * math.Pi / 4},
+		{0b10, -3 * math.Pi / 4},
+		{0b11, -math.Pi / 4},
+	}
+
+	for _, tc := range encoding {
+		rx := NewPiOver4DQPSK(4, 4, 0.35, math.Pi/4)
+		// 4 IQ samples at phase 0, then 4 samples at phase 0 + delta.
+		// Decode at sample 4 sees the full phase delta.
+		iq := make([]complex64, 8)
+		for i := 0; i < 4; i++ {
+			iq[i] = complex(1, 0)
+		}
+		for i := 4; i < 8; i++ {
+			iq[i] = complex(
+				float32(math.Cos(tc.deltaPhase)),
+				float32(math.Sin(tc.deltaPhase)),
+			)
+		}
+		decoded := rx.Decode(nil, iq)
+		if decoded[4] != tc.dibit {
+			t.Errorf("dibit %02b → Δphase %f → decoded %02b",
+				tc.dibit, tc.deltaPhase, decoded[4])
+		}
+	}
+}
+
+// TestPiOver4DQPSKMatchedFilterImpulse: after Reset, a single
+// impulse must propagate through the RRC matched filter and peak at
+// the reported group delay sample.
+func TestPiOver4DQPSKMatchedFilterImpulse(t *testing.T) {
+	rx := NewPiOver4DQPSK(4, 4, 0.35, math.Pi/4)
+
+	// Warm up with junk, then Reset.
+	junk := make([]complex64, 32)
+	for i := range junk {
+		junk[i] = complex(0.5, 0.3)
+	}
+	rx.MatchedFilter(nil, junk)
+	rx.Reset()
+
+	impulse := make([]complex64, 64)
+	impulse[0] = complex(1, 0)
+	out := rx.MatchedFilter(nil, impulse)
+
+	delay := rx.Delay()
+	peak := real(out[delay])
+	for i, v := range out {
+		if real(v) > peak {
+			t.Errorf("peak not at delay=%d: out[%d]=%f > out[%d]=%f",
+				delay, i, real(v), delay, peak)
+		}
+	}
+}
+
+// TestPiOver4DQPSKResetClearsDifferential: Reset must restore the
+// differential reference sample to (1, 0). We compare against a
+// freshly-constructed receiver to make sure the post-Reset state
+// matches "as if newly constructed".
+func TestPiOver4DQPSKResetClearsDifferential(t *testing.T) {
+	rx := NewPiOver4DQPSK(4, 4, 0.35, math.Pi/4)
+
+	// Walk the differential reference around to a non-trivial
+	// state by pushing samples at varying phases.
+	rx.Decode(nil, []complex64{
+		complex(0, 1), complex(-1, 0), complex(0, -1),
+	})
+	rx.Reset()
+
+	probe := []complex64{complex(0, 1), complex(-1, 0), complex(0, -1)}
+	gotAfterReset := rx.Decode(nil, probe)
+
+	fresh := NewPiOver4DQPSK(4, 4, 0.35, math.Pi/4)
+	wantFresh := fresh.Decode(nil, probe)
+
+	if len(gotAfterReset) != len(wantFresh) {
+		t.Fatalf("length mismatch: %d vs %d", len(gotAfterReset), len(wantFresh))
+	}
+	for i := range wantFresh {
+		if gotAfterReset[i] != wantFresh[i] {
+			t.Errorf("post-Reset Decode[%d] = %02b, want %02b (fresh)",
+				i, gotAfterReset[i], wantFresh[i])
+		}
+	}
+}
+
+func TestPiOver4DQPSKConstructorPanicsOnBadParams(t *testing.T) {
+	cases := []struct {
+		name      string
+		sps, span int
+		alpha     float64
+	}{
+		{"zero sps", 0, 4, 0.35},
+		{"zero span", 4, 0, 0.35},
+		{"zero alpha", 4, 4, 0},
+		{"negative span", 4, -1, 0.35},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("expected panic")
+				}
+			}()
+			_ = NewPiOver4DQPSK(tc.sps, tc.span, tc.alpha, math.Pi/4)
+		})
+	}
+}
+
+// TestPiOver4DQPSKP25Phase2Rotation: with rotation = π/8 (the P25
+// Phase 2 H-DQPSK offset), a phase delta of +π/4 should land
+// squarely in the rotated 0b00 quadrant.
+func TestPiOver4DQPSKP25Phase2Rotation(t *testing.T) {
+	rx := NewPiOver4DQPSK(4, 4, 0.20, math.Pi/8)
+	iq := make([]complex64, 8)
+	for i := 0; i < 4; i++ {
+		iq[i] = complex(1, 0)
+	}
+	// Phase delta = π/8 lines up exactly with the rotated quadrant
+	// centre (the rotation subtracts π/8 → 0 → 0b00).
+	for i := 4; i < 8; i++ {
+		iq[i] = complex(
+			float32(math.Cos(math.Pi/8)), float32(math.Sin(math.Pi/8)),
+		)
+	}
+	decoded := rx.Decode(nil, iq)
+	if decoded[4] != 0b00 {
+		t.Errorf("π/8-rotated decode of Δphase π/8 = %02b, want 00", decoded[4])
+	}
+}
+
 func TestDQPSKDibitsMatchPhaseSteps(t *testing.T) {
 	d := NewDQPSK()
 	// Build a signal whose phase advances by π/2 per symbol → dibit "01".

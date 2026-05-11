@@ -19,6 +19,11 @@ func NewDQPSK() *DQPSK {
 
 func (d *DQPSK) SetRotation(radians float64) { d.rotation = radians }
 
+// Reset clears the differential reference sample. Call on stream
+// re-sync (control-channel hunt success, IQ underrun recovery) so a
+// stale `last` doesn't bleed across the discontinuity.
+func (d *DQPSK) Reset() { d.last = complex(1, 0) }
+
 // Decode emits one dibit per input sample. Caller should pre-decimate to
 // one-sample-per-symbol via a clock-recovery stage.
 func (d *DQPSK) Decode(dst []uint8, src []complex64) []uint8 {
