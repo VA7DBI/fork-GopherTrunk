@@ -1,24 +1,22 @@
-// Package receiver wires the IQ → C4FM dibit chain that feeds the
-// P25 Phase 1 LDU assembler. It composes primitives that already
-// live in internal/dsp + internal/radio/p25/phase1:
+// Package receiver wires the IQ → C4FM dibit chain that feeds either
+// the P25 Phase 1 LDU assembler (voice path) or the control-channel
+// state machine (CC path) — or both at once. It composes primitives
+// that already live in internal/dsp + internal/radio/p25/phase1:
 //
 //	IQ samples
 //	  → FM discriminator (internal/dsp/demod.FM)
 //	  → RRC matched filter + 4-level slicer (internal/dsp/demod.C4FM)
 //	  → Mueller-Müller symbol clock recovery (internal/dsp/sync.MuellerMuller)
 //	  → C4FM symbol → 0..3 dibit (phase1.SymbolToDibit)
-//	  → LDU assembler (phase1.LDUAssembler)
+//	  → dibit fan-out:
+//	      • Options.DibitSink (raw dibits → phase1.ControlChannel.Process)
+//	      • Options.Sink      (LDU assembler → phase1.LDUSink)
 //
-// The receiver is stateful and not safe for concurrent Process calls.
-// Instantiate one per tuned frequency / per call chain. All primitives
-// it composes own their own internal history, so chunk boundaries do
-// not corrupt the stream.
-//
-// This package closes the last symbol-domain gap in the README's
-// roadmap: the LDU assembler and everything downstream (LDU layout,
-// IMBE channel decoding, recorder integration) was already in place;
-// what was missing was a glue layer that takes captured baseband IQ
-// and produces the dibit stream the assembler consumes.
+// Either sink may be nil; at least one must be set. The receiver is
+// stateful and not safe for concurrent Process calls. Instantiate one
+// per tuned frequency / per call chain. All primitives it composes
+// own their own internal history, so chunk boundaries do not corrupt
+// the stream.
 package receiver
 
 import (
@@ -51,14 +49,22 @@ const (
 //	    SampleRateHz: 48_000,
 //	    Sink: func(ldu []byte) { ... },
 //	})
+//
+// At least one of Sink (voice / LDU path) and DibitSink (control-
+// channel path) must be set; both may be set to drive both paths
+// from one IQ chain.
 type Options struct {
 	// SampleRateHz is the IQ sample rate after any upstream
 	// channelization (e.g. the polyphase channelizer's per-channel
 	// output rate). Required; must be ≥ 2 * SymbolRate.
 	SampleRateHz float64
 	// Sink receives complete 1728-bit LDU buffers ready for
-	// phase1.ExtractVoiceFrames. Required.
+	// phase1.ExtractVoiceFrames. Optional when DibitSink is set.
 	Sink phase1.LDUSink
+	// DibitSink receives the raw dibit stream before LDU framing.
+	// Wire it into phase1.ControlChannel.Process to drive the CC
+	// state machine. Optional when Sink is set.
+	DibitSink phase1.DibitSink
 	// Tolerance is forwarded to the LDU assembler — the maximum
 	// dibit-position mismatch allowed when matching the 24-dibit
 	// FrameSyncWord. <0 uses the assembler's default of 4.
@@ -81,24 +87,26 @@ type Receiver struct {
 	mf        *demod.C4FM
 	clock     *sync.MuellerMuller
 	assembler *phase1.LDUAssembler
+	dibitSink phase1.DibitSink
+	dibitBase int
 
 	// Reusable scratch slices so Process doesn't allocate per call.
-	disc     []float32
-	matched  []float32
-	symbols  []float32
-	sliced   []int8
-	dibits   []uint8
+	disc    []float32
+	matched []float32
+	symbols []float32
+	sliced  []int8
+	dibits  []uint8
 }
 
-// New constructs a Receiver from opts. Panics if SampleRateHz or Sink
-// are unset, or the resulting samples-per-symbol is below 2 (the
-// Mueller-Müller loop's minimum).
+// New constructs a Receiver from opts. Panics if SampleRateHz is
+// unset, neither Sink nor DibitSink is set, or the resulting
+// samples-per-symbol is below 2 (the Mueller-Müller loop's minimum).
 func New(opts Options) *Receiver {
 	if opts.SampleRateHz <= 0 {
 		panic("receiver: SampleRateHz is required")
 	}
-	if opts.Sink == nil {
-		panic("receiver: Sink is required")
+	if opts.Sink == nil && opts.DibitSink == nil {
+		panic("receiver: Sink or DibitSink is required")
 	}
 	sps := opts.SampleRateHz / SymbolRate
 	if sps < 2 {
@@ -124,16 +132,21 @@ func New(opts Options) *Receiver {
 	// the four C4FM levels into a real-valued ramp around zero.
 	const slicerScale = 1.0
 
-	return &Receiver{
+	r := &Receiver{
 		fm:        demod.NewFM(),
 		mf:        demod.NewC4FM(int(sps+0.5), span, alpha, slicerScale),
 		clock:     sync.NewMuellerMuller(sps, gain),
-		assembler: phase1.NewLDUAssembler(opts.Sink, opts.Tolerance),
+		dibitSink: opts.DibitSink,
 	}
+	if opts.Sink != nil {
+		r.assembler = phase1.NewLDUAssembler(opts.Sink, opts.Tolerance)
+	}
+	return r
 }
 
 // Process pushes one chunk of complex64 IQ samples through the chain.
-// Zero or more LDUs may be emitted to the sink during the call,
+// Zero or more LDUs may be emitted to the LDU sink during the call,
+// and zero or more dibit batches may be emitted to the DibitSink,
 // matching the standard "data-driven, callback per complete unit"
 // pattern the rest of the radio packages use.
 func (r *Receiver) Process(iq []complex64) {
@@ -155,14 +168,25 @@ func (r *Receiver) Process(iq []complex64) {
 	for i, sym := range r.sliced {
 		r.dibits[i] = phase1.SymbolToDibit(sym)
 	}
-	r.assembler.Process(r.dibits)
+	if r.dibitSink != nil {
+		r.dibitSink(r.dibits, r.dibitBase)
+		r.dibitBase += len(r.dibits)
+	}
+	if r.assembler != nil {
+		r.assembler.Process(r.dibits)
+	}
 }
 
 // Reset returns the receiver to its initial state. Call on stream
 // re-sync (control-channel hunt success, IQ underrun recovery) so a
-// stale FSW match doesn't bleed across the discontinuity.
+// stale FSW match doesn't bleed across the discontinuity, and so the
+// DibitSink baseIdx restarts at 0 for downstream consumers that
+// track absolute dibit positions.
 func (r *Receiver) Reset() {
-	r.assembler.Reset()
+	if r.assembler != nil {
+		r.assembler.Reset()
+	}
+	r.dibitBase = 0
 	// FM discriminator's `last` is harmless to leave alone — the
 	// next sample it processes will produce one slightly-wrong
 	// derivative, which the matched filter smooths out.

@@ -125,3 +125,140 @@ func TestReceiverResetClearsAssembler(t *testing.T) {
 	r.Reset()
 	r.Process(noise)
 }
+
+// makePhaseRampIQ synthesises a 48 kHz / 10 sps IQ buffer whose
+// instantaneous frequency cycles through the four C4FM symbols. It's
+// the shared fixture for tests that need a clean signal capable of
+// driving the MM loop through Process.
+func makePhaseRampIQ(symbols int) []complex64 {
+	const sampleRate = 48_000.0
+	const sps = 10
+	const deviation = 1800.0
+	radPerSample := func(symbolValue int) float64 {
+		return 2 * math.Pi * float64(symbolValue) * deviation / 3.0 / sampleRate
+	}
+	iq := make([]complex64, symbols*sps)
+	phase := 0.0
+	for s := 0; s < symbols; s++ {
+		val := []int{-3, -1, +1, +3}[s%4]
+		dphi := radPerSample(val)
+		base := s * sps
+		for k := 0; k < sps; k++ {
+			iq[base+k] = complex(float32(math.Cos(phase)), float32(math.Sin(phase)))
+			phase += dphi
+		}
+	}
+	return iq
+}
+
+// TestReceiverDibitSinkAlone: the CC path doesn't need the LDU
+// sink. New must accept a DibitSink-only configuration and Process
+// must not panic when no LDU sink is wired.
+func TestReceiverDibitSinkAlone(t *testing.T) {
+	var batches int
+	r := New(Options{
+		SampleRateHz: 48_000,
+		DibitSink:    func(dibits []uint8, baseIdx int) { batches++ },
+	})
+	iq := makePhaseRampIQ(1024)
+	chunk := 4096
+	for i := 0; i < len(iq); i += chunk {
+		end := i + chunk
+		if end > len(iq) {
+			end = len(iq)
+		}
+		r.Process(iq[i:end])
+	}
+	if batches == 0 {
+		t.Errorf("DibitSink received zero batches; MM loop produced no symbols")
+	}
+}
+
+// TestReceiverDibitSinkBaseIdxMonotonic: baseIdx must start at 0
+// and equal the cumulative count of all previously-emitted dibits.
+// Reset() rewinds baseIdx back to 0.
+func TestReceiverDibitSinkBaseIdxMonotonic(t *testing.T) {
+	var baseIdxs []int
+	var batchLens []int
+	r := New(Options{
+		SampleRateHz: 48_000,
+		DibitSink: func(dibits []uint8, baseIdx int) {
+			baseIdxs = append(baseIdxs, baseIdx)
+			batchLens = append(batchLens, len(dibits))
+		},
+	})
+
+	iq := makePhaseRampIQ(1024)
+	chunk := 4096
+	for i := 0; i < len(iq); i += chunk {
+		end := i + chunk
+		if end > len(iq) {
+			end = len(iq)
+		}
+		r.Process(iq[i:end])
+	}
+
+	if len(baseIdxs) == 0 {
+		t.Fatalf("expected DibitSink to receive at least one batch")
+	}
+	if baseIdxs[0] != 0 {
+		t.Errorf("first baseIdx = %d, want 0", baseIdxs[0])
+	}
+	cumulative := 0
+	for i := range baseIdxs {
+		if baseIdxs[i] != cumulative {
+			t.Errorf("baseIdx[%d]=%d, want %d", i, baseIdxs[i], cumulative)
+		}
+		cumulative += batchLens[i]
+	}
+
+	// Reset rewinds baseIdx so a retune begins a fresh stream.
+	r.Reset()
+	baseIdxs = baseIdxs[:0]
+	batchLens = batchLens[:0]
+	r.Process(iq)
+	if len(baseIdxs) == 0 {
+		t.Fatalf("post-Reset: expected DibitSink to receive at least one batch")
+	}
+	if baseIdxs[0] != 0 {
+		t.Errorf("post-Reset: first baseIdx = %d, want 0", baseIdxs[0])
+	}
+}
+
+// TestReceiverDibitAndLDUSinksAgree: when both sinks are set the
+// DibitSink must see exactly the same dibit sequence the LDU
+// assembler consumes — that's the invariant the CC connector
+// relies on to mirror the voice path.
+func TestReceiverDibitAndLDUSinksAgree(t *testing.T) {
+	var dibitStream []uint8
+	r := New(Options{
+		SampleRateHz: 48_000,
+		Sink:         func([]byte) {}, // noop, just to keep the assembler wired
+		DibitSink: func(dibits []uint8, baseIdx int) {
+			dibitStream = append(dibitStream, dibits...)
+		},
+	})
+
+	iq := makePhaseRampIQ(1024)
+	r.Process(iq)
+
+	if len(dibitStream) == 0 {
+		t.Fatalf("expected DibitSink to receive dibits")
+	}
+	for i, d := range dibitStream {
+		if d > 3 {
+			t.Errorf("dibitStream[%d]=%d, want in 0..3", i, d)
+		}
+	}
+}
+
+// TestReceiverConstructorRequiresAtLeastOneSink: the constructor
+// must reject Options that wire neither Sink nor DibitSink.
+func TestReceiverConstructorRequiresAtLeastOneSink(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("expected panic when both Sink and DibitSink are nil")
+		}
+	}()
+	_ = New(Options{SampleRateHz: 48_000})
+}

@@ -57,14 +57,17 @@ panel. The honest remaining gaps:
 
 - **IQ → control-channel decoder daemon wiring.** Every protocol
   package ships a unit-tested control-channel state machine and the
-  P25 Phase 1 IQ → C4FM dibit glue is in
-  (`internal/radio/p25/phase1/receiver`), but the connector that takes
-  the control SDR's live IQ stream, demodulates it, and feeds the
-  right protocol's receiver+control-channel pipeline isn't constructed
-  by `cmd/gophertrunk` yet. Until that lands the CC Hunter supervisor
-  exhausts every candidate frequency without seeing a `cc.locked`
-  event, so each system enters `state=failed` and backs off — the TUI
-  Scanner panel surfaces this honestly rather than faking a lock.
+  P25 Phase 1 IQ → C4FM dibit receiver
+  (`internal/radio/p25/phase1/receiver`) now exposes both an LDU
+  sink (voice path) and a raw-dibit sink (control-channel path —
+  feeds `phase1.ControlChannel.Process` directly), but the connector
+  that takes the control SDR's live IQ stream, picks the right
+  protocol's receiver, and feeds its control-channel pipeline isn't
+  constructed by `cmd/gophertrunk` yet. Until that lands the CC
+  Hunter supervisor exhausts every candidate frequency without
+  seeing a `cc.locked` event, so each system enters `state=failed`
+  and backs off — the TUI Scanner panel surfaces this honestly
+  rather than faking a lock.
 - **Digital-voice level calibration.** Pure-Go IMBE / AMBE+2 emit
   real audio end-to-end with shared AGC, frame-repeat on bad-frame
   indicator, phase-aware fade-in, and §6.2 spectral enhancement
@@ -134,8 +137,9 @@ to its own package and lands independently.
 - **TUI drill-in modals** on Systems and Talkgroups (Enter).
 - **P25 Phase 1 IQ → C4FM dibit receiver** (`internal/radio/p25/phase1/receiver`)
   composing FM demod + RRC matched filter + Mueller-Müller clock
-  recovery + 4-level slicer into one entry point feeding the LDU
-  assembler.
+  recovery + 4-level slicer into one entry point that fans out to
+  both the LDU assembler (voice path) and an optional raw-dibit sink
+  (`phase1.DibitSink` — control-channel path).
 - **YSF FICH Trellis decoder + grant emission** on Header FICH for
   Group calls (`internal/radio/ysf/fich_trellis.go` + extended
   `control.go`).
