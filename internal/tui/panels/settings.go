@@ -101,9 +101,10 @@ func (p *SettingsPanel) Update(msg tea.Msg, s *state.SharedState) (Panel, tea.Cm
 	// to) the FEC tab — the hash gate keeps the cost negligible.
 	if p.tab == tabFEC {
 		h := hashRows(s.Systems, func(sys client.SystemDTO) string {
-			return fmt.Sprintf("%s|%s|%d|%s|%s|%s|%s|%s|%s",
+			return fmt.Sprintf("%s|%s|%d|%s|%s|%s|%s|%s|%s|%s",
 				sys.Name, sys.Protocol,
 				sys.TETRAColourCode, sys.TETRAChannel,
+				sys.TETRAChannelCoding,
 				sys.LTRFCSMode, sys.LTRManchesterMode,
 				sys.P25Phase2TrellisMode, sys.NXDNViterbiMode,
 				sys.EDACSBCHMode)
@@ -320,45 +321,61 @@ func durText(d interface{ Nanoseconds() int64 }) string {
 }
 
 // fecSummary returns a one-line, protocol-scoped summary of the
-// system's FEC opt-in state. Only the keys relevant to the system's
+// system's FEC state. Only the keys relevant to the system's
 // protocol are emitted so the column doesn't drown in N/A noise.
+//
+// FEC is on by default for every protocol; the connector applies
+// the spec-correct chain unless the operator opts out per-protocol
+// via the `*_mode: off` keys. Empty config strings render as the
+// new on-defaults below; explicit "off" renders as "off".
 func fecSummary(s client.SystemDTO) string {
 	var parts []string
 	switch strings.ToLower(s.Protocol) {
 	case "tetra":
-		if s.TETRAColourCode != 0 {
+		coding := orDefault(s.TETRAChannelCoding, "on")
+		if isOff(coding) {
+			parts = append(parts, "channel coding: off (opt-out)")
+		} else {
 			ch := s.TETRAChannel
 			if ch == "" {
 				ch = "sch/hd"
 			}
 			parts = append(parts, fmt.Sprintf("channel coding: on (colour=%#x, %s)", s.TETRAColourCode, ch))
-		} else {
-			parts = append(parts, "channel coding: off (set tetra_colour_code to enable)")
 		}
 	case "ltr":
-		parts = append(parts, "fcs: "+orOff(s.LTRFCSMode))
-		parts = append(parts, "manchester: "+orOff(s.LTRManchesterMode))
+		parts = append(parts, "fcs: "+orDefault(s.LTRFCSMode, "on"))
+		parts = append(parts, "manchester: "+orDefault(s.LTRManchesterMode, "soft"))
 	case "p25-phase2":
-		parts = append(parts, "trellis: "+orOff(s.P25Phase2TrellisMode))
+		parts = append(parts, "trellis: "+orDefault(s.P25Phase2TrellisMode, "on"))
 	case "nxdn":
-		parts = append(parts, "viterbi: "+orOff(s.NXDNViterbiMode))
+		parts = append(parts, "viterbi: "+orDefault(s.NXDNViterbiMode, "spec"))
 	case "edacs":
-		parts = append(parts, "bch: "+orOff(s.EDACSBCHMode))
+		parts = append(parts, "bch: "+orDefault(s.EDACSBCHMode, "on"))
 	case "mpt1327":
-		parts = append(parts, "bch: "+orOff(s.MPT1327BCHMode))
+		parts = append(parts, "bch: "+orDefault(s.MPT1327BCHMode, "on"))
 	case "motorola":
-		parts = append(parts, "bch: "+orOff(s.MotorolaBCHMode))
+		parts = append(parts, "bch: "+orDefault(s.MotorolaBCHMode, "on"))
 	default:
 		parts = append(parts, "—")
 	}
 	return strings.Join(parts, "  ·  ")
 }
 
-// orOff returns the supplied mode string, or "off" when empty —
-// the canonical legacy / not-configured rendering across protocols.
-func orOff(s string) string {
+// orDefault returns s when non-empty, otherwise the connector-level
+// default for that key.
+func orDefault(s, dflt string) string {
 	if s == "" {
-		return "off"
+		return dflt
 	}
 	return s
+}
+
+// isOff reports whether the supplied mode string parses to an
+// explicit opt-out across the per-protocol Parse* functions.
+func isOff(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "off", "false", "0":
+		return true
+	}
+	return false
 }

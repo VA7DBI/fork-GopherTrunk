@@ -34,10 +34,11 @@ type SystemDTO struct {
 	RFSS            uint8    `json:"rfss,omitempty"`
 	Site            uint8    `json:"site,omitempty"`
 
-	// Per-protocol FEC opt-in surface (mirrors api.SystemDTO).
+	// Per-protocol FEC opt-out surface (mirrors api.SystemDTO).
 	// The TUI Settings panel renders these.
 	TETRAColourCode      uint32 `json:"tetra_colour_code,omitempty"`
 	TETRAChannel         string `json:"tetra_channel,omitempty"`
+	TETRAChannelCoding   string `json:"tetra_channel_coding,omitempty"`
 	LTRFCSMode           string `json:"ltr_fcs_mode,omitempty"`
 	LTRManchesterMode    string `json:"ltr_manchester_mode,omitempty"`
 	P25Phase2TrellisMode string `json:"p25_phase2_trellis_mode,omitempty"`

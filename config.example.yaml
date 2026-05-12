@@ -59,6 +59,26 @@ trunking:
         - 852_000_000
       talkgroup_file: "/etc/gophertrunk/talkgroups-p25.csv"
 
+  # Per-protocol FEC is on by default — every protocol the daemon
+  # supports (TETRA, LTR, P25 Phase 2, NXDN, EDACS, MPT 1327,
+  # Motorola Type II) ships its spec-correct on-air decoder chain
+  # enabled without needing per-system YAML keys. Operators feeding
+  # pre-stripped capture files (DSD-FME `-r` dumps, OP25 fixtures,
+  # MMDVMHost / DSDcc test data) opt out per-system with the keys
+  # below. TETRA additionally requires a non-zero `tetra_colour_code`
+  # for non-BSCH channels; descrambling produces garbage without it.
+  #
+  # Example opt-outs for operators using pre-stripped captures:
+  #   - name: "Legacy-Motorola"
+  #     protocol: motorola
+  #     control_channels: [851_012_500]
+  #     motorola_bch_mode: "off"   # pre-stripped 32-bit raw OSWs
+  #   - name: "Legacy-LTR"
+  #     protocol: ltr
+  #     control_channels: [935_012_500]
+  #     ltr_fcs_mode: "off"
+  #     ltr_manchester_mode: "off"
+
 # Police-scanner subsystems:
 #   - scan_mode controls the engine's per-grant gate. "all" follows every
 #     non-locked-out grant (the original behavior). "list" only follows

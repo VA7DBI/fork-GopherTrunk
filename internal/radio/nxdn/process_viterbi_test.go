@@ -146,8 +146,11 @@ func TestProcessViterbiOnRejectsRawCACFrame(t *testing.T) {
 	}
 }
 
-// TestSetViterbiModeRetainsViterbiOffDefault confirms the zero-value
-// ControlChannel uses the legacy raw-CAC path.
+// TestSetViterbiModeRetainsViterbiOffDefault confirms a freshly-
+// constructed ControlChannel uses the raw-CAC path. Production
+// callers reach the new ViterbiSpec default via the ccdecoder
+// connector (which always runs ParseViterbiMode); direct callers
+// stay on ViterbiOff unless they call SetViterbiMode.
 func TestSetViterbiModeRetainsViterbiOffDefault(t *testing.T) {
 	cc := NewControlChannel(nil, slog.Default(), 0, Rate9600)
 	if cc.viterbiMode != ViterbiOff {
@@ -178,7 +181,7 @@ func TestParseViterbiMode(t *testing.T) {
 		want ViterbiMode
 		ok   bool
 	}{
-		{"", ViterbiOff, true},
+		{"", ViterbiSpec, true},
 		{"off", ViterbiOff, true},
 		{"false", ViterbiOff, true},
 		{"0", ViterbiOff, true},
@@ -187,7 +190,8 @@ func TestParseViterbiMode(t *testing.T) {
 		{"true", ViterbiOn, true},
 		{"1", ViterbiOn, true},
 		{" on ", ViterbiOn, true},
-		{"nonsense", ViterbiOff, false},
+		{"spec", ViterbiSpec, true},
+		{"nonsense", ViterbiSpec, false},
 	}
 	for _, tc := range cases {
 		got, ok := ParseViterbiMode(tc.in)

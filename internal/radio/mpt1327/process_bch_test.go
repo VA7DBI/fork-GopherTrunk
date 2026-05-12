@@ -223,7 +223,7 @@ func TestParseBCHMode(t *testing.T) {
 		want BCHMode
 		ok   bool
 	}{
-		{"", BCHOff, true},
+		{"", BCHOn, true},
 		{"off", BCHOff, true},
 		{"false", BCHOff, true},
 		{"0", BCHOff, true},
@@ -232,7 +232,7 @@ func TestParseBCHMode(t *testing.T) {
 		{"true", BCHOn, true},
 		{"1", BCHOn, true},
 		{" on ", BCHOn, true},
-		{"nonsense", BCHOff, false},
+		{"nonsense", BCHOn, false},
 	}
 	for _, tc := range cases {
 		got, ok := ParseBCHMode(tc.in)

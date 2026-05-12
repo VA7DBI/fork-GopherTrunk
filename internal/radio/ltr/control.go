@@ -57,8 +57,11 @@ type ControlChannel struct {
 	proc *processState
 
 	// manchesterMode controls Manchester decoding of the input
-	// bit stream — set via SetManchesterMode. Default
-	// ManchesterOff treats the stream as raw NRZ.
+	// bit stream — set via SetManchesterMode. Zero-value
+	// ManchesterOff treats the stream as raw NRZ; production
+	// callers reach ManchesterSoft via the ccdecoder connector
+	// (the parser maps an empty config string to ManchesterSoft,
+	// the dominant on-air encoding for sub-audible LTR signaling).
 	manchesterMode ManchesterDecodeMode
 
 	mu     sync.Mutex
@@ -75,11 +78,13 @@ type ControlChannel struct {
 // FCSMode selects whether the Ingest path verifies the LTR
 // CRC-7 trailer per DSheirer/sdrtrunk's CRCLTR.java.
 //
-//   - FCSOff (default): the Ingest path doesn't run any
-//     checksum verification. The Status.FCS field is treated as
-//     opaque metadata. Existing behaviour pre-PR #40.
+//   - FCSOff: the Ingest path doesn't run any checksum
+//     verification. The Status.FCS field is treated as opaque
+//     metadata. Useful only for synthesized fixtures whose FCS
+//     trailer isn't populated; explicit opt-out for pre-stripped
+//     captures.
 //
-//   - FCSOn: the Ingest path computes the CRC-7 over a 24-bit
+//   - FCSOn (default): the Ingest path computes the CRC-7 over a 24-bit
 //     message built from the Status fields per sdrtrunk's layout
 //     and compares it to the low 7 bits of Status.FCS. Frames
 //     whose CRC doesn't match are silently dropped. Useful when
@@ -128,37 +133,45 @@ func (c *ControlChannel) ManchesterMode() ManchesterDecodeMode {
 }
 
 // ParseFCSMode maps a config / user-facing string into an FCSMode.
-// Recognised values (case-insensitive): "" / "off" → FCSOff (the
-// pre-PR #40 behaviour, no CRC check), "on" / "true" → FCSOn.
-// Unknown strings return FCSOff with `ok = false` so callers can
-// surface the misconfiguration.
+// Recognised values (case-insensitive): "" → FCSOn (the new
+// default), "off" / "false" / "0" → FCSOff (the pre-PR #40
+// behaviour, no CRC check — explicit opt-out for synthesized
+// fixtures), "on" / "true" / "1" → FCSOn. Unknown strings return
+// FCSOn with `ok = false` so callers can surface the
+// misconfiguration.
 func ParseFCSMode(s string) (FCSMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "off", "false", "0":
+	case "":
+		return FCSOn, true
+	case "off", "false", "0":
 		return FCSOff, true
 	case "on", "true", "1":
 		return FCSOn, true
 	default:
-		return FCSOff, false
+		return FCSOn, false
 	}
 }
 
 // ParseManchesterMode maps a config / user-facing string into a
 // ManchesterDecodeMode. Recognised values (case-insensitive):
-// "" / "off" / "nrz" → ManchesterOff (raw NRZ), "strict" →
-// ManchesterStrict (drop transition-less pairs), "soft" / "on" →
-// ManchesterSoft (majority-decode + tolerate noise bursts).
-// Unknown strings return ManchesterOff with `ok = false`.
+// "" / "on" → ManchesterSoft (the new default — majority-decode +
+// tolerate noise bursts, matches dominant on-air encoding),
+// "off" / "nrz" → ManchesterOff (raw NRZ, explicit opt-out for
+// synthesized NRZ fixtures), "strict" → ManchesterStrict (drop
+// transition-less pairs), "soft" → ManchesterSoft. Unknown
+// strings return ManchesterSoft with `ok = false`.
 func ParseManchesterMode(s string) (ManchesterDecodeMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "off", "nrz":
+	case "":
+		return ManchesterSoft, true
+	case "off", "nrz":
 		return ManchesterOff, true
 	case "strict":
 		return ManchesterStrict, true
 	case "soft", "on":
 		return ManchesterSoft, true
 	default:
-		return ManchesterOff, false
+		return ManchesterSoft, false
 	}
 }
 

@@ -275,6 +275,37 @@ func TestSetChannelCodingDefault(t *testing.T) {
 	}
 }
 
+// TestParseChannelCoding covers the config-string →
+// ChannelCodingMode mapping the ccdecoder connector uses to
+// translate the `tetra_channel_coding` YAML field into a
+// SetChannelCoding call.
+func TestParseChannelCoding(t *testing.T) {
+	cases := []struct {
+		in   string
+		want ChannelCodingMode
+		ok   bool
+	}{
+		{"", ChannelCodingOn, true},
+		{"on", ChannelCodingOn, true},
+		{"ON", ChannelCodingOn, true},
+		{"true", ChannelCodingOn, true},
+		{"1", ChannelCodingOn, true},
+		{" on ", ChannelCodingOn, true},
+		{"off", ChannelCodingOff, true},
+		{"OFF", ChannelCodingOff, true},
+		{"false", ChannelCodingOff, true},
+		{"0", ChannelCodingOff, true},
+		{"nonsense", ChannelCodingOn, false},
+	}
+	for _, tc := range cases {
+		got, ok := ParseChannelCoding(tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("ParseChannelCoding(%q) = (%v, %v), want (%v, %v)",
+				tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
 // TestParseChannelType covers the config-string → ChannelType
 // mapping the ccdecoder connector uses to translate the
 // `tetra_channel` YAML field into a SetExpectedChannel call.

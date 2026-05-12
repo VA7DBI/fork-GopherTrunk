@@ -60,10 +60,12 @@ func TestDaemonCCDecodesLTR(t *testing.T) {
 			Name:            "LTRSite",
 			Protocol:        "ltr",
 			ControlChannels: []uint32{controlFreqHz},
-			// Leave ltr_manchester_mode + ltr_fcs_mode at their
-			// defaults — the receiver treats the synthesized
-			// stream as NRZ (no Manchester pre-encode) and
-			// Status.FCS isn't validated until FCSOn is flipped.
+			// The synthesized stream is raw NRZ with no Manchester
+			// pre-encode and no Status.FCS populated, so opt out of
+			// the new on-air defaults (ManchesterSoft + FCSOn) for
+			// this fixture.
+			LTRManchesterMode: "off",
+			LTRFCSMode:        "off",
 		},
 	}
 	cfg.API.HTTPAddr = freeAddr(t)

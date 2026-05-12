@@ -51,17 +51,19 @@ type ControlChannel struct {
 	proc *processState
 
 	// viterbiMode controls whether Process treats the CAC region
-	// of the Info field as raw on-wire bits (ViterbiOff, default)
-	// or runs the 144 dibits through the K=5 ½-rate Viterbi
-	// primitive before parsing (ViterbiOn). Set via
-	// SetViterbiMode.
+	// of the Info field as raw on-wire bits (ViterbiOff, the
+	// zero-value default) or runs the 144 dibits through the K=5
+	// ½-rate Viterbi primitive before parsing (ViterbiOn /
+	// ViterbiSpec). Production callers reach ViterbiSpec via the
+	// ccdecoder connector (the parser maps an empty config string
+	// to ViterbiSpec). Set via SetViterbiMode.
 	viterbiMode ViterbiMode
 }
 
 // ViterbiMode selects how the Process adapter interprets the CAC
 // region inside the 144-dibit Info field.
 //
-//   - ViterbiOff (default): the adapter reads 44 dibits = 88 raw
+//   - ViterbiOff: the adapter reads 44 dibits = 88 raw
 //     information bits straight off the wire. Works on test
 //     fixtures + clean synthesized streams whose CAC bits aren't
 //     channel-coded; it does NOT match the on-air NXDN encoding,
@@ -77,9 +79,9 @@ type ControlChannel struct {
 //     Inner per-protocol interleaver + puncture are still
 //     deferred.
 //
-//   - ViterbiSpec: the adapter slices the full 150-dibit CAC slot
-//     (= 300 channel bits) and runs the spec-correct chain per
-//     NXDN-TS-1-A rev 1.3 §4.5.1.1 (CAC outbound): deinterleave
+//   - ViterbiSpec (default): the adapter slices the full 150-dibit
+//     CAC slot (= 300 channel bits) and runs the spec-correct chain
+//     per NXDN-TS-1-A rev 1.3 §4.5.1.1 (CAC outbound): deinterleave
 //     25×12 → depuncture 50/350 → K=5 R=½ Viterbi → 16-bit CRC
 //     verify → strip tail. Recovers the 155-bit info block
 //     (8 SR + 144 L3 Data + 3 Null); the first 88 bits of the L3
@@ -111,28 +113,37 @@ func (c *ControlChannel) ViterbiMode() ViterbiMode {
 }
 
 // ParseViterbiMode maps a config / user-facing string into a
-// ViterbiMode. Recognised values (case-insensitive): "" / "off" /
-// "false" / "0" → ViterbiOff (legacy 44-dibit raw-CAC path);
-// "on" / "true" / "1" → ViterbiOn (92 dibits via the simplified
-// K=5 Viterbi path used by older MMDVMHost / DSDcc fixtures);
-// "spec" → ViterbiSpec (150 dibits via the full NXDN-TS-1-A
-// §4.5.1.1 outbound CAC chain — deinterleave + depuncture + K=5
-// Viterbi + 16-bit CRC + tail strip — the path that works on
-// live captures). Unknown strings return ViterbiOff with
-// `ok = false`.
+// ViterbiMode. Recognised values (case-insensitive): "" → ViterbiSpec
+// (the new default — full NXDN-TS-1-A §4.5.1.1 outbound CAC chain);
+// "off" / "false" / "0" → ViterbiOff (legacy 44-dibit raw-CAC path,
+// explicit opt-out for MMDVMHost / DSDcc fixtures that ship
+// pre-stripped); "on" / "true" / "1" → ViterbiOn (92 dibits via the
+// simplified K=5 Viterbi path used by older MMDVMHost / DSDcc
+// fixtures); "spec" → ViterbiSpec (150 dibits via the full
+// NXDN-TS-1-A §4.5.1.1 outbound CAC chain — deinterleave +
+// depuncture + K=5 Viterbi + 16-bit CRC + tail strip). Unknown
+// strings return ViterbiSpec with `ok = false`.
 func ParseViterbiMode(s string) (ViterbiMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "off", "false", "0":
+	case "":
+		return ViterbiSpec, true
+	case "off", "false", "0":
 		return ViterbiOff, true
 	case "on", "true", "1":
 		return ViterbiOn, true
 	case "spec":
 		return ViterbiSpec, true
 	default:
-		return ViterbiOff, false
+		return ViterbiSpec, false
 	}
 }
 
+// NewControlChannel constructs a bare ControlChannel with no FEC
+// applied — the constructor matches the in-package fixture
+// behaviour. Production callers reach the new ViterbiSpec default
+// via the ccdecoder connector, which always runs ParseViterbiMode
+// (empty string → ViterbiSpec). Direct callers (tests, embedders)
+// stay on ViterbiOff unless they call SetViterbiMode.
 func NewControlChannel(bus *events.Bus, log *slog.Logger, freqHz uint32, rate BaudRate) *ControlChannel {
 	if log == nil {
 		log = slog.Default()

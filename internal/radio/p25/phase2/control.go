@@ -42,13 +42,13 @@ type ControlChannel struct {
 // TrellisMode selects how the Process adapter interprets the MAC
 // PDU dibit window inside the Phase 2 traffic channel.
 //
-//   - TrellisOff (default): the adapter reads 72 dibits = 144 raw
-//     information bits straight off the wire, parses 18 bytes as
-//     a MAC PDU. Works on test fixtures + clean synthesized
-//     streams whose MAC bits aren't trellis-coded; matches the
-//     legacy adapter behaviour.
+//   - TrellisOff: the adapter reads 72 dibits = 144 raw information
+//     bits straight off the wire, parses 18 bytes as a MAC PDU.
+//     Useful only on synthesized streams whose MAC bits aren't
+//     trellis-coded; explicit opt-out for operators feeding
+//     pre-stripped capture files.
 //
-//   - TrellisOn: the adapter collects 146 channel dibits (72 info
+//   - TrellisOn (default): the adapter collects 146 channel dibits (72 info
 //     + 1 finisher transition × 2 channel dibits per transition),
 //     runs them through the TIA-102 Annex A 4-state ½-rate
 //     trellis Viterbi decoder in
@@ -90,20 +90,23 @@ func (c *ControlChannel) TrellisMode() TrellisMode {
 }
 
 // ParseTrellisMode maps a config / user-facing string into a
-// TrellisMode. Recognised values (case-insensitive): "" / "off" /
-// "false" / "0" → TrellisOff (the legacy 72-dibit raw-MAC-PDU
-// path); "on" / "true" / "1" → TrellisOn (146 channel dibits run
-// through the 4-state ½-rate trellis decoder). Unknown strings
-// return TrellisOff with `ok = false` so callers can surface the
+// TrellisMode. Recognised values (case-insensitive): "" → TrellisOn
+// (the new default — 146 channel dibits run through the 4-state
+// ½-rate trellis decoder); "off" / "false" / "0" → TrellisOff (legacy
+// 72-dibit raw-MAC-PDU path, explicit opt-out for pre-stripped
+// fixtures); "on" / "true" / "1" → TrellisOn. Unknown strings return
+// TrellisOn with `ok = false` so callers can surface the
 // misconfiguration.
 func ParseTrellisMode(s string) (TrellisMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "off", "false", "0":
+	case "":
+		return TrellisOn, true
+	case "off", "false", "0":
 		return TrellisOff, true
 	case "on", "true", "1":
 		return TrellisOn, true
 	default:
-		return TrellisOff, false
+		return TrellisOn, false
 	}
 }
 

@@ -161,12 +161,11 @@ type SystemConfig struct {
 	// TETRAColourCode is the 30-bit extended colour code the TETRA
 	// scrambler uses to seed its LFSR (ETSI EN 300 392-2 §8.2.5).
 	// Set this to the per-cell colour code of the TETRA TMO system
-	// being decoded so the ccdecoder connector turns on the full
-	// §8.3.1 type-5 → type-1 decode chain (descramble + deinterleave
-	// + depuncture + Viterbi + CRC-16). Bits 30..31 are silently
-	// ignored. Zero (the default) keeps the legacy raw-dibit path,
-	// which only works on FEC-free synthesized fixtures. Ignored
-	// for non-TETRA protocols.
+	// being decoded so the descrambler can recover the type-3
+	// stream. Bits 30..31 are silently ignored. Zero is valid only
+	// for BSCH (§8.2.5.2); non-BSCH channels need the per-cell
+	// colour code or descrambling produces garbage. Ignored for
+	// non-TETRA protocols.
 	TETRAColourCode uint32 `yaml:"tetra_colour_code"`
 	// TETRAChannel selects which TETRA logical channel lives in
 	// each burst window under ChannelCodingOn. Recognised values:
@@ -174,57 +173,68 @@ type SystemConfig struct {
 	// defaults to "sch/hd" — the standard signaling channel for
 	// cc.locked / Grant events. Ignored for non-TETRA protocols.
 	TETRAChannel string `yaml:"tetra_channel"`
+	// TETRAChannelCoding gates the full ETSI EN 300 392-2 §8.3.1
+	// channel-coding chain (descramble + deinterleave + depuncture
+	// + Viterbi + CRC-16 verify + tail strip). Recognised values:
+	// "" / "on" / "true" / "1" (the new default — full chain;
+	// required for live on-air captures) or "off" / "false" / "0"
+	// (legacy raw-dibit path, opt-out for operators feeding pre-
+	// stripped DSD-FME / OP25 fixtures). Ignored for non-TETRA
+	// protocols.
+	TETRAChannelCoding string `yaml:"tetra_channel_coding"`
 
 	// LTRFCSMode enables the CRC-7 FCS check on the LTR Status
-	// Ingest path. Recognised values: "" / "off" (default,
-	// no verification — matches pre-PR #40 behaviour) or
-	// "on" / "true" (drop Status words whose FCS trailer doesn't
-	// match). Useful when the upstream framing layer has populated
-	// Status.FCS from the on-air bits and the operator wants to
-	// filter out corrupted frames. Ignored for non-LTR protocols.
+	// Ingest path. Recognised values: "" / "on" / "true" / "1"
+	// (the new default — drop Status words whose FCS trailer
+	// doesn't match) or "off" / "false" / "0" (no verification —
+	// opt-out for synthesized fixtures whose FCS trailer isn't
+	// populated). Ignored for non-LTR protocols.
 	LTRFCSMode string `yaml:"ltr_fcs_mode"`
 	// LTRManchesterMode controls Manchester decoding of the
-	// sub-audible LTR bit stream. Recognised values: "" / "off" /
-	// "nrz" (raw NRZ, default — matches the synthesized-fixture
-	// path), "strict" (require a mid-bit transition per pair,
-	// drop transition-less pairs), "soft" / "on" (majority-decode,
-	// tolerate noise bursts). Live captures of sub-audible LTR
-	// signaling should set "soft". Ignored for non-LTR protocols.
+	// sub-audible LTR bit stream. Recognised values: "" / "on" /
+	// "soft" (the new default — majority-decode + tolerate noise
+	// bursts; matches the dominant on-air encoding), "strict"
+	// (require a mid-bit transition per pair, drop transition-less
+	// pairs), "off" / "nrz" (raw NRZ — opt-out for synthesized NRZ
+	// fixtures). Ignored for non-LTR protocols.
 	LTRManchesterMode string `yaml:"ltr_manchester_mode"`
 
 	// P25Phase2TrellisMode enables the 4-state ½-rate trellis FEC
 	// decoder on the P25 Phase 2 MAC PDU window. Recognised values:
-	// "" / "off" (default, legacy 72-dibit raw-MAC-PDU path) or
-	// "on" (146 channel dibits via the TIA-102.AABF trellis
-	// decoder). Live P25 Phase 2 captures need "on" to recover
-	// MAC PDUs through the FEC layer. Ignored for non-P25-Phase-2
-	// protocols.
+	// "" / "on" / "true" / "1" (the new default — 146 channel
+	// dibits via the TIA-102.AABF trellis decoder) or "off" /
+	// "false" / "0" (legacy 72-dibit raw-MAC-PDU path, opt-out for
+	// pre-stripped fixtures). Ignored for non-P25-Phase-2 protocols.
 	P25Phase2TrellisMode string `yaml:"p25_phase2_trellis_mode"`
 	// NXDNViterbiMode enables the K=5 ½-rate Viterbi FEC decoder
-	// on the NXDN CAC region. Recognised values: "" / "off"
-	// (default, legacy raw-CAC path) or "on" (92 dibits via the
-	// K=5 Viterbi decoder). Live NXDN CAC captures need "on" to
-	// recover the CAC through its FEC. Ignored for non-NXDN
-	// protocols.
+	// on the NXDN CAC region. Recognised values: "" / "spec" (the
+	// new default — full NXDN-TS-1-A §4.5.1.1 outbound CAC chain),
+	// "on" / "true" / "1" (intermediate 92-dibit K=5 Viterbi path
+	// for older MMDVMHost / DSDcc fixtures), or "off" / "false" /
+	// "0" (legacy 44-dibit raw-CAC path, opt-out for pre-stripped
+	// fixtures). Ignored for non-NXDN protocols.
 	NXDNViterbiMode string `yaml:"nxdn_viterbi_mode"`
 	// EDACSBCHMode enables the BCH(40, 28, 2) FEC layer on the
-	// EDACS CCW. Recognised values: "" / "off" (default, legacy
-	// pre-stripped 40-bit CCW) or "on" (40-bit on-wire BCH decode
-	// with single/double-bit correction). Live EDACS CCW captures
-	// should set "on". Ignored for non-EDACS protocols.
+	// EDACS CCW. Recognised values: "" / "on" / "true" / "1" (the
+	// new default — 40-bit on-wire BCH decode with single/double-
+	// bit correction) or "off" / "false" / "0" (legacy pre-stripped
+	// 40-bit CCW, opt-out for pre-stripped fixtures). Ignored for
+	// non-EDACS protocols.
 	EDACSBCHMode string `yaml:"edacs_bch_mode"`
 	// MPT1327BCHMode enables the BCH(63, 38) FEC layer on the MPT
-	// 1327 codeword. Recognised values: "" / "off" (default, legacy
-	// 38-bit pre-stripped codeword) or "on" (64-bit on-wire BCH
-	// decode). Live MPT 1327 captures should set "on". Ignored for
-	// non-MPT-1327 protocols.
+	// 1327 codeword. Recognised values: "" / "on" / "true" / "1"
+	// (the new default — 64-bit on-wire BCH decode) or "off" /
+	// "false" / "0" (legacy 38-bit pre-stripped codeword, opt-out
+	// for pre-stripped fixtures). Ignored for non-MPT-1327
+	// protocols.
 	MPT1327BCHMode string `yaml:"mpt1327_bch_mode"`
 	// MotorolaBCHMode enables the BCH(64, 16, 11) FEC layer on the
-	// Motorola Type II OSW. Recognised values: "" / "off" (default,
-	// legacy 32-bit raw-OSW path) or "on" (two 64-bit BCH(64, 16, 11)
-	// codewords reassembled into the 32-bit OSW with single- through
-	// 11-bit-error correction). Live Motorola Type II captures
-	// should set "on". Ignored for non-Motorola protocols.
+	// Motorola Type II OSW. Recognised values: "" / "on" / "true" /
+	// "1" (the new default — two 64-bit BCH(64, 16, 11) codewords
+	// reassembled into the 32-bit OSW with single- through 11-bit-
+	// error correction) or "off" / "false" / "0" (legacy 32-bit
+	// raw-OSW path, opt-out for pre-stripped fixtures). Ignored
+	// for non-Motorola protocols.
 	MotorolaBCHMode string `yaml:"motorola_bch_mode"`
 }
 

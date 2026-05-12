@@ -100,9 +100,9 @@ func TestFCSOnDropsCorruptedMessage(t *testing.T) {
 	}
 }
 
-// TestFCSOffIgnoresChecksum: FCSOff (the default) must NOT verify
-// the CRC — a Status with a bogus FCS field still drives the
-// state machine.
+// TestFCSOffIgnoresChecksum: FCSOff (the in-package constructor
+// default) must NOT verify the CRC — a Status with a bogus FCS
+// field still drives the state machine.
 func TestFCSOffIgnoresChecksum(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
@@ -110,7 +110,8 @@ func TestFCSOffIgnoresChecksum(t *testing.T) {
 	defer sub.Close()
 
 	cc := New(Options{Bus: bus, Log: slog.Default(), SystemName: "Sys"})
-	// Default mode is FCSOff; don't call SetFCSMode.
+	// Default mode is FCSOff; production callers reach FCSOn via
+	// the ccdecoder connector. Don't call SetFCSMode.
 
 	s := makeStatusWithValidFCS()
 	s.FCS = 0x7F // bogus checksum
@@ -162,7 +163,7 @@ func TestParseFCSMode(t *testing.T) {
 		want FCSMode
 		ok   bool
 	}{
-		{"", FCSOff, true},
+		{"", FCSOn, true},
 		{"off", FCSOff, true},
 		{"OFF", FCSOff, true},
 		{"false", FCSOff, true},
@@ -172,7 +173,7 @@ func TestParseFCSMode(t *testing.T) {
 		{"true", FCSOn, true},
 		{"1", FCSOn, true},
 		{" on ", FCSOn, true}, // whitespace tolerated
-		{"nonsense", FCSOff, false},
+		{"nonsense", FCSOn, false},
 	}
 	for _, tc := range cases {
 		got, ok := ParseFCSMode(tc.in)
@@ -191,7 +192,7 @@ func TestParseManchesterMode(t *testing.T) {
 		want ManchesterDecodeMode
 		ok   bool
 	}{
-		{"", ManchesterOff, true},
+		{"", ManchesterSoft, true},
 		{"off", ManchesterOff, true},
 		{"nrz", ManchesterOff, true},
 		{"NRZ", ManchesterOff, true},
@@ -201,7 +202,7 @@ func TestParseManchesterMode(t *testing.T) {
 		{"on", ManchesterSoft, true},
 		{"Soft", ManchesterSoft, true},
 		{" strict ", ManchesterStrict, true},
-		{"nonsense", ManchesterOff, false},
+		{"nonsense", ManchesterSoft, false},
 	}
 	for _, tc := range cases {
 		got, ok := ParseManchesterMode(tc.in)

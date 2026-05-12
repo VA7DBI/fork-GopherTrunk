@@ -102,10 +102,11 @@ type System struct {
 	// the TETRA scrambler uses to seed its LFSR per ETSI EN 300 392-2
 	// §8.2.5 ("ec" in the spec). The ccdecoder connector forwards this
 	// into tetra.ControlChannel.SetColourCode under ChannelCodingOn.
-	// Zero is valid (BSCH always uses 0 per §8.2.5.2) but disables
-	// channel coding because the colour code is the per-cell secret
-	// the descrambler needs to recover the type-3 stream. Bits 30..31
-	// are silently ignored downstream.
+	// Zero is valid only for BSCH (§8.2.5.2). For all other channel
+	// types the colour code is the per-cell secret the descrambler
+	// needs to recover the type-3 stream — leaving it at zero with
+	// channel coding on produces garbage. Bits 30..31 are silently
+	// ignored downstream.
 	TETRAColourCode uint32
 	// TETRAChannel selects which TETRA logical channel lives in each
 	// burst window under ChannelCodingOn. Recognised values:
@@ -115,63 +116,84 @@ type System struct {
 	// tetra.ControlChannel.SetExpectedChannel by the ccdecoder
 	// connector after parsing via tetra.ParseChannelType.
 	TETRAChannel string
+	// TETRAChannelCoding gates the full ETSI EN 300 392-2 §8.3.1
+	// channel-coding chain (descramble + deinterleave + depuncture +
+	// Viterbi + CRC-16 verify + tail strip). Recognised values
+	// (case-insensitive): "" / "on" / "true" / "1" → ChannelCodingOn
+	// (the new default; required for live on-air captures); "off" /
+	// "false" / "0" → ChannelCodingOff (legacy raw-dibit path, opt-out
+	// for operators feeding pre-stripped DSD-FME / OP25 fixtures).
+	// Forwarded into tetra.ControlChannel.SetChannelCoding by the
+	// ccdecoder connector after parsing via tetra.ParseChannelCoding.
+	TETRAChannelCoding string
 
 	// LTRFCSMode enables CRC-7 FCS verification on the LTR Status
 	// Ingest path (per DSheirer/sdrtrunk's CRCLTR.java layout).
-	// Recognised values (case-insensitive): "" / "off" — no
-	// verification (default, pre-PR #40 behaviour); "on" / "true" —
-	// drop Status words whose 7-bit FCS trailer doesn't match the
-	// CRC over the 24-bit message vector. Forwarded into
-	// ltr.ControlChannel.SetFCSMode by the ccdecoder connector
-	// after parsing via ltr.ParseFCSMode.
+	// Recognised values (case-insensitive): "" / "on" / "true" / "1" →
+	// FCSOn (the new default; drop Status words whose 7-bit FCS
+	// trailer doesn't match the CRC over the 24-bit message vector);
+	// "off" / "false" / "0" → FCSOff (no verification — opt-out for
+	// pre-stripped fixtures). Forwarded into
+	// ltr.ControlChannel.SetFCSMode by the ccdecoder connector after
+	// parsing via ltr.ParseFCSMode.
 	LTRFCSMode string
 	// LTRManchesterMode controls Manchester decoding of the LTR
 	// sub-audible bit stream. Recognised values (case-insensitive):
-	// "" / "off" / "nrz" — raw NRZ (default, in-package tests);
-	// "strict" — require a mid-bit transition per pair, drop
-	// transition-less pairs; "soft" / "on" — majority-decode each
-	// pair and tolerate noise bursts. Live captures of sub-audible
-	// LTR signaling should use "soft" (the dominant on-air encoding).
-	// Forwarded into ltr.ControlChannel.SetManchesterMode by the
-	// ccdecoder connector after parsing via ltr.ParseManchesterMode.
+	// "" / "on" / "soft" → ManchesterSoft (the new default —
+	// majority-decode each pair; matches the dominant on-air
+	// encoding for sub-audible LTR signaling); "strict" —
+	// require a mid-bit transition per pair, drop transition-less
+	// pairs; "off" / "nrz" → ManchesterOff (raw NRZ — opt-out for
+	// synthesized NRZ fixtures). Forwarded into
+	// ltr.ControlChannel.SetManchesterMode by the ccdecoder
+	// connector after parsing via ltr.ParseManchesterMode.
 	LTRManchesterMode string
 
 	// P25Phase2TrellisMode enables the 4-state ½-rate trellis FEC
 	// decoder on the P25 Phase 2 MAC PDU window. Recognised values
-	// (case-insensitive): "" / "off" → TrellisOff (legacy 72-dibit
-	// raw-MAC-PDU path); "on" → TrellisOn (146 channel dibits via
-	// the TIA-102.AABF trellis decoder). Forwarded into
-	// p25phase2.ControlChannel.SetTrellisMode by the ccdecoder
+	// (case-insensitive): "" / "on" / "true" / "1" → TrellisOn (the
+	// new default — 146 channel dibits via the TIA-102.AABF trellis
+	// decoder); "off" / "false" / "0" → TrellisOff (legacy 72-dibit
+	// raw-MAC-PDU path, opt-out for pre-stripped fixtures). Forwarded
+	// into p25phase2.ControlChannel.SetTrellisMode by the ccdecoder
 	// connector after parsing via p25phase2.ParseTrellisMode.
 	P25Phase2TrellisMode string
 	// NXDNViterbiMode enables the K=5 ½-rate Viterbi FEC decoder
 	// on the NXDN CAC region. Recognised values (case-insensitive):
-	// "" / "off" → ViterbiOff (legacy 44-dibit raw-CAC path);
-	// "on" → ViterbiOn (92 dibits via the K=5 Viterbi decoder).
-	// Forwarded into nxdn.ControlChannel.SetViterbiMode by the
-	// ccdecoder connector after parsing via nxdn.ParseViterbiMode.
+	// "" / "spec" → ViterbiSpec (the new default — full NXDN-TS-1-A
+	// §4.5.1.1 outbound CAC chain); "on" / "true" / "1" → ViterbiOn
+	// (intermediate 92-dibit K=5 Viterbi path for older
+	// MMDVMHost / DSDcc fixtures); "off" / "false" / "0" → ViterbiOff
+	// (legacy 44-dibit raw-CAC path, opt-out for pre-stripped
+	// fixtures). Forwarded into nxdn.ControlChannel.SetViterbiMode
+	// by the ccdecoder connector after parsing via
+	// nxdn.ParseViterbiMode.
 	NXDNViterbiMode string
 	// EDACSBCHMode enables the BCH(40, 28, 2) FEC layer on the
-	// EDACS CCW. Recognised values (case-insensitive): "" / "off"
-	// → BCHOff (legacy pre-stripped 40-bit CCW path); "on" → BCHOn
-	// (40-bit on-wire BCH(40, 28, 2) decode + single/double-bit
-	// correction). Forwarded into edacs.ControlChannel.SetBCHMode
-	// by the ccdecoder connector after parsing via
-	// edacs.ParseBCHMode.
+	// EDACS CCW. Recognised values (case-insensitive): "" / "on" /
+	// "true" / "1" → BCHOn (the new default — 40-bit on-wire
+	// BCH(40, 28, 2) decode + single/double-bit correction); "off" /
+	// "false" / "0" → BCHOff (legacy pre-stripped 40-bit CCW path,
+	// opt-out for pre-stripped fixtures). Forwarded into
+	// edacs.ControlChannel.SetBCHMode by the ccdecoder connector
+	// after parsing via edacs.ParseBCHMode.
 	EDACSBCHMode string
 	// MPT1327BCHMode enables the BCH(63, 38) FEC layer on the MPT
 	// 1327 codeword. Recognised values (case-insensitive): "" /
-	// "off" → BCHOff (legacy 38-bit pre-stripped codeword path);
-	// "on" → BCHOn (64-bit on-wire BCH(63, 38) decode). Forwarded
-	// into mpt1327.ControlChannel.SetBCHMode by the ccdecoder
-	// connector after parsing via mpt1327.ParseBCHMode.
+	// "on" / "true" / "1" → BCHOn (the new default — 64-bit on-wire
+	// BCH(63, 38) decode); "off" / "false" / "0" → BCHOff (legacy
+	// 38-bit pre-stripped codeword path, opt-out for pre-stripped
+	// fixtures). Forwarded into mpt1327.ControlChannel.SetBCHMode
+	// by the ccdecoder connector after parsing via
+	// mpt1327.ParseBCHMode.
 	MPT1327BCHMode string
 	// MotorolaBCHMode enables the BCH(64, 16, 11) FEC layer on the
 	// Motorola Type II OSW. Recognised values (case-insensitive):
-	// "" / "off" → BCHOff (legacy 32-bit raw-OSW path); "on" →
-	// BCHOn (two 64-bit BCH(64, 16, 11) codewords reassembled into
-	// the 32-bit OSW, with up to 11 bit errors corrected per
-	// codeword). Forwarded into
+	// "" / "on" / "true" / "1" → BCHOn (the new default — two
+	// 64-bit BCH(64, 16, 11) codewords reassembled into the 32-bit
+	// OSW, with up to 11 bit errors corrected per codeword); "off" /
+	// "false" / "0" → BCHOff (legacy 32-bit raw-OSW path, opt-out
+	// for pre-stripped fixtures). Forwarded into
 	// motorola.ControlChannel.SetBCHMode by the ccdecoder
 	// connector after parsing via motorola.ParseBCHMode.
 	MotorolaBCHMode string

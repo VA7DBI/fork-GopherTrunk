@@ -124,6 +124,7 @@ func NewDaemon(cfg config.Config, version string, log *slog.Logger) (*Daemon, er
 			ControlChannels:      sys.ControlChannels,
 			TETRAColourCode:      sys.TETRAColourCode,
 			TETRAChannel:         sys.TETRAChannel,
+			TETRAChannelCoding:   sys.TETRAChannelCoding,
 			LTRFCSMode:           sys.LTRFCSMode,
 			LTRManchesterMode:    sys.LTRManchesterMode,
 			P25Phase2TrellisMode: sys.P25Phase2TrellisMode,
