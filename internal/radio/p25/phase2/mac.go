@@ -131,6 +131,66 @@ func (p MACPDU) AsGroupVoiceChannelGrant() (GroupVoiceChannelGrant, bool) {
 	}, true
 }
 
+// NetworkStatusBroadcast is the structured shape of a Phase 2
+// Network Status Broadcast - Update MAC PDU (opcode 0xFB).
+// Carries the system-identity fields the PN44 descrambler per
+// TIA-102.BBAC-1 §7.2.5 needs to compute its seed:
+//
+//   - WACN: 20-bit Wide-Area Communication Network ID
+//   - SystemID: 12-bit P25 System ID
+//   - ColorCode: 12-bit Color Code, equal to the Phase 1 NAC per
+//     the spec's seed derivation rule
+//
+// Payload layout (after the 1-byte opcode the MAC PDU parses off):
+//
+//   byte 0       : LRA (Location Registration Area)
+//   bytes 1..3   : WACN (20 bits in the upper 20 of bytes 1..3,
+//                  i.e., bit 19 of WACN = bit 7 of byte 1, … bit 0
+//                  of WACN = bit 4 of byte 3)
+//   bytes 3..4   : SystemID (low nibble of byte 3 + byte 4)
+//   bytes 5..6   : Color Code (12 bits — high 12 bits of bytes 5..6)
+//   bytes 7..8   : channel info (ChannelID + ChannelNumber)
+//
+// The WACN + SystemID bit packing matches the Phase 1 NSB layout
+// (TIA-102.AABF), which Phase 2 reuses. The Color Code position
+// follows the most-cited public reference for Phase 2 NSB-Update;
+// vendors occasionally repurpose the byte 5..6 field, so callers
+// that hit a mismatch on a specific system can override the seed
+// explicitly via SetScramblerSeed.
+type NetworkStatusBroadcast struct {
+	LRA           uint8  // 8-bit Location Registration Area
+	WACN          uint32 // 20-bit Wide-Area Communication Network ID
+	SystemID      uint16 // 12-bit System ID
+	ColorCode     uint16 // 12-bit Color Code = Phase 1 NAC per spec
+	ChannelID     uint8
+	ChannelNumber uint16
+}
+
+// AsNetworkStatusBroadcast returns the structured NSB if the PDU
+// opcode is OpNetworkStatusBroadcastUpdate (0xFB), otherwise
+// (zero, false). Requires a payload of at least 9 bytes to cover
+// LRA + WACN + SystemID + ColorCode + channel fields.
+func (p MACPDU) AsNetworkStatusBroadcast() (NetworkStatusBroadcast, bool) {
+	if p.Opcode != OpNetworkStatusBroadcastUpdate {
+		return NetworkStatusBroadcast{}, false
+	}
+	if len(p.Payload) < 9 {
+		return NetworkStatusBroadcast{}, false
+	}
+	wacn := uint32(p.Payload[1])<<12 | uint32(p.Payload[2])<<4 | uint32(p.Payload[3]>>4)
+	sysid := uint16(p.Payload[3]&0x0F)<<8 | uint16(p.Payload[4])
+	cc := uint16(p.Payload[5])<<4 | uint16(p.Payload[6]>>4)
+	chanField := binary.BigEndian.Uint16(p.Payload[7:9])
+	return NetworkStatusBroadcast{
+		LRA:           p.Payload[0],
+		WACN:          wacn,
+		SystemID:      sysid,
+		ColorCode:     cc,
+		ChannelID:     uint8(chanField >> 12),
+		ChannelNumber: chanField & 0x0FFF,
+	}, true
+}
+
 // IsIdle reports whether the PDU is one of the channel-idle / hang-
 // time opcodes a state machine should silently absorb.
 func (p MACPDU) IsIdle() bool {
