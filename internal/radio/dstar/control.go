@@ -17,6 +17,26 @@ type LockState struct {
 	Repeater    string // RPT2 callsign of the first valid header (trimmed)
 }
 
+// LockedFrequencyHz / LockedNAC make LockState satisfy
+// trunking.LockedPayload so the cchunt supervisor's state machine
+// recognises D-STAR lock events alongside the other protocols.
+// D-STAR doesn't have a P25-style NAC; the repeater callsign is the
+// closest per-site identifier — its first 2 ASCII bytes are packed
+// into the NAC slot so downstream consumers that key off LockedNAC
+// see a stable per-site value across re-locks.
+func (s LockState) LockedFrequencyHz() uint32 { return s.FrequencyHz }
+func (s LockState) LockedNAC() uint16 {
+	r := s.Repeater
+	var nac uint16
+	if len(r) > 0 {
+		nac = uint16(r[0]) << 8
+	}
+	if len(r) > 1 {
+		nac |= uint16(r[1])
+	}
+	return nac
+}
+
 // ControlChannel ingests D-STAR PCH headers from a single repeater
 // frequency, emits cc.locked the first time a valid header arrives on
 // a freshly-tuned device, and republishes group transmissions as
@@ -32,6 +52,11 @@ type ControlChannel struct {
 	systemName string
 	freqHz     uint32
 	now        func() time.Time
+
+	// proc is the cross-call bit / sync state the Process adapter
+	// uses (see process.go). Lazily constructed on the first
+	// Process call.
+	proc *processState
 
 	mu     sync.Mutex
 	locked bool

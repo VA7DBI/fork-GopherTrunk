@@ -25,6 +25,7 @@ const (
 	ProtocolP25Phase2          // P25 Phase 2 (H-DQPSK TDMA, config "p25-phase2")
 	ProtocolTETRA              // TETRA TMO (π/4-DQPSK, ETSI EN 300 392-2)
 	ProtocolYSF                // System Fusion (C4FM, amateur trunked variant — config "ysf")
+	ProtocolDStar              // D-STAR (GMSK 4800 bps, amateur — header-only repeater protocol; config "dstar")
 )
 
 func (p Protocol) String() string {
@@ -51,6 +52,8 @@ func (p Protocol) String() string {
 		return "tetra"
 	case ProtocolYSF:
 		return "ysf"
+	case ProtocolDStar:
+		return "dstar"
 	default:
 		return "unknown"
 	}
@@ -83,6 +86,8 @@ func ParseProtocol(s string) (Protocol, error) {
 		return ProtocolTETRA, nil
 	case "ysf":
 		return ProtocolYSF, nil
+	case "dstar", "d-star", "d_star":
+		return ProtocolDStar, nil
 	default:
 		return ProtocolUnknown, fmt.Errorf("trunking: unknown protocol %q", s)
 	}
