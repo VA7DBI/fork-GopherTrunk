@@ -197,13 +197,16 @@ The remaining gaps:
   `AddTemporaryChannel` / `RemoveTemporaryChannel` so the same VFO
   surface is callable from any embedder.
 - **Live audio playback to speakers + TUI / API audio cockpit.** The
-  daemon ships a `voice.Player` sink (`internal/voice/player`) wrapping
-  github.com/ebitengine/oto/v3 (ALSA on Linux, CoreAudio on macOS,
-  WASAPI on Windows; libasound2-dev required at build time on Linux).
-  When `audio.enabled: true` is set in config the per-call composer
-  and the conventional FM scanner fan PCM into the player alongside
-  the existing WAV recorder, so calls play out the host's default
-  output device in real time. Volume / mute / recording can be
+  daemon ships a `voice.Player` sink (`internal/voice/player`) that
+  routes decoded PCM to the host's default audio output. On Linux it
+  talks to `libasound2.so.2` directly via `github.com/ebitengine/purego`
+  — no cgo, no `libasound2-dev` at build time, no pkg-config; the
+  runtime library ships on every standard Linux image. macOS / Windows
+  use `github.com/ebitengine/oto/v3` (CoreAudio + WASAPI, also via
+  purego). When `audio.enabled: true` is set in config the per-call
+  composer and the conventional FM scanner fan PCM into the player
+  alongside the existing WAV recorder, so calls play out the host's
+  default output device in real time. Volume / mute / recording can be
   toggled live: the TUI's Scanner panel binds `+` / `-` for volume
   (5% step), `M` for mute, and `R` for record on/off; the same knobs
   are exposed as `GET` / `PATCH /api/v1/audio` for remote clients
@@ -212,8 +215,9 @@ The remaining gaps:
   truncating in-flight sessions, matching scanner muscle memory.
   Disabled by default; headless servers stay silent and continue to
   record WAVs identically to before. New CLI: `gophertrunk audio
-  list` mirrors `sdr list`. Drop-the-libasound2-dev-build-dep
-  follow-up tracked under Workstream F of the active plan.
+  list` mirrors `sdr list`. If `libasound2.so.2` isn't reachable
+  (stripped-down container, etc.) the backend logs once and falls
+  back to the null player so the rest of the daemon keeps running.
 
 The Go interfaces and event payloads carry every protocol already;
 the remaining decoder wiring is the load-bearing follow-up.
