@@ -104,6 +104,12 @@ func TestUUIDByteSize(t *testing.T) {
 // safe when the IOKit load is bypassed (test binary running on a
 // macOS revision where purego.Dlopen failed). The contract is "empty
 // string, no panic" — same as the pre-CFStringGetCString stub.
+//
+// Constructing a "real service handle that doesn't have the property"
+// path would require an actual IOKit-equipped macOS host, and
+// invoking IORegistryEntryCreateCFProperty with a synthesised bogus
+// handle segfaults inside the framework rather than degrading
+// gracefully — so this is the deepest test we can write portably.
 func TestReadUSBStringHandlesMissingSymbol(t *testing.T) {
 	// Force the unloaded path by saving + nilling the resolved
 	// function pointer; restore after the assertion.
@@ -114,22 +120,5 @@ func TestReadUSBStringHandlesMissingSymbol(t *testing.T) {
 	got := readUSBString(0, "USB Serial Number")
 	if got != "" {
 		t.Errorf("readUSBString with no resolver = %q, want empty", got)
-	}
-}
-
-// TestReadUSBStringHandlesMissingProperty confirms readUSBString
-// returns empty (rather than panicking or returning garbage) when
-// IORegistryEntryCreateCFProperty returns NULL for a key that
-// doesn't exist on the supplied service. We can't synthesize a
-// real ioService here without IOKit loaded; the test relies on
-// platformEnumerator gracefully degrading.
-func TestReadUSBStringHandlesMissingProperty(t *testing.T) {
-	// If IOKit didn't load, cfStringCreateWithCString is nil and
-	// the function returns early — that's the path we cover by
-	// invoking on an invalid service handle. Either way the
-	// contract is "no panic, empty string".
-	got := readUSBString(0xFFFFFFFF, "no-such-property")
-	if got != "" {
-		t.Errorf("readUSBString on bad service = %q, want empty", got)
 	}
 }
