@@ -32,6 +32,13 @@ const (
 	//     so operators can see "retry in 5 s".
 	KindHuntProgress Kind = "cchunt.progress"
 	KindHuntFailed   Kind = "cchunt.failed"
+	// KindAudioState fires when an operator changes the live-audio
+	// cockpit — volume, mute, or recording-gate. The payload is the
+	// new state (the same shape as GET /api/v1/audio). Subscribers
+	// can re-render volume sliders / mute indicators instantly
+	// instead of waiting for the next 3 s poll tick. Emitted by
+	// the HTTP API's PATCH /api/v1/audio handler.
+	KindAudioState Kind = "audio.state"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol

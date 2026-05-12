@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
+
+	"github.com/MattCheramie/GopherTrunk/internal/events"
 )
 
 // AudioStatusDTO is the JSON shape returned by GET /api/v1/audio. Mirrors
@@ -96,7 +99,19 @@ func (s *Server) handleAudioPatch(w http.ResponseWriter, r *http.Request) {
 	if req.Recording != nil {
 		s.audio.SetRecordingEnabled(*req.Recording)
 	}
-	writeJSON(w, http.StatusOK, audioStatusDTO(s.audio))
+	state := audioStatusDTO(s.audio)
+	// Push the new state to SSE subscribers so other TUIs / web
+	// clients converge instantly instead of waiting for the next
+	// 3 s poll tick. The events.Bus passes the DTO through to the
+	// SSE pump's default payload case unchanged.
+	if s.bus != nil {
+		s.bus.Publish(events.Event{
+			Kind:      events.KindAudioState,
+			Timestamp: time.Now().UTC(),
+			Payload:   state,
+		})
+	}
+	writeJSON(w, http.StatusOK, state)
 }
 
 func audioStatusDTO(a AudioController) AudioStatusDTO {

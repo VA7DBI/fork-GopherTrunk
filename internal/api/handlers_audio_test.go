@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/events"
 )
@@ -143,6 +144,54 @@ func TestAudioPatch_AppliesAllFields(t *testing.T) {
 	}
 	if fa.RecordingEnabled() {
 		t.Errorf("recording not disabled")
+	}
+}
+
+// TestAudioPatch_PublishesSSEEvent verifies the PATCH handler emits
+// an events.KindAudioState event on the bus so SSE subscribers
+// converge instantly instead of waiting for the next poll. The
+// emitted payload is the new state (same shape as the HTTP
+// response).
+func TestAudioPatch_PublishesSSEEvent(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	fa := newFakeAudio()
+	base, teardown := mkServer(t, ServerOptions{
+		Bus:            bus,
+		AllowMutations: true,
+		Audio:          fa,
+	})
+	defer teardown()
+
+	body := `{"muted":true}`
+	req, _ := http.NewRequest(http.MethodPatch, base+"/api/v1/audio", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	select {
+	case ev := <-sub.C:
+		if ev.Kind != events.KindAudioState {
+			t.Errorf("event kind = %q, want audio.state", ev.Kind)
+		}
+		state, ok := ev.Payload.(AudioStatusDTO)
+		if !ok {
+			t.Fatalf("payload type = %T, want AudioStatusDTO", ev.Payload)
+		}
+		if !state.Muted {
+			t.Errorf("event payload muted = false, want true")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("no audio.state event published within 500 ms")
 	}
 }
 
