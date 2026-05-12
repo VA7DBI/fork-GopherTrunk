@@ -7,8 +7,16 @@ import (
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/events"
+	"github.com/MattCheramie/GopherTrunk/internal/radio/framing"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
+
+// pn44SeedFromNSB computes the PN44 descrambler seed from the
+// (WACN, SystemID, ColorCode) triple carried in a Network Status
+// Broadcast - Update MAC PDU per TIA-102.BBAC-1 §7.2.5 equation (5).
+func pn44SeedFromNSB(nsb NetworkStatusBroadcast) uint64 {
+	return framing.PN44SeedFromIdentity(nsb.WACN, nsb.SystemID, nsb.ColorCode)
+}
 
 // ControlChannel ingests P25 Phase 2 MAC PDUs from a single Phase 2
 // traffic channel and republishes voice grants as
@@ -350,12 +358,23 @@ func New(opts Options) *ControlChannel {
 // Ingest hands one decoded MAC PDU to the state machine. Real
 // captures arrive from an upstream H-DQPSK demod + TDMA superframe
 // sync + Trellis FEC; tests publish PDUs directly.
+//
+// Network Status Broadcast - Update PDUs (opcode 0xFB) auto-update
+// the descrambler seed from their (WACN, SystemID, ColorCode)
+// payload per TIA-102.BBAC-1 §7.2.5 equation (5). Operators don't
+// need to hand-configure the seed any more once the first NSB-
+// Update lands on the bus — the connector still installs an
+// initial seed from per-system config for descrambling to work
+// against the very first PDUs.
 func (c *ControlChannel) Ingest(p MACPDU) {
 	c.mu.Lock()
 	strict := c.strictValidation
 	c.mu.Unlock()
 	if strict && !p.Opcode.IsKnown() {
 		return
+	}
+	if nsb, ok := p.AsNetworkStatusBroadcast(); ok {
+		c.installSeedFromNSB(nsb)
 	}
 	if p.IsIdle() {
 		return
@@ -377,6 +396,25 @@ func (c *ControlChannel) Ingest(p MACPDU) {
 	}
 	if g, ok := p.AsGroupVoiceChannelGrant(); ok {
 		c.publishGrant(g, p.Opcode)
+	}
+}
+
+// installSeedFromNSB recomputes the PN44 descrambler seed from a
+// freshly-parsed Network Status Broadcast - Update payload and
+// updates ScramblerSeed if the new value differs from the one
+// already configured. Operators with a hand-configured seed see no
+// change unless the NSB-derived seed actually differs (rare in
+// practice; the NSB values are stable for the lifetime of a system).
+func (c *ControlChannel) installSeedFromNSB(nsb NetworkStatusBroadcast) {
+	newSeed := pn44SeedFromNSB(nsb)
+	c.mu.Lock()
+	prev := c.scramblerSeed
+	c.scramblerSeed = newSeed
+	c.mu.Unlock()
+	if prev != newSeed {
+		c.log.Debug("p25/phase2 scrambler seed updated from NSB",
+			"wacn", nsb.WACN, "sysid", nsb.SystemID, "cc", nsb.ColorCode,
+			"seed", newSeed, "system", c.systemName)
 	}
 }
 

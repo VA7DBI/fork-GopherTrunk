@@ -101,12 +101,14 @@ The remaining gaps:
       SystemID, NAC) triple (`SetScramblerSeed` /
       `framing.PN44SeedFromIdentity`).
 
-    The previous follow-up — full superframe-aware per-burst
-    offset tracking — now ships via the `ScramblerProbe` blind-
-    probe. NSB-message-driven seed installation at runtime
-    (rather than static per-system config) remains a future
-    improvement; current operators set the seed values once at
-    config time.
+    The previous follow-ups — full superframe-aware per-burst
+    offset tracking AND NSB-driven runtime seed installation —
+    now both ship. The `ScramblerProbe` blind-probe walks all 12
+    slot offsets; the `ControlChannel.Ingest` path auto-recomputes
+    the seed from every Network Status Broadcast - Update MAC PDU
+    (opcode 0xFB) via `pn44SeedFromNSB`. Per-system static config
+    still provides the initial seed for the first few PDUs before
+    NSB lands, and stays available as an override.
   - **MPT 1327 sync detection + bit-error-tolerant CWSC.** The
     BCH(64, 48, 2) per-codeword check + the 16-bit Codeword
     Synchronisation Code (`1100010011010111`) alignment per the
