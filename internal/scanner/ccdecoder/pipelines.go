@@ -27,6 +27,8 @@ import (
 	tetrarx "github.com/MattCheramie/GopherTrunk/internal/radio/tetra/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/ysf"
 	ysfrx "github.com/MattCheramie/GopherTrunk/internal/radio/ysf/receiver"
+	"github.com/MattCheramie/GopherTrunk/internal/radio/dstar"
+	dstarrx "github.com/MattCheramie/GopherTrunk/internal/radio/dstar/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
@@ -121,6 +123,7 @@ var factories = map[trunking.Protocol]PipelineFactory{
 	trunking.ProtocolMPT1327:   newMPT1327Pipeline,
 	trunking.ProtocolTETRA:     newTETRAPipeline,
 	trunking.ProtocolYSF:       newYSFPipeline,
+	trunking.ProtocolDStar:     newDStarPipeline,
 }
 
 // newP25Phase1Pipeline wires the existing
@@ -637,3 +640,44 @@ type mpt1327Pipeline struct {
 func (p *mpt1327Pipeline) Process(iq []complex64) { p.rx.Process(iq) }
 func (p *mpt1327Pipeline) Reset()                  { p.rx.Reset() }
 func (p *mpt1327Pipeline) Close() error            { return nil }
+
+// newDStarPipeline wires internal/radio/dstar/receiver into
+// dstar.ControlChannel.Process. D-STAR is the JARL DV-mode amateur
+// digital voice + data protocol — GMSK at 4800 bps with BT = 0.5,
+// same 2-level shape as EDACS but at half the symbol rate.
+//
+// D-STAR isn't trunked in the cellular sense: each repeater is its
+// own conventional channel and there's no separate control channel
+// granting traffic onto a different frequency. The pipeline still
+// fits the trunked connector model because the ControlChannel state
+// machine treats each PCH header as a synthetic grant on the same
+// tuned frequency, so the engine + recorder + composer don't need to
+// know D-STAR is conventional.
+//
+// The convolutional rate-1/2 inner FEC + scrambler + interleaver
+// the on-air PCH carries are documented follow-ups; this pipeline
+// works on synthesized fixtures and pre-FEC-stripped inputs.
+func newDStarPipeline(opts PipelineOptions) (ProtocolPipeline, error) {
+	cc := dstar.New(dstar.Options{
+		Bus:         opts.Bus,
+		Log:         opts.Log,
+		SystemName:  opts.SystemName,
+		FrequencyHz: opts.FrequencyHz,
+	})
+	rx := dstarrx.New(dstarrx.Options{
+		SampleRateHz: opts.SampleRateHz,
+		BitSink: func(bits []byte, baseIdx int) {
+			cc.Process(bits, baseIdx)
+		},
+	})
+	return &dstarPipeline{rx: rx, cc: cc}, nil
+}
+
+type dstarPipeline struct {
+	rx *dstarrx.Receiver
+	cc *dstar.ControlChannel
+}
+
+func (p *dstarPipeline) Process(iq []complex64) { p.rx.Process(iq) }
+func (p *dstarPipeline) Reset()                 { p.rx.Reset() }
+func (p *dstarPipeline) Close() error           { return nil }

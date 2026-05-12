@@ -1,5 +1,16 @@
 package dstar
 
+// BitSink consumes the raw stream of bits a D-STAR receiver decodes
+// from the GMSK demodulator + matched filter + symbol-clock recovery
+// chain. D-STAR is 2-level (GMSK at 4800 bps) so every symbol carries
+// exactly one bit — unlike the 4-level C4FM family which fans into
+// DibitSink. Wire it through `internal/radio/dstar/receiver.Options`.
+//
+// baseIdx is the absolute bit index of bits[0] across the stream
+// lifetime so downstream sync detection / window slicing can report
+// stable positions.
+type BitSink func(bits []byte, baseIdx int)
+
 // D-STAR sync words per the JARL D-STAR DV-mode specification.
 // Two distinct patterns mark the two burst types a receiver tracks:
 //
