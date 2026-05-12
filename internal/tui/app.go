@@ -289,6 +289,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmdPollScanner(m.cli))
 		case "cchunt.progress", "cchunt.failed", "cc.locked", "cc.lost":
 			cmds = append(cmds, cmdPollScanner(m.cli))
+		case "audio.state":
+			// Refresh the audio snapshot now rather than waiting
+			// for the next 3 s poll. Multiple TUIs / clients
+			// converge on volume / mute / record state inside one
+			// SSE round-trip instead of one full poll period.
+			cmds = append(cmds, cmdPollAudio(m.cli))
 		}
 		cmds = append(cmds, listenSSE(m.eventCh))
 

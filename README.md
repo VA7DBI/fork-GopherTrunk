@@ -277,6 +277,15 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **`audio.state` SSE event for instant TUI convergence.** PATCH
+  `/api/v1/audio` now publishes the resulting state on the events
+  bus as `KindAudioState`, which the SSE pump forwards to every
+  subscriber. The TUI listens and re-fetches the audio snapshot on
+  receipt, so two TUIs / a TUI plus a `curl` PATCH converge inside
+  one SSE round-trip instead of waiting up to 3 s for the next
+  poll tick. The payload is the same `AudioStatusDTO` the HTTP
+  response carries — clients can use it directly or just treat the
+  event as a poll trigger.
 - **Conventional channel runtime lockout.** Press `L` on the TUI's
   Scanner panel (or `POST /api/v1/scanner/conventional/{idx}/lockout`)
   to skip a conventional FM channel during scan, matching the
