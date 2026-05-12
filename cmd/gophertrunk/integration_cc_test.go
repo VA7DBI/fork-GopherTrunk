@@ -11,85 +11,83 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/config"
+	"github.com/MattCheramie/GopherTrunk/internal/dsp/demod"
 	"github.com/MattCheramie/GopherTrunk/internal/events"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
-	"github.com/MattCheramie/GopherTrunk/internal/scanner/ccdecoder"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
-	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
 // TestDaemonCCDecodesP25Phase1 is the end-to-end "lights up live
 // trunked reception" check from the roadmap. It boots the wired
-// daemon with a mock SDR and a stubbed-in P25 Phase 1 pipeline
-// factory, then injects a known-good dibit stream into the real
-// phase1.ControlChannel — exercising the full chain *above* the
-// IQ→dibit demod:
+// daemon with a mock SDR replaying a fully-synthesized P25 Phase
+// 1 control-channel IQ stream (built by the C4FM modulator in
+// internal/dsp/demod) and asserts the full chain — IQ → C4FM
+// demod → MM clock recovery → 4-level slice → dibits → FSW +
+// NID + TSBK trellis → CC state machine — recovers the lock:
 //
 //   - daemon construction (pool, supervisor, ccdecoder)
 //   - cchunt supervisor publishing KindHuntProgress
-//   - ccdecoder factory dispatch + pipeline construction
-//   - pipeline.Process invoked on every IQ chunk
-//   - cc.Process driving the state machine from synthesized
-//     dibits (FSW + NID + TSBK frame fixtures from the in-
-//     package phase1 test helpers)
+//   - ccdecoder factory dispatch + pipeline construction (the
+//     production newP25Phase1Pipeline; no test stubs)
+//   - mock SDR's IQ chunks land in the real receiver
+//   - receiver's RRC matched filter + Mueller-Müller clock
+//     recovery + 4-level slicer emit dibits
+//   - phase1.ControlChannel.Process drives the state machine
 //   - state machine emitting cc.locked on the bus
 //   - supervisor consuming cc.locked → state=locked transition
 //   - /api/v1/scanner reflecting the lock
-//   - gophertrunk_cc_locked_total metric incrementing
-//
-// The one chain step this test skips is IQ→dibit C4FM
-// demodulation — that's covered by the phase1/receiver unit
-// tests. A future PR could land a proper C4FM modulator (RRC
-// pulse shaping + continuous-phase integration) and remove the
-// factory-stubbing, but the integration coverage above the demod
-// is what this milestone actually proves.
+//   - gophertrunk_control_channel_locked metric reaching 1
 //
 // The plan documented this as the close-out for Workstream A
-// ("lights up live trunked reception").
+// ("lights up live trunked reception"). PR #147 landed an
+// intermediate version that stubbed the IQ→dibit step via
+// ccdecoder.SetTestFactory; this PR replaces that stub with the
+// real C4FM modulator + RRC pulse-shaping primitive shipped in
+// internal/dsp/demod/c4fm_modulator.go.
 func TestDaemonCCDecodesP25Phase1(t *testing.T) {
 	const (
 		nac           = 0x293
 		controlFreqHz = 851_000_000
+		sampleRateHz  = 48_000
+		sps           = 10
+		span          = 8
+		alpha         = 0.2
+		deviationHz   = 1800.0
+		frameRepeats  = 30
 	)
 
-	// Build a P25 Phase 1 dibit stream the real
-	// phase1.ControlChannel.Process recognises — FSW + valid
-	// NID + a trellis-encoded TSBK. Mirrors the in-package
-	// buildLockedStream helpers but constructed here to avoid
-	// cross-package internal-test dependencies.
-	dibits := buildP25LockedDibits(nac)
+	// Build a P25 Phase 1 dibit stream: a long warmup pattern
+	// (cycling through every symbol so the Mueller-Müller clock
+	// recovery sees plenty of transitions and locks) followed by
+	// multiple FSW + NID + trellis-encoded TSBK frames separated
+	// by idle dibits. The repeats give the receiver multiple
+	// sync-detect chances; with the C4FM modulator's RRC pulse
+	// shaping the matched-filter cascade is ISI-free at symbol
+	// centres, so any one of those frames is enough to lock.
+	dibits := buildP25LockedIQDibits(nac, frameRepeats)
 
-	// Wire a small mock IQ file. Content doesn't matter — the
-	// stubbed factory ignores the IQ; the mock SDR file only
-	// has to exist long enough for ccdecoder to keep the
-	// pipeline alive while we publish KindHuntProgress.
+	// Modulate the dibit stream through the C4FM TX chain
+	// (impulse train → RRC pulse shape → FM modulator → IQ).
+	// 48 kHz @ 10 sps = 4800 baud, the spec rate. 1800 Hz peak
+	// deviation matches TIA-102.BAAA-A; the matched
+	// newP25Phase1Pipeline configures the receiver's slicer
+	// thresholds against this same deviation via the
+	// p25phase1rx.Options.DeviationHz knob.
+	iq := demod.ModulateC4FM(dibits, sps, span, alpha, sampleRateHz, deviationHz)
+
 	dir := t.TempDir()
-	iqPath := filepath.Join(dir, "mock.cfile")
-	// 4 MiB ≈ 850 ms of streaming at the mock SDR's default
-	// 2.4 MHz pacing — comfortably long enough for the
-	// supervisor to publish KindHuntProgress, the ccdecoder to
-	// construct the pipeline, and at least one Process(iq) call
-	// to land afterwards so our pipeline's sync.Once fires.
-	if err := os.WriteFile(iqPath, make([]byte, 4*1024*1024), 0o600); err != nil {
-		t.Fatal(err)
+	iqPath := filepath.Join(dir, "p25-cc.cfile")
+	if err := writeIQToU8File(iqPath, iq); err != nil {
+		t.Fatalf("write IQ: %v", err)
 	}
 	sdr.Register(&sdr.MockDriver{Files: []string{iqPath}})
 
-	// Stub the P25 factory with one that constructs a real
-	// phase1.ControlChannel + a Pipeline whose Process(iq)
-	// pumps a slice of the pre-built dibit stream forward.
-	// The pipeline runs through the whole dibit stream within
-	// a few IQ chunks, then idles.
-	restore := ccdecoder.SetTestFactory(trunking.ProtocolP25, newDibitInjectingP25Factory(dibits))
-	t.Cleanup(restore)
-
 	cfg := config.Default()
-	cfg.SDR.SampleRate = 480_000 // any value passes config validation; mock SDR doesn't care
+	cfg.SDR.SampleRate = sampleRateHz
 	cfg.SDR.Devices = []config.DeviceConfig{
 		{Serial: "mock-00", Role: "control"},
 	}
@@ -179,63 +177,66 @@ WaitLoop:
 	}
 }
 
-// buildP25LockedDibits assembles one FSW + NID + TSBK dibit
-// frame, padded with a long idle prefix so the receiver chain
-// has room to lock its symbol clock if a future revision of this
-// test drops the factory stub and runs synthesized IQ end-to-end.
-// Mirrors the in-package phase1 test helpers' layout exactly.
-func buildP25LockedDibits(nac uint16) []uint8 {
-	const idlePrefix = 10
-	out := make([]uint8, 0, idlePrefix+24+32+98+16)
-	for i := 0; i < idlePrefix; i++ {
-		out = append(out, 0)
-	}
-	out = append(out, phase1.FrameSyncWord[:]...)
+// buildP25LockedIQDibits assembles a long P25 Phase 1 dibit
+// stream suitable for the C4FM modulator + receiver chain:
+//
+//   - a 200-dibit warmup pattern cycling 0,1,2,3 so the
+//     Mueller-Müller clock recovery sees every symbol level
+//     and a transition every dibit
+//   - `repeats` × (FSW + NID + trellis-encoded TSBK + 50 idle
+//     dibits)
+//   - a 100-dibit trailer for clean flush
+//
+// Mirrors the in-package phase1 test helpers' frame layout.
+func buildP25LockedIQDibits(nac uint16, repeats int) []uint8 {
+	frame := make([]uint8, 0, 24+32+98)
+	frame = append(frame, phase1.FrameSyncWord[:]...)
 	nidBits := phase1.EncodeNIDBits(nac, phase1.DUIDTrunkingSignaling)
 	for i := 0; i < 32; i++ {
-		out = append(out, (nidBits[2*i]<<1)|nidBits[2*i+1])
+		frame = append(frame, (nidBits[2*i]<<1)|nidBits[2*i+1])
 	}
 	tsbk := phase1.AssembleTSBK(phase1.TSBK{LB: true, Opcode: phase1.OpRFSSStatusBroadcast})
-	out = append(out, phase1.EncodeTSBKChannel(tsbk)...)
-	for i := 0; i < 16; i++ {
-		out = append(out, 0)
+	frame = append(frame, phase1.EncodeTSBKChannel(tsbk)...)
+
+	out := make([]uint8, 0, 200+repeats*(len(frame)+50)+100)
+	for i := 0; i < 200; i++ {
+		out = append(out, uint8(i&3))
+	}
+	for r := 0; r < repeats; r++ {
+		out = append(out, frame...)
+		for i := 0; i < 50; i++ {
+			out = append(out, uint8(i&3))
+		}
+	}
+	for i := 0; i < 100; i++ {
+		out = append(out, uint8(i&3))
 	}
 	return out
 }
 
-// newDibitInjectingP25Factory returns a PipelineFactory that
-// constructs a real phase1.ControlChannel for the supplied
-// system and wraps it in a pipeline whose Process(iq) is a no-op
-// — instead the pipeline pumps the pre-built dibit stream into
-// cc.Process exactly once, on first invocation. Subsequent
-// Process calls do nothing.
-//
-// The test calls this once via ccdecoder.SetTestFactory so the
-// production factory map's P25 entry is replaced for the
-// duration of the test.
-func newDibitInjectingP25Factory(dibits []uint8) ccdecoder.PipelineFactory {
-	return func(opts ccdecoder.PipelineOptions) (ccdecoder.ProtocolPipeline, error) {
-		cc := phase1.NewControlChannel(opts.Bus, opts.Log, opts.FrequencyHz)
-		return &dibitInjectingPipeline{cc: cc, dibits: dibits}, nil
+// writeIQToU8File serialises a complex64 IQ buffer to u8
+// interleaved pairs (the format sdr.MockDriver consumes). Each
+// complex64 sample becomes 2 bytes: I and Q each scaled from
+// [-1, 1] to [0, 255] with 127.5 offset.
+func writeIQToU8File(path string, iq []complex64) error {
+	out := make([]byte, len(iq)*2)
+	for i, s := range iq {
+		out[2*i] = floatToU8(real(s))
+		out[2*i+1] = floatToU8(imag(s))
 	}
+	return os.WriteFile(path, out, 0o600)
 }
 
-type dibitInjectingPipeline struct {
-	cc     *phase1.ControlChannel
-	dibits []uint8
-	once   sync.Once
+func floatToU8(v float32) byte {
+	scaled := float64(v)*127.0 + 127.5
+	if scaled < 0 {
+		return 0
+	}
+	if scaled > 255 {
+		return 255
+	}
+	return byte(scaled)
 }
-
-func (p *dibitInjectingPipeline) Process(_ []complex64) {
-	// One Process call delivers the entire pre-built dibit
-	// stream — small enough (~180 dibits) that latency is
-	// negligible. The phase1 state machine emits cc.locked on
-	// the bus inline as soon as the FSW + NID + valid TSBK land.
-	p.once.Do(func() { p.cc.Process(p.dibits, 0) })
-}
-
-func (p *dibitInjectingPipeline) Reset()       {}
-func (p *dibitInjectingPipeline) Close() error { return nil }
 
 // waitForScannerLock polls /api/v1/scanner until the named system
 // reports state=locked or the timeout fires.

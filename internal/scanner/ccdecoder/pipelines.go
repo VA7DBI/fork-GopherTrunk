@@ -138,6 +138,14 @@ func newP25Phase1Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 	})
 	rx := p25phase1rx.New(p25phase1rx.Options{
 		SampleRateHz: opts.SampleRateHz,
+		// P25 Phase 1 nominal peak deviation per TIA-102.BAAA-A
+		// — calibrates the slicer thresholds against the
+		// FM-discriminator output level (see
+		// p25phase1rx.Options.DeviationHz). Hardcoded since the
+		// air-interface deviation is spec-fixed; if a future
+		// site uses non-standard deviation the connector can
+		// expose this as a per-system YAML key.
+		DeviationHz: 1800.0,
 		DibitSink: func(dibits []uint8, baseIdx int) {
 			cc.Process(dibits, baseIdx)
 		},

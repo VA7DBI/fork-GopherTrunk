@@ -199,6 +199,47 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **C4FM modulator + RRC pulse shaping + receiver-side
+  slicer calibration.** Closes the last stub in the
+  `make integration-cc` chain. The IQ → dibit demodulation
+  step is now exercised end-to-end against real synthesized
+  IQ (no factory stub, no dibit injection).
+  - `internal/dsp/demod/c4fm_modulator.go` implements the
+    full TX chain: dibit → ±1/±3 symbol → impulse train ×
+    sps → RRC pulse-shape filter (unit-energy, matches the
+    receiver's RRC matched filter) → FM modulator (phase
+    accumulator) → IQ. `C4FMModulator` is stateful across
+    Modulate calls so long streams can be chunked; the
+    `ModulateC4FM` convenience wraps a single-shot call.
+  - `internal/radio/p25/phase1/receiver` gains
+    `Options.DeviationHz` — when set the slicer thresholds
+    are calibrated against the FM-discriminator output
+    level (`2π · DeviationHz / SampleRateHz` at symbol ±3)
+    instead of the legacy hardcoded `slicerScale = 1.0`.
+    The default (no DeviationHz) preserves the existing
+    fixture behaviour for back-compat. The ccdecoder's
+    `newP25Phase1Pipeline` factory hardcodes 1800 Hz per
+    TIA-102.BAAA-A so live captures slice correctly out of
+    the box; a future revision can plumb this through
+    per-system YAML if non-standard deviation comes up.
+  - `cmd/gophertrunk/integration_cc_test.go` is rewritten
+    to feed real C4FM-modulated IQ through the production
+    `newP25Phase1Pipeline` instead of stubbing the factory.
+    The dibit stream is unchanged (FSW + NID + trellis-
+    encoded TSBK), but it's now passed through
+    `demod.ModulateC4FM` → u8-IQ file → mock SDR →
+    `phase1/receiver` → `phase1.ControlChannel.Process` →
+    `cc.locked`. 20-run flakiness check clean.
+  Tests cover the modulator round-trip against the
+  receiver chain (200 random dibits with every symbol
+  level represented, all recover correctly), phase
+  continuity across chunked Modulate calls, constant-
+  envelope (|IQ| = 1 ± 1e-6) sanity, and the
+  dibit→symbol mapping pinned as the inverse of
+  `phase1.SymbolToDibit`. The earlier
+  `ccdecoder.SetTestFactory` test hook stays exported for
+  any future protocol-pipeline integration tests that need
+  to inject behaviour above the demod.
 - **`make integration-cc` — the "lights up live trunked
   reception" milestone.** Closes Workstream A of the
   original plan. The new target boots the wired daemon

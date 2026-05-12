@@ -20,6 +20,8 @@
 package receiver
 
 import (
+	"math"
+
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/demod"
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/sync"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
@@ -78,6 +80,16 @@ type Options struct {
 	// which is appropriate for clean signals; raise for noisy /
 	// drifting transmitters.
 	ClockGain float64
+	// DeviationHz is the peak frequency deviation of the C4FM
+	// signal at symbol ±3 (1800 Hz on P25 Phase 1 per
+	// TIA-102.BAAA). Used to calibrate the slicer thresholds
+	// against the FM-discriminator output level (which lives in
+	// rad/sample, so the slicer scale is 2π · DeviationHz /
+	// SampleRateHz at symbol ±3). <=0 falls back to slicer
+	// thresholds tuned for the legacy "FM-output-already-
+	// normalised-to-±1" assumption, which only fires for
+	// synthesized fixtures that pre-scale their signal levels.
+	DeviationHz float64
 }
 
 // Receiver is the composed IQ → dibit → LDU pipeline. Process is the
@@ -126,11 +138,22 @@ func New(opts Options) *Receiver {
 	}
 
 	// Slicer thresholds are normalised to the FM-discriminator's
-	// output range so ±1 maps to ±deviation. Passing 1.0 sets the
-	// inner thresholds at ±2/3 and the outer at >2/3, matching the
-	// {-3,-1,+1,+3} symbol alphabet after the discriminator scales
-	// the four C4FM levels into a real-valued ramp around zero.
-	const slicerScale = 1.0
+	// output range so ±1 maps to ±deviation. With the FM
+	// discriminator in rad/sample, the FM peak at symbol ±3 is
+	// 2π · DeviationHz / SampleRateHz, so we pass that value
+	// (times the symbol-magnitude reference of 1.0 — symbol +3
+	// produces a peak ±value, +1 produces ±value/3, etc.) as the
+	// "deviation" arg to NewC4FM. The slicer then puts the
+	// +1/+3 boundary at 2/3 of this and the -1/-3 boundary at
+	// -2/3, both proportional to the physical signal level.
+	//
+	// Callers that don't supply DeviationHz fall back to the
+	// legacy slicerScale = 1.0 — matches the existing synthesized
+	// fixture tests that pre-scale their FM levels into ±1.
+	slicerScale := 1.0
+	if opts.DeviationHz > 0 {
+		slicerScale = 2.0 * math.Pi * opts.DeviationHz / opts.SampleRateHz
+	}
 
 	r := &Receiver{
 		fm:        demod.NewFM(),
