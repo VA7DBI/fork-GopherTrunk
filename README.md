@@ -278,6 +278,20 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **Direct-ioctl ALSA backend (drops the runtime libasound2 dep).**
+  Setting `audio.device: ioctl` (or `ioctl:hw:C,D` for a specific
+  card / device) on Linux selects a direct-kernel backend that
+  opens `/dev/snd/pcmC{card}D{device}p` and drives the playback
+  state machine via `SNDRV_PCM_IOCTL_*` syscalls. No
+  `libasound2.so.2` at runtime, no `purego.Dlopen`, no cgo —
+  useful for distroless / Alpine / scratch container images that
+  don't ship the userspace library but do have the kernel sound
+  subsystem available. Defaults to card 0, device 0; format
+  pinned to S16_LE mono at `audio.sample_rate`, period sized
+  from `audio.buffer_ms`. The dlopen path stays the Linux
+  default because it auto-negotiates with the hardware; the
+  ioctl path uses fixed values so it only works when the
+  underlying device natively supports them.
 - **AMBE+2 DTMF dual-tone synthesis.** Tone frames with
   b₁ ∈ [128, 143] (the AMBE+2 DTMF range) now synthesise the
   correct summed sinewaves instead of routing through silence.

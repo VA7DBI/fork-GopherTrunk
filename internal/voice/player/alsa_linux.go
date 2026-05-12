@@ -25,6 +25,7 @@ package player
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -107,6 +108,22 @@ type alsaBackend struct {
 }
 
 func newALSABackend(cfg Config) (Backend, error) {
+	// Direct-ioctl opt-in: an "ioctl" device name (with optional
+	// "hw:C,D" suffix after a colon) bypasses libasound2.so.2
+	// entirely. Useful for stripped-down container images that
+	// don't ship the userspace library but do have the kernel
+	// sound subsystem. The dlopen path stays the default because
+	// it negotiates format / rate / period with the hardware
+	// automatically; the ioctl path uses pinned values so it
+	// only works when the hardware natively supports them.
+	if cfg.Device == "ioctl" || strings.HasPrefix(cfg.Device, "ioctl:") {
+		spec := ""
+		if i := strings.IndexByte(cfg.Device, ':'); i >= 0 {
+			spec = cfg.Device[i+1:]
+		}
+		return newIoctlALSABackend(cfg, spec)
+	}
+
 	if err := loadALSA(); err != nil {
 		return nil, err
 	}

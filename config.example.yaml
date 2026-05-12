@@ -107,7 +107,11 @@ scanner:
 # to a silent player automatically so the daemon stays running.
 audio:
   enabled: false       # set true to play decoded calls live
-  device: ""           # empty = system default sink; "null" forces no-op
+  device: ""           # empty = system default sink; "null" forces no-op;
+                       # on Linux, "ioctl" or "ioctl:hw:C,D" bypasses
+                       # libasound2 entirely (direct kernel ioctl on
+                       # /dev/snd/pcmC*D*p — useful for distroless /
+                       # Alpine containers without libasound2.so.2)
   sample_rate: 8000    # must match recordings.sample_rate
   buffer_ms: 80        # playback queue depth; higher = more jitter-tolerant
   volume: 0.8          # 0..1 software gain
