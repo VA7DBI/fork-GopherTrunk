@@ -124,15 +124,13 @@ The remaining gaps:
   live capture to characterise.
 - **Symbol-time clock recovery on complex IQ.** The Gardner
   timing-recovery primitive in `internal/dsp/sync/gardner.go`
-  is now threaded into both the **P25 Phase 2** and **TETRA**
-  receivers via a per-receiver `ClockMode` opt-in
-  (`ClockNaive` default preserves the pre-Gardner behaviour for
-  existing tests; `ClockGardner` routes the matched-filter
-  output through the Gardner loop). Noisier on-air captures
-  whose symbol clock isn't aligned with the SDR sample clock
-  should lock cleanly under `ClockGardner`. The connector
-  configuration for picking the mode at runtime is the
-  follow-up.
+  is threaded into both the **P25 Phase 2** and **TETRA**
+  receivers via a per-system `ClockMode`. The connector now
+  reads `p25_phase2_clock_mode` / `tetra_clock_mode` from the
+  per-system YAML and constructs the receiver with
+  `ClockGardner` (the new default — recommended for live SDR
+  captures). Operators feeding sample-aligned synthesized IQ
+  fixtures can opt back to `naive` per-system if needed.
 - **Digital-voice level calibration.** Pure-Go IMBE / AMBE+2 emit
   real audio end-to-end with shared AGC, frame-repeat on bad-frame
   indicator, phase-aware fade-in, and §6.2 spectral enhancement
@@ -1972,40 +1970,41 @@ hold/resume/retune/dwell + scan_mode flip) start the daemon with
 gate independently because the HTTP API has no authentication.
 See [`docs/tui.md`](docs/tui.md) for the full reference.
 
-## FEC opt-ins
+## FEC opt-outs
 
-Every protocol that has a public-spec FEC chain ships the chain as
-an **opt-in**: the connector constructs each `ControlChannel` in
-its legacy raw-bit mode by default and only flips on the FEC layer
-when the operator sets a per-system key in `config.yaml`. Empty /
-absent keys preserve the legacy path so the synthesized-fixture
-tests stay green and operators with pre-stripped capture files
-(DSD-FME `-r` dumps, OP25 fixtures) don't see surprise CRC
-failures.
+Every protocol that has a public-spec FEC chain ships its
+spec-correct decoder chain **on by default**: the connector
+constructs each `ControlChannel` with the full on-air FEC layer
+applied, and operators with pre-stripped capture files (DSD-FME
+`-r` dumps, OP25 fixtures, MMDVMHost / DSDcc test data) opt out
+per-system with `<key>: off` in `config.yaml`. Empty / absent
+keys map to the new on-default for every protocol.
 
-Verify which opt-ins are active by opening the **Settings** panel
-in the TUI — it lists every configured system with a one-line
-summary of its FEC opt-in state (`channel coding: on (colour=…,
-sch/f)`, `viterbi: off`, `bch: on`, etc.). The panel is read-only;
-runtime mutation is a future PR. To change a mode, edit
-`config.yaml` and restart the daemon.
+Verify which protocols are on / off in the **Settings** panel of
+the TUI — it lists every configured system with a one-line summary
+of its FEC state (`channel coding: on (colour=…, sch/f)`, `viterbi:
+spec`, `bch: on`, etc.). The panel is read-only; runtime mutation
+is a future PR. To change a mode, edit `config.yaml` and restart
+the daemon.
 
-| Protocol | YAML key(s) | Off (default) | On |
+| Protocol | YAML key(s) | On (default) | Off (opt-out) |
 | --- | --- | --- | --- |
-| TETRA | `tetra_colour_code` (uint32, low 30 bits), `tetra_channel` (`"sch/hd"` / `"sch/f"` / `"sch/hu"` / `"bsch"` / `"aach"`, default `sch/hd`) | Legacy 48-dibit raw-PDU path. CRC fails on live captures. | Full ETSI EN 300 392-2 §8.3.1 type-5 → type-1 chain (descramble + deinterleave + depuncture + Viterbi + CRC-16 verify + tail strip) per burst. Non-zero `tetra_colour_code` flips it on. |
-| LTR | `ltr_fcs_mode` (`""` / `"off"` / `"on"`), `ltr_manchester_mode` (`""` / `"off"` / `"nrz"` / `"strict"` / `"soft"`) | NRZ Status bits, no FCS verification. Matches synthesized-fixture path. | CRC-7 FCS check against sdrtrunk's CRCLTR.java layout (`on`) and/or Manchester decode of sub-audible signaling (`soft` = majority decode, `strict` = require mid-bit transition). Live sub-audible captures typically need `manchester: soft` + `fcs: on`. |
-| P25 Phase 2 | `p25_phase2_trellis_mode` (`""` / `"off"` / `"on"`) | Legacy 72-dibit raw-MAC-PDU path. | 4-state ½-rate trellis FEC over the MAC PDU window (146 channel dibits → 72 info dibits per TIA-102.AABF). |
-| NXDN | `nxdn_viterbi_mode` (`""` / `"off"` / `"on"` / `"spec"`) | Legacy 44-dibit raw-CAC path. | `on`: simplified K=5 ½-rate Viterbi over the CAC region (92 dibits → 88 info bits + 4 tail zeros — matches the older MMDVMHost / DSDcc fixtures). `spec`: full NXDN-TS-1-A rev 1.3 §4.5.1.1 outbound chain (150 dibits = 300 channel bits → deinterleave 25×12 → depuncture 50/350 → K=5 Viterbi → 16-bit CRC verify → 155 info bits = 8 SR + 144 L3 + 3 Null). Use `spec` for live captures; `on` for back-compat with the older synthesized fixtures. |
-| EDACS | `edacs_bch_mode` (`""` / `"off"` / `"on"`) | Legacy pre-stripped 40-bit CCW; payload struct's LCN bit 0 + Aux fields are data. | BCH(40, 28, 2) with single/double-bit correction over the 40-bit on-wire CCW; under `on` the effective CCW carries 28 info bits (Command + Status + Address + high LCN bits), the remaining bits become BCH parity. |
-| MPT 1327 | `mpt1327_bch_mode` (`""` / `"off"` / `"on"`) | Legacy 38-bit pre-stripped codeword. | BCH(63, 38) decode over the 64-bit on-wire codeword. |
-| Motorola Type II | `motorola_bch_mode` (`""` / `"off"` / `"on"`) | Legacy 32-bit raw-OSW path. | Two 64-bit BCH(64, 16, 11) codewords reassembled into the 32-bit OSW with single- through 11-bit-error correction per codeword. Live captures should set `on`. |
+| TETRA | `tetra_colour_code` (uint32, low 30 bits — required for non-BSCH), `tetra_channel` (`"sch/hd"` / `"sch/f"` / `"sch/hu"` / `"bsch"` / `"aach"`, default `sch/hd`), `tetra_channel_coding` (`""` / `"on"` / `"off"`) | Full ETSI EN 300 392-2 §8.3.1 type-5 → type-1 chain (descramble + deinterleave + depuncture + Viterbi + CRC-16 verify + tail strip) per burst. `tetra_colour_code` of 0 is only valid for BSCH; non-BSCH channels need the per-cell colour code or descrambling produces garbage (the connector warn-logs this case). | `tetra_channel_coding: off` falls back to the legacy 48-dibit raw-PDU path. CRC will fail on live captures; only useful for pre-stripped fixtures. |
+| LTR | `ltr_fcs_mode` (`""` / `"on"` / `"off"`), `ltr_manchester_mode` (`""` / `"on"` / `"soft"` / `"strict"` / `"off"` / `"nrz"`) | `fcs: on` — CRC-7 FCS check against sdrtrunk's CRCLTR.java layout. `manchester: soft` — majority-decode each pair (matches the dominant on-air encoding for sub-audible LTR signaling). | `fcs: off` skips the CRC check (synthesized fixtures whose FCS trailer isn't populated). `manchester: off` / `nrz` treats the stream as raw NRZ (synthesized NRZ fixtures). |
+| P25 Phase 2 | `p25_phase2_trellis_mode` (`""` / `"on"` / `"off"`) | 4-state ½-rate trellis FEC over the MAC PDU window (146 channel dibits → 72 info dibits per TIA-102.AABF). | Falls back to the legacy 72-dibit raw-MAC-PDU path for pre-stripped fixtures. |
+| NXDN | `nxdn_viterbi_mode` (`""` / `"spec"` / `"on"` / `"off"`) | `spec` — full NXDN-TS-1-A rev 1.3 §4.5.1.1 outbound CAC chain (150 dibits → deinterleave 25×12 → depuncture 50/350 → K=5 Viterbi → 16-bit CRC verify → 155 info bits). | `on` — intermediate 92-dibit K=5 Viterbi path for older MMDVMHost / DSDcc fixtures. `off` — legacy 44-dibit raw-CAC path for pre-stripped fixtures. |
+| EDACS | `edacs_bch_mode` (`""` / `"on"` / `"off"`) | BCH(40, 28, 2) with single/double-bit correction over the 40-bit on-wire CCW; the effective CCW carries 28 info bits (Command + Status + Address + high LCN bits), the remaining bits become BCH parity. | Falls back to the legacy pre-stripped 40-bit CCW; payload struct's LCN bit 0 + Aux fields are treated as data instead of parity. |
+| MPT 1327 | `mpt1327_bch_mode` (`""` / `"on"` / `"off"`) | BCH(63, 38) decode over the 64-bit on-wire codeword. | Falls back to the legacy 38-bit pre-stripped codeword. |
+| Motorola Type II | `motorola_bch_mode` (`""` / `"on"` / `"off"`) | Two 64-bit BCH(64, 16, 11) codewords reassembled into the 32-bit OSW with single- through 11-bit-error correction per codeword. | Falls back to the legacy 32-bit raw-OSW path for pre-stripped DSD-FME `-r` fixtures. |
 
 All string values are case-insensitive with whitespace tolerated;
-recognised on-values include `"on"` / `"true"` / `"1"`, off-values
-`""` / `"off"` / `"false"` / `"0"`. Unrecognised values fall back
-to off with a `warn`-level log line ("ccdecoder: unrecognised
-`<key>`; falling back to off") so a typo doesn't silently break
-the decoder.
+recognised on-values include `""` (empty) / `"on"` / `"true"` /
+`"1"` (NXDN also accepts `"spec"`; LTR Manchester accepts
+`"soft"` / `"strict"`); off-values are `"off"` / `"false"` / `"0"`
+(LTR Manchester also accepts `"nrz"`). Unrecognised values fall
+back to the on-default with a `warn`-level log line ("ccdecoder:
+unrecognised `<key>`; falling back to on") so a typo doesn't
+silently break the decoder.
 
 Each protocol's `ControlChannel` exposes matching getters
 (`tetra.ControlChannel.ChannelCoding()` / `ExpectedChannel()` /
@@ -2032,9 +2031,11 @@ opt-in field as a `omitempty` JSON value.
 - [`docs/hardening.md`](docs/hardening.md) — Prometheus catalogue,
   Docker / compose USB pass-through, smoke-test checklist
 - [`docs/opt-in-features.md`](docs/opt-in-features.md) — every
-  disabled-by-default feature (protocol FEC, receiver clock,
-  daemon-level, build tags), why it's opt-in, and the work to flip
-  the default
+  disabled-by-default feature (receiver clock, daemon-level audio /
+  equalizer / mutations / tone-out, build tags), why it's opt-in,
+  and the work to flip the default. Protocol FEC chains are now
+  on-by-default; see the FEC opt-outs section above for the
+  per-protocol opt-out keys.
 - [`docs/specs/`](docs/specs/) — reference air-interface PDFs the
   on-air FEC implementations derive from (NXDN-TS-1-A,
   ETSI EN 300 392-2 TETRA, plus a negative-reference M/A-COM LBI

@@ -72,12 +72,13 @@ func (c *ControlChannel) SetStrictValidation(strict bool) {
 // BCHMode selects how the Process adapter interprets the incoming
 // bit stream:
 //
-//   - BCHOff (default): the adapter reads 38-bit information
-//     windows directly from the wire and treats them as Codewords.
-//     Works on synthesized test fixtures whose codewords are
-//     pre-stripped of the FEC layer.
+//   - BCHOff: the adapter reads 38-bit information windows directly
+//     from the wire and treats them as Codewords. Useful only for
+//     synthesized test fixtures whose codewords are pre-stripped of
+//     the FEC layer; explicit opt-out for operators feeding such
+//     captures.
 //
-//   - BCHOn: the adapter reads 64-bit on-wire codewords, runs
+//   - BCHOn (default): the adapter reads 64-bit on-wire codewords, runs
 //     them through the BCH(64,48,2) check + single-bit correction
 //     in internal/radio/framing/bch_mpt1327.go, and extracts the
 //     38-bit information field expected by the existing
@@ -119,18 +120,21 @@ func (c *ControlChannel) BCHMode() BCHMode {
 }
 
 // ParseBCHMode maps a config / user-facing string into a BCHMode.
-// Recognised values (case-insensitive): "" / "off" / "false" / "0"
-// → BCHOff (legacy 38-bit pre-stripped codeword path); "on" /
-// "true" / "1" → BCHOn (64-bit on-wire BCH(63, 38) decode). Unknown
-// strings return BCHOff with `ok = false`.
+// Recognised values (case-insensitive): "" → BCHOn (the new default —
+// 64-bit on-wire BCH(63, 38) decode); "off" / "false" / "0" → BCHOff
+// (legacy 38-bit pre-stripped codeword path, explicit opt-out for
+// pre-stripped fixtures); "on" / "true" / "1" → BCHOn. Unknown
+// strings return BCHOn with `ok = false`.
 func ParseBCHMode(s string) (BCHMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "off", "false", "0":
+	case "":
+		return BCHOn, true
+	case "off", "false", "0":
 		return BCHOff, true
 	case "on", "true", "1":
 		return BCHOn, true
 	default:
-		return BCHOff, false
+		return BCHOn, false
 	}
 }
 

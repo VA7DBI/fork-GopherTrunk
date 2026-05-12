@@ -166,10 +166,15 @@ func (p *p25Phase1Pipeline) Close() error            { return nil }
 // newP25Phase2Pipeline wires internal/radio/p25/phase2/receiver into
 // p25phase2.ControlChannel.Process. The receiver's DibitSink forwards
 // H-DQPSK dibits into the state machine (20-dibit outbound sync
-// detect → 72-dibit MAC PDU slice → ParseMACPDU → Ingest), which
-// publishes cc.locked on the first non-idle MAC PDU and grants on
-// GroupVoiceChannelGrant variants. Trellis FEC + slot-type
-// extraction across the full 180-dibit subframe are follow-ups.
+// detect → 146-channel-dibit trellis decode → MAC PDU parse →
+// Ingest), which publishes cc.locked on the first non-idle MAC PDU
+// and grants on GroupVoiceChannelGrant variants.
+//
+// Trellis FEC is on by default: the factory always runs
+// p25phase2.ParseTrellisMode over the per-system config string,
+// which maps an empty string to TrellisOn. Operators feeding
+// pre-stripped MAC-PDU fixtures opt out per-system with
+// `p25_phase2_trellis_mode: off`.
 //
 // The connector wires the receiver with `ClockMode: ClockGardner`
 // — Gardner timing recovery on complex IQ replaces the receiver's
@@ -184,25 +189,29 @@ func newP25Phase2Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 		SystemName:  opts.SystemName,
 		FrequencyHz: opts.FrequencyHz,
 	})
-	if v := opts.System.P25Phase2TrellisMode; v != "" {
-		mode, ok := p25phase2.ParseTrellisMode(v)
-		if !ok {
-			opts.Log.Warn("ccdecoder: unrecognised p25_phase2_trellis_mode; falling back to off",
-				"system", opts.SystemName, "value", v)
-		}
-		cc.SetTrellisMode(mode)
+	trellisMode, ok := p25phase2.ParseTrellisMode(opts.System.P25Phase2TrellisMode)
+	if !ok {
+		opts.Log.Warn("ccdecoder: unrecognised p25_phase2_trellis_mode; falling back to on",
+			"system", opts.SystemName, "value", opts.System.P25Phase2TrellisMode)
+	}
+	cc.SetTrellisMode(trellisMode)
+	clockMode, clockOK := p25phase2rx.ParseClockMode(opts.System.P25Phase2ClockMode)
+	if !clockOK {
+		opts.Log.Warn("ccdecoder: unrecognised p25_phase2_clock_mode; falling back to gardner",
+			"system", opts.SystemName, "value", opts.System.P25Phase2ClockMode)
 	}
 	rx := p25phase2rx.New(p25phase2rx.Options{
 		SampleRateHz: opts.SampleRateHz,
 		DibitSink: func(dibits []uint8, baseIdx int) {
 			cc.Process(dibits, baseIdx)
 		},
-		ClockMode: p25phase2rx.ClockGardner,
+		ClockMode: clockMode,
 		// Tuned smaller than the 0.03 default — H-DQPSK at
 		// 6000 sym/s has the same slip behaviour as TETRA's
 		// π/4-DQPSK at the default gain (see PR #154). 0.005
 		// tracks both clean synthesized IQ and noisier on-air
 		// captures within the loop's lock-acquisition margin.
+		// Only applied when ClockMode == ClockGardner.
 		GardnerGain: 0.005,
 	})
 	return &p25Phase2Pipeline{rx: rx, cc: cc}, nil
@@ -221,16 +230,17 @@ func (p *p25Phase2Pipeline) Close() error            { return nil }
 // tetra.ControlChannel.Process. The receiver's DibitSink forwards
 // π/4-DQPSK dibits into the state machine.
 //
-// When the supplied trunking.System carries a non-zero TETRAColourCode,
-// the factory flips the CC into ChannelCodingOn — slicing per the
-// configured TETRAChannel (default ChannelSCHHD) and running the full
+// Channel coding is on by default: the factory always runs
+// tetra.ParseChannelCoding over the per-system config string, which
+// maps an empty string to ChannelCodingOn, then slices per the
+// configured TETRAChannel (default ChannelSCHHD) and runs the full
 // ETSI EN 300 392-2 §8.3.1 type-5 → type-1 decode chain (descramble +
 // deinterleave + depuncture + Viterbi + CRC-16 verify + tail strip)
-// per burst. Leaving TETRAColourCode at zero keeps the legacy
-// ChannelCodingOff raw-dibit path (38-dibit normal training-sequence
-// detect → 48-dibit PDU slice → ParsePDU → Ingest), which still
-// works on synthesized fixtures but won't lock on live FEC-encoded
-// captures.
+// per burst. The TETRAColourCode seeds the descrambler — zero is
+// only valid for BSCH; non-BSCH channels need the per-cell colour
+// code or descrambling produces garbage. Operators feeding pre-
+// stripped DSD-FME / OP25 fixtures opt out per-system with
+// `tetra_channel_coding: off`.
 //
 // The connector wires the receiver with `ClockMode: ClockGardner`
 // — Gardner timing recovery on complex IQ replaces the receiver's
@@ -244,28 +254,43 @@ func newTETRAPipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 		SystemName:  opts.SystemName,
 		FrequencyHz: opts.FrequencyHz,
 	})
-	if opts.System.TETRAColourCode != 0 {
-		ch, ok := tetra.ParseChannelType(opts.System.TETRAChannel)
-		if !ok {
+	codingMode, ok := tetra.ParseChannelCoding(opts.System.TETRAChannelCoding)
+	if !ok {
+		opts.Log.Warn("ccdecoder: unrecognised tetra_channel_coding; falling back to on",
+			"system", opts.SystemName, "value", opts.System.TETRAChannelCoding)
+	}
+	cc.SetChannelCoding(codingMode)
+	if codingMode == tetra.ChannelCodingOn {
+		ch, chOK := tetra.ParseChannelType(opts.System.TETRAChannel)
+		if !chOK {
 			opts.Log.Warn("ccdecoder: unrecognised tetra_channel; falling back to SCH/HD",
 				"system", opts.SystemName, "value", opts.System.TETRAChannel)
 		}
-		cc.SetChannelCoding(tetra.ChannelCodingOn)
 		cc.SetExpectedChannel(ch)
 		cc.SetColourCode(opts.System.TETRAColourCode)
+		if opts.System.TETRAColourCode == 0 && ch != tetra.ChannelBSCH {
+			opts.Log.Warn("ccdecoder: tetra_channel_coding=on with zero tetra_colour_code on non-BSCH channel; descrambler will not lock",
+				"system", opts.SystemName, "channel", opts.System.TETRAChannel)
+		}
+	}
+	tetraClockMode, tetraClockOK := tetrarx.ParseClockMode(opts.System.TETRAClockMode)
+	if !tetraClockOK {
+		opts.Log.Warn("ccdecoder: unrecognised tetra_clock_mode; falling back to gardner",
+			"system", opts.SystemName, "value", opts.System.TETRAClockMode)
 	}
 	rx := tetrarx.New(tetrarx.Options{
 		SampleRateHz: opts.SampleRateHz,
 		DibitSink: func(dibits []uint8, baseIdx int) {
 			cc.Process(dibits, baseIdx)
 		},
-		ClockMode: tetrarx.ClockGardner,
+		ClockMode: tetraClockMode,
 		// Tuned smaller than the 0.03 default — at TETRA's 18000
 		// sym/s the standard gain over-corrects on clean signals
 		// and slips. 0.005 tracks both clean synthesized IQ (the
 		// integration-cc test) and noisier on-air captures within
 		// the loop's lock-acquisition margin. Same pattern as the
-		// DMR Tier III ClockGain tweak in PR #150.
+		// DMR Tier III ClockGain tweak in PR #150. Only applied
+		// when ClockMode == ClockGardner.
 		GardnerGain: 0.005,
 	})
 	return &tetraPipeline{rx: rx, cc: cc}, nil
@@ -408,14 +433,12 @@ func (p *dmrPipeline) Close() error            { return nil }
 // but typically fail the CAC CRC on real on-air signals.
 func newNXDNPipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 	cc := nxdn.NewControlChannel(opts.Bus, opts.Log, opts.FrequencyHz, nxdn.Rate9600)
-	if v := opts.System.NXDNViterbiMode; v != "" {
-		mode, ok := nxdn.ParseViterbiMode(v)
-		if !ok {
-			opts.Log.Warn("ccdecoder: unrecognised nxdn_viterbi_mode; falling back to off",
-				"system", opts.SystemName, "value", v)
-		}
-		cc.SetViterbiMode(mode)
+	viterbiMode, ok := nxdn.ParseViterbiMode(opts.System.NXDNViterbiMode)
+	if !ok {
+		opts.Log.Warn("ccdecoder: unrecognised nxdn_viterbi_mode; falling back to spec",
+			"system", opts.SystemName, "value", opts.System.NXDNViterbiMode)
 	}
+	cc.SetViterbiMode(viterbiMode)
 	rx := nxdnrx.New(nxdnrx.Options{
 		SampleRateHz: opts.SampleRateHz,
 		// NXDN spec peak deviation per the Common Air Interface
@@ -453,14 +476,12 @@ func newEDACSPipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 		SystemName:  opts.SystemName,
 		FrequencyHz: opts.FrequencyHz,
 	})
-	if v := opts.System.EDACSBCHMode; v != "" {
-		mode, ok := edacs.ParseBCHMode(v)
-		if !ok {
-			opts.Log.Warn("ccdecoder: unrecognised edacs_bch_mode; falling back to off",
-				"system", opts.SystemName, "value", v)
-		}
-		cc.SetBCHMode(mode)
+	bchMode, ok := edacs.ParseBCHMode(opts.System.EDACSBCHMode)
+	if !ok {
+		opts.Log.Warn("ccdecoder: unrecognised edacs_bch_mode; falling back to on",
+			"system", opts.SystemName, "value", opts.System.EDACSBCHMode)
 	}
+	cc.SetBCHMode(bchMode)
 	rx := edacsrx.New(edacsrx.Options{
 		SampleRateHz: opts.SampleRateHz,
 		BitSink: func(bits []byte, baseIdx int) {
@@ -499,14 +520,12 @@ func newMotorolaPipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 		SystemName:  opts.SystemName,
 		FrequencyHz: opts.FrequencyHz,
 	})
-	if v := opts.System.MotorolaBCHMode; v != "" {
-		mode, ok := motorola.ParseBCHMode(v)
-		if !ok {
-			opts.Log.Warn("ccdecoder: unrecognised motorola_bch_mode; falling back to off",
-				"system", opts.SystemName, "value", v)
-		}
-		cc.SetBCHMode(mode)
+	bchMode, ok := motorola.ParseBCHMode(opts.System.MotorolaBCHMode)
+	if !ok {
+		opts.Log.Warn("ccdecoder: unrecognised motorola_bch_mode; falling back to on",
+			"system", opts.SystemName, "value", opts.System.MotorolaBCHMode)
 	}
+	cc.SetBCHMode(bchMode)
 	rx := motorolarx.New(motorolarx.Options{
 		SampleRateHz: opts.SampleRateHz,
 		BitSink: func(bits []byte, baseIdx int) {
@@ -549,22 +568,18 @@ func newLTRPipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 		SystemName:  opts.SystemName,
 		FrequencyHz: opts.FrequencyHz,
 	})
-	if v := opts.System.LTRFCSMode; v != "" {
-		mode, ok := ltr.ParseFCSMode(v)
-		if !ok {
-			opts.Log.Warn("ccdecoder: unrecognised ltr_fcs_mode; falling back to off",
-				"system", opts.SystemName, "value", v)
-		}
-		cc.SetFCSMode(mode)
+	fcsMode, fcsOK := ltr.ParseFCSMode(opts.System.LTRFCSMode)
+	if !fcsOK {
+		opts.Log.Warn("ccdecoder: unrecognised ltr_fcs_mode; falling back to on",
+			"system", opts.SystemName, "value", opts.System.LTRFCSMode)
 	}
-	if v := opts.System.LTRManchesterMode; v != "" {
-		mode, ok := ltr.ParseManchesterMode(v)
-		if !ok {
-			opts.Log.Warn("ccdecoder: unrecognised ltr_manchester_mode; falling back to off",
-				"system", opts.SystemName, "value", v)
-		}
-		cc.SetManchesterMode(mode)
+	cc.SetFCSMode(fcsMode)
+	manchesterMode, manchesterOK := ltr.ParseManchesterMode(opts.System.LTRManchesterMode)
+	if !manchesterOK {
+		opts.Log.Warn("ccdecoder: unrecognised ltr_manchester_mode; falling back to soft",
+			"system", opts.SystemName, "value", opts.System.LTRManchesterMode)
 	}
+	cc.SetManchesterMode(manchesterMode)
 	rx := ltrrx.New(ltrrx.Options{
 		SampleRateHz: opts.SampleRateHz,
 		BitSink: func(bits []byte, baseIdx int) {
@@ -599,14 +614,12 @@ func newMPT1327Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 		SystemName:  opts.SystemName,
 		FrequencyHz: opts.FrequencyHz,
 	})
-	if v := opts.System.MPT1327BCHMode; v != "" {
-		mode, ok := mpt1327.ParseBCHMode(v)
-		if !ok {
-			opts.Log.Warn("ccdecoder: unrecognised mpt1327_bch_mode; falling back to off",
-				"system", opts.SystemName, "value", v)
-		}
-		cc.SetBCHMode(mode)
+	bchMode, ok := mpt1327.ParseBCHMode(opts.System.MPT1327BCHMode)
+	if !ok {
+		opts.Log.Warn("ccdecoder: unrecognised mpt1327_bch_mode; falling back to on",
+			"system", opts.SystemName, "value", opts.System.MPT1327BCHMode)
 	}
+	cc.SetBCHMode(bchMode)
 	rx := mpt1327rx.New(mpt1327rx.Options{
 		SampleRateHz: opts.SampleRateHz,
 		BitSink: func(bits []byte, baseIdx int) {

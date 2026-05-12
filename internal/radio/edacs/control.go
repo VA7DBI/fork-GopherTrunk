@@ -56,18 +56,18 @@ type ControlChannel struct {
 // BCHMode selects how the Process adapter interprets the incoming
 // bit stream:
 //
-//   - BCHOff (default): the adapter slices 40-bit pre-stripped
-//     information windows and treats them as CCWs. Works on
-//     synthesized test fixtures whose codewords are not BCH-
-//     protected.
+//   - BCHOff: the adapter slices 40-bit pre-stripped information
+//     windows and treats them as CCWs. Useful only for synthesized
+//     test fixtures whose codewords are not BCH-protected; explicit
+//     opt-out for operators feeding pre-stripped capture files.
 //
-//   - BCHOn: the adapter slices 40-bit on-wire BCH(40,28,2)
-//     codewords (info at bits 12..39 high; 12-bit BCH parity at
-//     bits 0..11 low), runs the
-//     internal/radio/framing/bch_edacs.go primitive to
-//     validate + correct up to 2 bit errors per codeword, then
-//     re-encodes the corrected info into a 40-bit wire word
-//     that the existing CCWFromBits parser consumes.
+//   - BCHOn (default): the adapter slices 40-bit on-wire
+//     BCH(40,28,2) codewords (info at bits 12..39 high; 12-bit BCH
+//     parity at bits 0..11 low), runs the
+//     internal/radio/framing/bch_edacs.go primitive to validate +
+//     correct up to 2 bit errors per codeword, then re-encodes the
+//     corrected info into a 40-bit wire word that the existing
+//     CCWFromBits parser consumes.
 //
 // Under BCHOn the effective CCW model carries:
 //
@@ -107,18 +107,21 @@ func (c *ControlChannel) BCHMode() BCHMode {
 }
 
 // ParseBCHMode maps a config / user-facing string into a BCHMode.
-// Recognised values (case-insensitive): "" / "off" / "false" / "0"
-// → BCHOff (legacy pre-stripped 40-bit CCW path); "on" / "true" /
-// "1" → BCHOn (40-bit on-wire BCH(40, 28, 2) decode + 1/2-bit
-// correction). Unknown strings return BCHOff with `ok = false`.
+// Recognised values (case-insensitive): "" → BCHOn (the new default —
+// 40-bit on-wire BCH(40, 28, 2) decode); "off" / "false" / "0" →
+// BCHOff (legacy pre-stripped 40-bit CCW path, explicit opt-out for
+// pre-stripped fixtures); "on" / "true" / "1" → BCHOn. Unknown
+// strings return BCHOn with `ok = false`.
 func ParseBCHMode(s string) (BCHMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "off", "false", "0":
+	case "":
+		return BCHOn, true
+	case "off", "false", "0":
 		return BCHOff, true
 	case "on", "true", "1":
 		return BCHOn, true
 	default:
-		return BCHOff, false
+		return BCHOn, false
 	}
 }
 

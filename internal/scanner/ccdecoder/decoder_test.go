@@ -282,6 +282,15 @@ func TestTETRAFactoryConstructs(t *testing.T) {
 	p, err := newTETRAPipeline(PipelineOptions{
 		Bus: bus, SystemName: "Smoke",
 		FrequencyHz: 412_062_500, SampleRateHz: 144_000,
+		// Smoke test only — set a placeholder colour code so the
+		// connector doesn't warn about zero colour code on the
+		// default non-BSCH channel under the new ChannelCodingOn
+		// default.
+		System: trunking.System{
+			Name: "Smoke", Protocol: trunking.ProtocolTETRA,
+			ControlChannels: []uint32{412_062_500},
+			TETRAColourCode: 0x1,
+		},
 	})
 	if err != nil {
 		t.Fatalf("newTETRAPipeline: %v", err)
@@ -325,10 +334,11 @@ func TestTETRAFactoryEnablesChannelCodingFromSystem(t *testing.T) {
 	}
 }
 
-// TestTETRAFactoryDefaultColourCodeKeepsCodingOff: zero
-// TETRAColourCode preserves the legacy raw-dibit path so existing
-// synthesized-fixture tests stay green.
-func TestTETRAFactoryDefaultColourCodeKeepsCodingOff(t *testing.T) {
+// TestTETRAFactoryDefaultsKeepCodingOn: empty TETRAChannelCoding
+// flips the connector to ChannelCodingOn (the new default — full
+// ETSI EN 300 392-2 §8.3.1 chain) so live captures decode without
+// per-system YAML tweaks.
+func TestTETRAFactoryDefaultsKeepCodingOn(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
 	p, err := newTETRAPipeline(PipelineOptions{
@@ -337,7 +347,32 @@ func TestTETRAFactoryDefaultColourCodeKeepsCodingOff(t *testing.T) {
 		System: trunking.System{
 			Name: "Test", Protocol: trunking.ProtocolTETRA,
 			ControlChannels: []uint32{412_062_500},
-			// TETRAColourCode left at zero.
+			TETRAColourCode: 0x12345,
+			// TETRAChannelCoding left empty → ChannelCodingOn.
+		},
+	})
+	if err != nil {
+		t.Fatalf("newTETRAPipeline: %v", err)
+	}
+	tp := p.(*tetraPipeline)
+	if got := tp.cc.ChannelCoding(); got != tetra.ChannelCodingOn {
+		t.Errorf("ChannelCoding = %v, want ChannelCodingOn", got)
+	}
+}
+
+// TestTETRAFactoryExplicitOffOptsOut: tetra_channel_coding=off opts
+// out of the new ChannelCodingOn default for operators feeding
+// pre-stripped DSD-FME / OP25 captures.
+func TestTETRAFactoryExplicitOffOptsOut(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	p, err := newTETRAPipeline(PipelineOptions{
+		Bus: bus, SystemName: "Test", FrequencyHz: 412_062_500,
+		SampleRateHz: 144_000,
+		System: trunking.System{
+			Name: "Test", Protocol: trunking.ProtocolTETRA,
+			ControlChannels:    []uint32{412_062_500},
+			TETRAChannelCoding: "off",
 		},
 	})
 	if err != nil {
@@ -446,10 +481,10 @@ func TestLTRFactoryAppliesFCSAndManchesterFromSystem(t *testing.T) {
 	}
 }
 
-// TestLTRFactoryDefaultsKeepLegacyModes: empty LTRFCSMode +
-// LTRManchesterMode preserve the legacy FCSOff + ManchesterOff
-// path so existing synthesized-fixture tests stay green.
-func TestLTRFactoryDefaultsKeepLegacyModes(t *testing.T) {
+// TestLTRFactoryDefaultsKeepLiveOnAirModes: empty LTRFCSMode +
+// LTRManchesterMode flip the connector to FCSOn + ManchesterSoft
+// (the new defaults — matches the dominant on-air encoding).
+func TestLTRFactoryDefaultsKeepLiveOnAirModes(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
 	p, err := newLTRPipeline(PipelineOptions{
@@ -459,6 +494,34 @@ func TestLTRFactoryDefaultsKeepLegacyModes(t *testing.T) {
 			Name: "Test", Protocol: trunking.ProtocolLTR,
 			ControlChannels: []uint32{935_012_500},
 			// LTRFCSMode + LTRManchesterMode left empty.
+		},
+	})
+	if err != nil {
+		t.Fatalf("newLTRPipeline: %v", err)
+	}
+	lp := p.(*ltrPipeline)
+	if got := lp.cc.FCSMode(); got != ltr.FCSOn {
+		t.Errorf("FCSMode = %v, want FCSOn", got)
+	}
+	if got := lp.cc.ManchesterMode(); got != ltr.ManchesterSoft {
+		t.Errorf("ManchesterMode = %v, want ManchesterSoft", got)
+	}
+}
+
+// TestLTRFactoryExplicitOffOptsOut: ltr_fcs_mode=off +
+// ltr_manchester_mode=off opt out of the new on-defaults for
+// operators feeding pre-stripped synthesized fixtures.
+func TestLTRFactoryExplicitOffOptsOut(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	p, err := newLTRPipeline(PipelineOptions{
+		Bus: bus, SystemName: "Test", FrequencyHz: 935_012_500,
+		SampleRateHz: 48_000,
+		System: trunking.System{
+			Name: "Test", Protocol: trunking.ProtocolLTR,
+			ControlChannels:   []uint32{935_012_500},
+			LTRFCSMode:        "off",
+			LTRManchesterMode: "off",
 		},
 	})
 	if err != nil {
@@ -513,9 +576,11 @@ func TestMotorolaFactoryAppliesBCHFromSystem(t *testing.T) {
 	}
 }
 
-// TestMotorolaFactoryDefaultsKeepBCHOff: empty MotorolaBCHMode
-// preserves the legacy 32-bit raw-OSW path.
-func TestMotorolaFactoryDefaultsKeepBCHOff(t *testing.T) {
+// TestMotorolaFactoryDefaultsKeepBCHOn: empty MotorolaBCHMode flips
+// the connector to BCHOn (the new default — dual 64-bit
+// BCH(64, 16, 11) reassembly). Live captures always need the FEC
+// layer, so default-on matches operator expectations.
+func TestMotorolaFactoryDefaultsKeepBCHOn(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
 	p, err := newMotorolaPipeline(PipelineOptions{
@@ -524,6 +589,29 @@ func TestMotorolaFactoryDefaultsKeepBCHOff(t *testing.T) {
 		System: trunking.System{
 			Name: "Test", Protocol: trunking.ProtocolMotorola,
 			ControlChannels: []uint32{851_012_500},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newMotorolaPipeline: %v", err)
+	}
+	mp := p.(*motorolaPipeline)
+	if got := mp.cc.BCHMode(); got != motorola.BCHOn {
+		t.Errorf("BCHMode = %v, want BCHOn", got)
+	}
+}
+
+// TestMotorolaFactoryExplicitOffOptsOut: motorola_bch_mode=off opts
+// out of the new BCHOn default for pre-stripped fixtures.
+func TestMotorolaFactoryExplicitOffOptsOut(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	p, err := newMotorolaPipeline(PipelineOptions{
+		Bus: bus, SystemName: "Test", FrequencyHz: 851_012_500,
+		SampleRateHz: 48_000,
+		System: trunking.System{
+			Name: "Test", Protocol: trunking.ProtocolMotorola,
+			ControlChannels: []uint32{851_012_500},
+			MotorolaBCHMode: "off",
 		},
 	})
 	if err != nil {
@@ -627,9 +715,10 @@ func TestP25Phase2FactoryAppliesTrellisFromSystem(t *testing.T) {
 	}
 }
 
-// TestP25Phase2FactoryDefaultsKeepTrellisOff: empty config string
-// preserves the legacy 72-dibit raw-MAC-PDU path.
-func TestP25Phase2FactoryDefaultsKeepTrellisOff(t *testing.T) {
+// TestP25Phase2FactoryDefaultsKeepTrellisOn: empty config string
+// flips the connector to TrellisOn (the new default — full
+// TIA-102.AABF trellis decode).
+func TestP25Phase2FactoryDefaultsKeepTrellisOn(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
 	p, err := newP25Phase2Pipeline(PipelineOptions{
@@ -638,6 +727,30 @@ func TestP25Phase2FactoryDefaultsKeepTrellisOff(t *testing.T) {
 		System: trunking.System{
 			Name: "Test", Protocol: trunking.ProtocolP25Phase2,
 			ControlChannels: []uint32{851_062_500},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newP25Phase2Pipeline: %v", err)
+	}
+	pp := p.(*p25Phase2Pipeline)
+	if got := pp.cc.TrellisMode(); got != p25phase2.TrellisOn {
+		t.Errorf("TrellisMode = %v, want TrellisOn", got)
+	}
+}
+
+// TestP25Phase2FactoryExplicitOffOptsOut: p25_phase2_trellis_mode=off
+// opts out of the new TrellisOn default for pre-stripped MAC-PDU
+// fixtures.
+func TestP25Phase2FactoryExplicitOffOptsOut(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	p, err := newP25Phase2Pipeline(PipelineOptions{
+		Bus: bus, SystemName: "Test", FrequencyHz: 851_062_500,
+		SampleRateHz: 48_000,
+		System: trunking.System{
+			Name: "Test", Protocol: trunking.ProtocolP25Phase2,
+			ControlChannels:      []uint32{851_062_500},
+			P25Phase2TrellisMode: "off",
 		},
 	})
 	if err != nil {

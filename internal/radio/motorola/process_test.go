@@ -216,8 +216,10 @@ func TestSyncDetectorReset(t *testing.T) {
 }
 
 // TestSetBCHModeDefault confirms the zero-value ControlChannel
-// uses BCHOff, the accessor mirrors the setter, and the
-// SetBCHMode toggle round-trips both ways.
+// uses BCHOff (the in-package fixture default), the accessor
+// mirrors the setter, and SetBCHMode round-trips both ways.
+// Production callers reach the new BCHOn default via the
+// ccdecoder connector (which always runs ParseBCHMode).
 func TestSetBCHModeDefault(t *testing.T) {
 	cc := New(Options{})
 	if cc.bchMode != BCHOff {
@@ -248,7 +250,7 @@ func TestParseBCHMode(t *testing.T) {
 		want BCHMode
 		ok   bool
 	}{
-		{"", BCHOff, true},
+		{"", BCHOn, true},
 		{"off", BCHOff, true},
 		{"false", BCHOff, true},
 		{"0", BCHOff, true},
@@ -257,7 +259,7 @@ func TestParseBCHMode(t *testing.T) {
 		{"true", BCHOn, true},
 		{"1", BCHOn, true},
 		{" on ", BCHOn, true},
-		{"nonsense", BCHOff, false},
+		{"nonsense", BCHOn, false},
 	}
 	for _, tc := range cases {
 		got, ok := ParseBCHMode(tc.in)

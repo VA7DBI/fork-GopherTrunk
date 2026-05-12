@@ -26,14 +26,17 @@ type SystemDTO struct {
 	RFSS            uint8    `json:"rfss,omitempty"`
 	Site            uint8    `json:"site,omitempty"`
 
-	// Per-protocol FEC opt-in surface. Empty strings / zero
-	// TETRAColourCode indicate the legacy raw-bit path is active
-	// for that protocol. The TUI Settings panel renders these so
-	// operators can verify their config landed; runtime mutation
-	// is a follow-up (currently requires editing config.yaml +
-	// restarting the daemon).
+	// Per-protocol FEC opt-out surface. Empty strings indicate the
+	// new spec-correct default is active (channel coding / FEC on
+	// for every protocol). Non-empty values that parse to "off" /
+	// "false" / "0" opt the operator into the legacy raw-bit path
+	// per-protocol. The TUI Settings panel renders these so operators
+	// can verify their config landed; runtime mutation is a follow-up
+	// (currently requires editing config.yaml + restarting the
+	// daemon).
 	TETRAColourCode      uint32 `json:"tetra_colour_code,omitempty"`
 	TETRAChannel         string `json:"tetra_channel,omitempty"`
+	TETRAChannelCoding   string `json:"tetra_channel_coding,omitempty"`
 	LTRFCSMode           string `json:"ltr_fcs_mode,omitempty"`
 	LTRManchesterMode    string `json:"ltr_manchester_mode,omitempty"`
 	P25Phase2TrellisMode string `json:"p25_phase2_trellis_mode,omitempty"`
@@ -54,6 +57,7 @@ func systemToDTO(s trunking.System) SystemDTO {
 		Site:                 s.Site,
 		TETRAColourCode:      s.TETRAColourCode,
 		TETRAChannel:         s.TETRAChannel,
+		TETRAChannelCoding:   s.TETRAChannelCoding,
 		LTRFCSMode:           s.LTRFCSMode,
 		LTRManchesterMode:    s.LTRManchesterMode,
 		P25Phase2TrellisMode: s.P25Phase2TrellisMode,

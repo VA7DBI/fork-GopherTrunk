@@ -195,7 +195,7 @@ func TestParseTrellisMode(t *testing.T) {
 		want TrellisMode
 		ok   bool
 	}{
-		{"", TrellisOff, true},
+		{"", TrellisOn, true},
 		{"off", TrellisOff, true},
 		{"OFF", TrellisOff, true},
 		{"false", TrellisOff, true},
@@ -205,7 +205,7 @@ func TestParseTrellisMode(t *testing.T) {
 		{"true", TrellisOn, true},
 		{"1", TrellisOn, true},
 		{" on ", TrellisOn, true},
-		{"nonsense", TrellisOff, false},
+		{"nonsense", TrellisOn, false},
 	}
 	for _, tc := range cases {
 		got, ok := ParseTrellisMode(tc.in)

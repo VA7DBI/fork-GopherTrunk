@@ -23,14 +23,16 @@ type BCHMode uint8
 
 const (
 	// BCHOff treats the 32 bits after sync as raw OSW info bits.
-	// Works for test fixtures + clean signals; on-air traffic
-	// usually fails OSW parsing.
+	// Useful only for test fixtures whose codewords are pre-
+	// stripped of the FEC layer; on-air traffic always fails OSW
+	// parsing under BCHOff. Explicit opt-out for operators feeding
+	// pre-stripped capture files.
 	BCHOff BCHMode = iota
-	// BCHOn reads two 64-bit BCH(64,16,11) codewords (128 wire
-	// bits) after sync, decodes each via the framing primitive,
-	// and concatenates the recovered 16-bit halves into the
-	// 32-bit OSW. Uncorrectable codewords (> 11 errors) drop the
-	// frame.
+	// BCHOn (default) reads two 64-bit BCH(64,16,11) codewords
+	// (128 wire bits) after sync, decodes each via the framing
+	// primitive, and concatenates the recovered 16-bit halves into
+	// the 32-bit OSW. Uncorrectable codewords (> 11 errors) drop
+	// the frame.
 	BCHOn
 )
 
@@ -58,19 +60,22 @@ func (c *ControlChannel) BCHMode() BCHMode {
 }
 
 // ParseBCHMode maps a config / user-facing string into a BCHMode.
-// Recognised values (case-insensitive): "" / "off" / "false" /
-// "0" → BCHOff (legacy 32-bit raw-OSW path); "on" / "true" /
-// "1" → BCHOn (two 64-bit BCH(64, 16, 11) codewords reassembled
-// into the 32-bit OSW). Unknown strings return BCHOff with
+// Recognised values (case-insensitive): "" → BCHOn (the new default
+// — two 64-bit BCH(64, 16, 11) codewords reassembled into the
+// 32-bit OSW); "off" / "false" / "0" → BCHOff (legacy 32-bit
+// raw-OSW path, explicit opt-out for pre-stripped fixtures); "on" /
+// "true" / "1" → BCHOn. Unknown strings return BCHOn with
 // `ok = false` so callers can surface the misconfiguration.
 func ParseBCHMode(s string) (BCHMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "off", "false", "0":
+	case "":
+		return BCHOn, true
+	case "off", "false", "0":
 		return BCHOff, true
 	case "on", "true", "1":
 		return BCHOn, true
 	default:
-		return BCHOff, false
+		return BCHOn, false
 	}
 }
 

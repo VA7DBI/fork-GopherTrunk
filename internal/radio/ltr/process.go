@@ -23,8 +23,12 @@ type processState struct {
 // Some LTR variants transmit the sub-audible status word in bi-
 // phase / Manchester encoding (each bit doubled, requiring a mid-
 // bit transition); others ship raw NRZ. Operators configure the
-// mode at receiver construction; the default is ManchesterOff
-// since the dominant deployment is NRZ.
+// mode at receiver construction. The zero-value default is
+// ManchesterOff (raw NRZ — matches the in-package synthesized
+// fixtures); production callers reach ManchesterSoft via the
+// ccdecoder connector, whose ParseManchesterMode maps an empty
+// config string to ManchesterSoft (the dominant on-air encoding
+// for sub-audible LTR signaling).
 type ManchesterDecodeMode uint8
 
 const (

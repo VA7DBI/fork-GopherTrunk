@@ -15,7 +15,7 @@ func TestSettingsPanel_RendersFECSummaryPerProtocol(t *testing.T) {
 	s := &state.SharedState{
 		Systems: []client.SystemDTO{
 			{Name: "Metro", Protocol: "tetra", TETRAColourCode: 0x12345, TETRAChannel: "sch/f"},
-			{Name: "Suburb", Protocol: "tetra"},
+			{Name: "Suburb", Protocol: "tetra", TETRAChannelCoding: "off"},
 			{Name: "Country", Protocol: "ltr", LTRFCSMode: "on", LTRManchesterMode: "soft"},
 			{Name: "P2Sys", Protocol: "p25-phase2", P25Phase2TrellisMode: "on"},
 			{Name: "Mining", Protocol: "edacs", EDACSBCHMode: "on"},
@@ -67,17 +67,19 @@ func TestSettingsPanel_UnknownProtocolFallsBackToDash(t *testing.T) {
 	}
 }
 
-func TestSettingsPanel_EmptyModeRendersOff(t *testing.T) {
+func TestSettingsPanel_EmptyModeRendersConnectorDefault(t *testing.T) {
 	cases := []struct {
-		in, want string
+		in, dflt, want string
 	}{
-		{"", "off"},
-		{"on", "on"},
-		{"soft", "soft"},
+		{"", "on", "on"},
+		{"on", "on", "on"},
+		{"soft", "soft", "soft"},
+		{"", "spec", "spec"},
+		{"off", "on", "off"},
 	}
 	for _, c := range cases {
-		if got := orOff(c.in); got != c.want {
-			t.Errorf("orOff(%q) = %q, want %q", c.in, got, c.want)
+		if got := orDefault(c.in, c.dflt); got != c.want {
+			t.Errorf("orDefault(%q, %q) = %q, want %q", c.in, c.dflt, got, c.want)
 		}
 	}
 }

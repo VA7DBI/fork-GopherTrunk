@@ -150,6 +150,27 @@ func ParseChannelType(s string) (ChannelType, bool) {
 	}
 }
 
+// ParseChannelCoding maps a config / user-facing string into a
+// ChannelCodingMode. Recognised values (case-insensitive): "" →
+// ChannelCodingOn (the new default — full §8.3.1 channel-coding
+// chain); "off" / "false" / "0" → ChannelCodingOff (legacy 48-dibit
+// raw-PDU path, explicit opt-out for pre-stripped fixtures);
+// "on" / "true" / "1" → ChannelCodingOn. Unknown strings return
+// ChannelCodingOn with `ok = false` so callers can surface the
+// misconfiguration.
+func ParseChannelCoding(s string) (ChannelCodingMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return ChannelCodingOn, true
+	case "off", "false", "0":
+		return ChannelCodingOff, true
+	case "on", "true", "1":
+		return ChannelCodingOn, true
+	default:
+		return ChannelCodingOn, false
+	}
+}
+
 // SetChannelCoding toggles the full EN 300 392-2 §8.3.1 channel
 // coding chain on the Process adapter. See ChannelCodingMode for
 // the trade-offs.

@@ -59,6 +59,26 @@ trunking:
         - 852_000_000
       talkgroup_file: "/etc/gophertrunk/talkgroups-p25.csv"
 
+  # Per-protocol FEC is on by default — every protocol the daemon
+  # supports (TETRA, LTR, P25 Phase 2, NXDN, EDACS, MPT 1327,
+  # Motorola Type II) ships its spec-correct on-air decoder chain
+  # enabled without needing per-system YAML keys. Operators feeding
+  # pre-stripped capture files (DSD-FME `-r` dumps, OP25 fixtures,
+  # MMDVMHost / DSDcc test data) opt out per-system with the keys
+  # below. TETRA additionally requires a non-zero `tetra_colour_code`
+  # for non-BSCH channels; descrambling produces garbage without it.
+  #
+  # Example opt-outs for operators using pre-stripped captures:
+  #   - name: "Legacy-Motorola"
+  #     protocol: motorola
+  #     control_channels: [851_012_500]
+  #     motorola_bch_mode: "off"   # pre-stripped 32-bit raw OSWs
+  #   - name: "Legacy-LTR"
+  #     protocol: ltr
+  #     control_channels: [935_012_500]
+  #     ltr_fcs_mode: "off"
+  #     ltr_manchester_mode: "off"
+
 # Police-scanner subsystems:
 #   - scan_mode controls the engine's per-grant gate. "all" follows every
 #     non-locked-out grant (the original behavior). "list" only follows
@@ -74,14 +94,21 @@ scanner:
     dwell_ms: 3000
     backoff_ms: 5000
     max_backoff_ms: 60000
-  # manual_tune_enabled opts in to constructing the conventional
-  # scanner even when no static channels are configured, so the
-  # TUI's `f` key (or POST /api/v1/scanner/manual_tune) can
-  # VFO-tune at runtime. The scanner steals one Voice SDR from
-  # the trunking pool, so only enable if you have a spare Voice
-  # SDR or are willing to trade trunked grant-following for
-  # manual tune.
+  # manual_tune_enabled forces construction of the conventional
+  # scanner so the TUI's `f` key (or POST /api/v1/scanner/manual_tune)
+  # can VFO-tune at runtime even when no static channels are
+  # configured. With this set the scanner steals one Voice SDR
+  # from the trunking pool regardless of how many Voice SDRs
+  # exist.
+  #
+  # Default false; the daemon auto-detects when >= 2 Voice SDRs
+  # are present and constructs the scanner from the spare without
+  # needing this flag. To keep all Voice SDRs reserved for
+  # trunking even with a spare, set manual_tune_disabled: true to
+  # opt out of the auto-detect.
   manual_tune_enabled: false
+  # manual_tune_disabled vetoes the auto-detect rule.
+  manual_tune_disabled: false
   conventional: []
   # Example conventional channels:
   # conventional:
