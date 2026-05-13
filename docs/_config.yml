@@ -1,0 +1,18 @@
+title: GopherTrunk
+description: Pure-Go digital trunking radio scanner engine
+theme: jekyll-theme-cayman
+show_downloads: false
+markdown: kramdown
+
+plugins:
+  - jekyll-relative-links
+
+relative_links:
+  enabled: true
+  collections: true
+
+include:
+  - README.md
+
+exclude:
+  - specs/
