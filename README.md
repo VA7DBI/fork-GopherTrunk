@@ -141,34 +141,51 @@ The remaining gaps:
     MPT 1327 transmits 64-bit codewords back-to-back at 1200 bps
     FFSK with no inter-codeword bit permutation. No remaining
     MPT 1327 spec follow-ups.
-  - **YSF FICH on-air interleaver / puncture validation.** The
-    K=5 ½-rate Trellis encoder + decoder
+  - ~~**YSF FICH on-air interleaver / puncture validation**~~
+    (now shipping the spec-level codec). The K=5 ½-rate Trellis
+    encoder + decoder
     (`internal/radio/ysf/fich_trellis.go`) round-trip cleanly
-    in unit tests; calibration against a captured YSF
-    transmission's exact schedule is blocked on real-air data.
+    in unit tests. `EncodeFICHOnAir` / `DecodeFICHOnAir` now
+    layer the full on-air chain — puncture (drop channel-bit
+    positions `{0, 1, 102, 103}`) plus column-major 10×10
+    interleave (out[k] = depunctured[(k%10)*10 + (k/10)]) — per
+    the MMDVMHost / DSDcc / Pi-Star reference. Every
+    single-bit-flip in the 100-bit on-air stream is repaired
+    by the Viterbi (`TestFICHOnAirRecoversFromSingleBitFlip`
+    exhaustively confirms all 100 positions). On-air capture
+    validation against a real Yaesu transmission is the
+    remaining real-air-blocked piece — if the captured FICH
+    fails CRC after the on-air decoder, the alternate-schedule
+    swap is a two-line change documented in
+    `samples/ysf/README.md`.
   - **TETRA on-air recovery margins.** Unit tests round-trip
     clean fixtures end-to-end; on-air recovery margins
     (Viterbi correction depth vs. real co-channel +
     adjacent-channel interference) need a live capture to
     characterise.
-- **DMR Tier II synthesized IQ fixture.** The Tier II pipeline
-  + Process adapter + unit test all ship (PR #184); the
-  end-to-end integration test (`TestDaemonCCDecodesDMRTier2`)
-  is currently `t.Skip`'d because the synthesized Voice LC
-  Header IQ fixture doesn't survive the C4FM modulator+demod
-  round-trip cleanly — Tier III's structurally-identical Aloha
-  CSBK fixture scrapes by but Tier II's payload bit
-  distribution stresses the Mueller-Müller clock loop more.
-  Real-air repeater captures exercise the pipeline fine; the
-  synthesized fixture is the follow-up. The diagnostic test
-  `TestDMRTier2VsTier3SymbolDensity` /
+- ~~**DMR Tier II synthesized IQ fixture**~~ (now shipping).
+  The Tier II pipeline + Process adapter + unit test all
+  shipped in PR #184; the end-to-end integration test
+  (`TestDaemonCCDecodesDMRTier2`) was previously `t.Skip`'d
+  because the synthesized Voice LC Header IQ fixture's symbol
+  distribution stresses the Mueller-Müller clock loop harder
+  than Tier III's structurally-identical CSBK Aloha fixture.
+  The diagnostic test (`TestDMRTier2VsTier3SymbolDensity` /
   `TestDMRTier2SlotTypeVsPayloadIsolation` in
-  `cmd/gophertrunk/dmr_tier2_diagnostic_test.go` (run via
-  `make integration` and reads `-v` output) localises the
-  divergent statistic to the BPTC(196,96)-encoded payload's
-  class-3 dibit overrepresentation (21.4% Tier II vs 5.1%
-  Tier III) and the matching mean-transition magnitude (1.27
-  vs 0.90); the fix lands in a follow-up PR.
+  `cmd/gophertrunk/dmr_tier2_diagnostic_test.go`) localised
+  the divergent statistic to the BPTC(196, 96)-encoded
+  payload's class-3 dibit overrepresentation (21.4% Tier II
+  vs 5.1% Tier III) and matching mean-transition magnitude
+  (1.27 vs 0.90); the RS(12, 9) seed `0x96 0x96 0x96` and the
+  BPTC parity rows distribute high-Hamming-weight bits
+  throughout the channel-bit output. The fix lives in
+  `internal/scanner/ccdecoder/pipelines.go`'s
+  `newDMRTier2Pipeline`: lowering the per-protocol pipeline
+  ClockGain from 0.025 (the value shared with Tier III) to
+  0.015 keeps the MM loop locked under the harder symbol
+  distribution. Receiver locks within ~100 ms of the first
+  burst; the more conservative gain stays well within the
+  loop's noise margin on live captures.
 - **Digital-voice level calibration.** Pure-Go IMBE / AMBE+2
   emit real audio end-to-end. The comparison harness at
   `internal/voice/calibrate/` is ready;
@@ -280,29 +297,129 @@ sourcing.
 What's still on the table. Order isn't fixed; each item is contained
 to its own package and lands independently.
 
-- **DVSI USB-3000 / AMBE-3003 hardware backend.** A `Vocoder`
-  factory that opens a connected DVSI USB chip. Same plug-in shape
-  as `internal/voice/ambe2`; the daemon picks the factory by name
-  from `voice.DefaultRegistry`. Useful for operators who want
-  vendor-blessed AMBE+2 decode on jurisdictions where the patent
-  posture matters.
-- **Vocoder level calibration.** Pure-Go IMBE / AMBE+2 produce real
-  audio end-to-end today. Absolute-level calibration against a
-  DSD-FME or OP25 reference recording (capture a P25 P1 / DMR voice
-  exchange, decode through both, compare RMS + cross-correlation
-  against a reference WAV under `internal/voice/{imbe,ambe2}/testdata/`)
-  is a polish item — useful when downstream pipelines need consistent
-  loudness across decoders. AMBE+2 DTMF dual-tone synthesis
-  (b₁ ∈ [128, 143]) is wired against the ITU-T Q.23 4×4 matrix;
-  knox / call-alert pairs (b₁ ∈ [144, 163]) are vendor-specific
-  and stay silent pending per-vendor frequency tables.
-- **YSF on-air interleaver / puncture validation.** The K=5 ½-rate
-  Trellis encoder + decoder round-trip cleanly; matching the exact
-  on-air interleaver / puncture schedule to a captured YSF
-  transmission lands once a real-air capture is available.
+- **DVSI USB-3000 / AMBE-3003 hardware backend (USB transport).**
+  The `Vocoder` + AMBE-3003 wire protocol + `voice.Vocoder` interface
+  conformance ship in [`internal/voice/dvsi/`](internal/voice/dvsi/)
+  behind `-tags dvsi`; the package's `init()` registers `"dvsi"`
+  with `voice.DefaultRegistry`. CI exercises the wire protocol +
+  Vocoder plumbing through the scripted mock Transport and the
+  software-loopback Transport (`make test-dvsi`). The USB / FTDI
+  bulk-endpoint plumbing that talks to a physical chip remains a
+  stub returning `ErrNoDevice` — the recorder fallback chain
+  activates cleanly when no chip is connected. The actual FTDI
+  hardware integration lands when a DVSI USB-3000 is available for
+  round-trip testing.
+- **Vocoder level calibration (reference data).** The plumbing
+  ships — comparison harness at `internal/voice/calibrate`,
+  per-vocoder testdata READMEs at
+  `internal/voice/{imbe,ambe2}/testdata/`, the end-to-end recipe at
+  [docs/voice-calibration.md](docs/voice-calibration.md), and a
+  one-off CLI wrapper at `cmd/voice-calibrate` (run
+  `go run ./cmd/voice-calibrate -raw call.raw -ref-wav ref.wav
+  -vocoder imbe`). Operators just need to drop reference WAVs
+  decoded by DSD-FME / OP25 from the same `.raw` into testdata; the
+  existing calibrate tests run unguarded once both files are
+  present. AMBE+2 DTMF dual-tone synthesis (b₁ ∈ [128, 143]) is
+  wired against the ITU-T Q.23 4×4 matrix; knox / call-alert pairs
+  (b₁ ∈ [144, 163]) are vendor-specific — operators with a per-
+  vendor reference register the (freqA, freqB) pair via
+  `ambe2.SetKnoxTone` and the matching tone frames synthesise
+  through the same dual-tone path as DTMF.
+- **YSF on-air interleaver / puncture validation (real-air capture).**
+  The spec-level on-air codec ships in
+  `internal/radio/ysf/fich_trellis.go`'s `EncodeFICHOnAir` /
+  `DecodeFICHOnAir` per the MMDVMHost / DSDcc / Pi-Star reference
+  (puncture positions `{0, 1, 102, 103}`, column-major 10×10
+  interleave). Unit tests confirm every single-bit-flip is
+  Viterbi-corrected. The remaining work is calibration against a
+  real captured YSF transmission — if the captured FICH fails CRC
+  after on-air decode, swap to the alternate schedule per
+  `samples/ysf/README.md`.
 
 ### Recently shipped
 
+- **Capture-spec acceptance criteria for every real-air-blocked
+  follow-up.** Each [`samples/<proto>/README.md`](samples/) now
+  documents the explicit numerical thresholds a contributor with
+  hardware can run a capture against to close the corresponding
+  follow-up: TETRA wants 5 s lock latency + ≥ 90% frame recovery
+  + a new (not-yet-wired) `gophertrunk_tetra_viterbi_corrections`
+  Prometheus histogram; NXDN wants ≥ 80% CRC-verified CAC bursts
+  + SystemID match; MPT 1327 wants ≥ 95% true-positive lock rate
+  + a non-decreasing tolerance sweep; DMR Tier II wants
+  byte-for-byte FLC match + clean Terminator-with-LC handling.
+  The DMR Tier II and MPT 1327 follow-ups are already closed
+  algorithmically (PR-A, PR-C); their captures are now optional
+  secondary validation rather than the blocker. The
+  [`samples/README.md`](samples/) top-level table summarises
+  status + acceptance criteria across all five protocols.
+- **Release-ready version metadata + AMBE+2 patent banner.**
+  [`internal/version/`](internal/version/) now exposes `Version`,
+  `Commit`, `BuildTime`, and a `String()` formatter
+  (`"vX.Y.Z (sha=…, built=…)"`); all three are populated via
+  `-ldflags` by the Makefile + release workflow. The daemon logs
+  a one-line AMBE+2 patent-posture notice at startup pointing at
+  [`docs/vocoders.md`](docs/vocoders.md); set
+  `GOPHERTRUNK_QUIET_BANNER=1` in CI / test harnesses to suppress
+  it. New `make release-dry-run VERSION=v0.99.0` target rehearses
+  the release build locally so ldflags + packaging surface before
+  a tag is cut — see [`CONTRIBUTING.md` §"Cutting a release"](CONTRIBUTING.md#cutting-a-release).
+- **CI gates: govulncheck + license audit + full-tree integration
+  run.** `.github/workflows/ci.yml` gains a `vulncheck` job
+  (govulncheck against the direct + transitive dependency graph),
+  a `licenses` job (regenerates the transitive-deps inventory via
+  google/go-licenses and diffs against the committed
+  `THIRD_PARTY_LICENSES.csv`), and an `integration` job that
+  walks `make test-integration` across the whole module (the
+  existing `build-test` job runs `make integration` against
+  `cmd/gophertrunk/` only; this future-proofs against
+  integration-tagged tests landing in other packages). New
+  `Makefile` targets: `make vulncheck`, `make licenses`,
+  `make test-integration`.
+  [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) ships a
+  hand-curated direct-deps table + the ISC attribution for the
+  mbelib-derived AMBE+2 / IMBE codebook tables.
+- **Operational docs landed.** [`SECURITY.md`](SECURITY.md)
+  documents the vulnerability disclosure process (private GitHub
+  security advisories), supported versions, in-scope vs.
+  out-of-scope issues, and the maintainer's response-time SLAs.
+  [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the dev setup, the
+  house-style conventions, and the PR scoping rules.
+  [`CHANGELOG.md`](CHANGELOG.md) seeds a Keep-a-Changelog with
+  every user-visible change since the calibration / hardening
+  pass. [`docs/gophertrunk.service`](docs/gophertrunk.service) is
+  an example systemd unit (DynamicUser + ProtectSystem + USB
+  device-allow) operators install at `/etc/systemd/system/`.
+- **Optional TLS on HTTP + gRPC + extended health endpoint.**
+  `api.tls_cert` / `api.tls_key` in `config.yaml` switches both
+  the HTTP REST/SSE/WebSocket server and the gRPC server to TLS;
+  the daemon refuses to start when one is set without the other.
+  Plain TCP stays the default for loopback / trusted-LAN
+  deployments. `GET /api/v1/health` now returns
+  `pool_attached_count`, `active_calls`, `db_connected`,
+  `metrics_enabled`, `auth_mode`, and `version` alongside the
+  legacy `status` + `now` — supports two-field k8s / Nomad
+  readiness probes that distinguish "process up" from "actually
+  working". See [docs/hardening.md](docs/hardening.md#transport-encryption-tls)
+  for the TLS recipe and [docs/hardening.md](docs/hardening.md#health-endpoint-diagnostics)
+  for the health schema.
+- **API server hardening: HTTP timeouts + gRPC keep-alive + drain
+  window.** `internal/api/server.go` now sets `ReadTimeout` /
+  `WriteTimeout` / `IdleTimeout` on the HTTP server (30 s / 30 s /
+  120 s) on top of the existing `ReadHeaderTimeout`. SSE
+  (`/api/v1/events`) opts out of `WriteTimeout` per-request via
+  `http.ResponseController.SetWriteDeadline(time.Time{})` so the
+  long-lived stream isn't torn down mid-call; the WebSocket
+  endpoint hijacks the connection on Upgrade and is unaffected.
+  `internal/api/grpc.go` configures `keepalive.ServerParameters`
+  (30 s idle ping, 10 s ack timeout) + `EnforcementPolicy`
+  (5 s min-time floor, `PermitWithoutStream: true`) so long-lived
+  `AudioService.StreamAudio` subscribers detect dead peers
+  without back-pressuring the publisher. Shutdown ctx bumped from
+  5 s to 30 s so in-flight SSE / WebSocket / audio-stream
+  subscribers drain cleanly on a daemon restart. See
+  [docs/hardening.md](docs/hardening.md#timeouts-and-keep-alive)
+  for the full knob reference.
 - **Runtime theme toggle (Ctrl+T) + docs/tui.md sync.** The dark
   and monochrome palettes have lived in `internal/tui/theme` since
   the operator-console PR but weren't reachable from the UI;
