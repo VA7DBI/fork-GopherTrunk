@@ -1,0 +1,61 @@
+name: Pages
+
+# Builds the docs/ folder as a Jekyll site and publishes it to GitHub Pages.
+# The landing page is synthesized from README.md at build time so the file
+# isn't duplicated in the repo.
+#
+# One-time setup required: Settings -> Pages -> Build and deployment ->
+# Source: "GitHub Actions". Without that, deploy-pages fails with
+# "Pages site not found".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "README.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Synthesize landing page from README.md
+        run: |
+          {
+            printf -- '---\nlayout: default\ntitle: Home\n---\n\n'
+            cat README.md
+          } > docs/index.md
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./docs
+          destination: ./_site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
