@@ -135,24 +135,29 @@ The remaining gaps:
     (Viterbi correction depth vs. real co-channel +
     adjacent-channel interference) need a live capture to
     characterise.
-- **DMR Tier II synthesized IQ fixture.** The Tier II pipeline
-  + Process adapter + unit test all ship (PR #184); the
-  end-to-end integration test (`TestDaemonCCDecodesDMRTier2`)
-  is currently `t.Skip`'d because the synthesized Voice LC
-  Header IQ fixture doesn't survive the C4FM modulator+demod
-  round-trip cleanly — Tier III's structurally-identical Aloha
-  CSBK fixture scrapes by but Tier II's payload bit
-  distribution stresses the Mueller-Müller clock loop more.
-  Real-air repeater captures exercise the pipeline fine; the
-  synthesized fixture is the follow-up. The diagnostic test
-  `TestDMRTier2VsTier3SymbolDensity` /
+- ~~**DMR Tier II synthesized IQ fixture**~~ (now shipping).
+  The Tier II pipeline + Process adapter + unit test all
+  shipped in PR #184; the end-to-end integration test
+  (`TestDaemonCCDecodesDMRTier2`) was previously `t.Skip`'d
+  because the synthesized Voice LC Header IQ fixture's symbol
+  distribution stresses the Mueller-Müller clock loop harder
+  than Tier III's structurally-identical CSBK Aloha fixture.
+  The diagnostic test (`TestDMRTier2VsTier3SymbolDensity` /
   `TestDMRTier2SlotTypeVsPayloadIsolation` in
-  `cmd/gophertrunk/dmr_tier2_diagnostic_test.go` (run via
-  `make integration` and reads `-v` output) localises the
-  divergent statistic to the BPTC(196,96)-encoded payload's
-  class-3 dibit overrepresentation (21.4% Tier II vs 5.1%
-  Tier III) and the matching mean-transition magnitude (1.27
-  vs 0.90); the fix lands in a follow-up PR.
+  `cmd/gophertrunk/dmr_tier2_diagnostic_test.go`) localised
+  the divergent statistic to the BPTC(196, 96)-encoded
+  payload's class-3 dibit overrepresentation (21.4% Tier II
+  vs 5.1% Tier III) and matching mean-transition magnitude
+  (1.27 vs 0.90); the RS(12, 9) seed `0x96 0x96 0x96` and the
+  BPTC parity rows distribute high-Hamming-weight bits
+  throughout the channel-bit output. The fix lives in
+  `internal/scanner/ccdecoder/pipelines.go`'s
+  `newDMRTier2Pipeline`: lowering the per-protocol pipeline
+  ClockGain from 0.025 (the value shared with Tier III) to
+  0.015 keeps the MM loop locked under the harder symbol
+  distribution. Receiver locks within ~100 ms of the first
+  burst; the more conservative gain stays well within the
+  loop's noise margin on live captures.
 - **Digital-voice level calibration.** Pure-Go IMBE / AMBE+2
   emit real audio end-to-end. The comparison harness at
   `internal/voice/calibrate/` is ready;
