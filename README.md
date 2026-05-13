@@ -322,6 +322,21 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **CI gates: govulncheck + license audit + full-tree integration
+  run.** `.github/workflows/ci.yml` gains a `vulncheck` job
+  (govulncheck against the direct + transitive dependency graph),
+  a `licenses` job (regenerates the transitive-deps inventory via
+  google/go-licenses and diffs against the committed
+  `THIRD_PARTY_LICENSES.csv`), and an `integration` job that
+  walks `make test-integration` across the whole module (the
+  existing `build-test` job runs `make integration` against
+  `cmd/gophertrunk/` only; this future-proofs against
+  integration-tagged tests landing in other packages). New
+  `Makefile` targets: `make vulncheck`, `make licenses`,
+  `make test-integration`.
+  [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) ships a
+  hand-curated direct-deps table + the ISC attribution for the
+  mbelib-derived AMBE+2 / IMBE codebook tables.
 - **Operational docs landed.** [`SECURITY.md`](SECURITY.md)
   documents the vulnerability disclosure process (private GitHub
   security advisories), supported versions, in-scope vs.

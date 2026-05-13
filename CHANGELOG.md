@@ -9,6 +9,18 @@ for tagged releases.
 
 ### Added
 
+- CI hardening: `vulncheck` job runs `govulncheck` against the
+  direct + transitive dependency graph; `licenses` job regenerates
+  the transitive-deps inventory via `google/go-licenses` and
+  diffs against the committed `THIRD_PARTY_LICENSES.csv`;
+  `integration` job runs `make test-integration` across the whole
+  module to backstop the existing `cmd/gophertrunk/`-only target.
+- `Makefile` targets: `make vulncheck`, `make licenses`,
+  `make test-integration`.
+- [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) — hand-
+  curated direct-deps license table sourced from `go.mod` plus the
+  ISC attribution for the mbelib-derived AMBE+2 / IMBE codebook
+  tables.
 - `SECURITY.md`, `CONTRIBUTING.md`, and a systemd unit template
   ([`docs/gophertrunk.service`](docs/gophertrunk.service)) for
   operators standing the daemon up on Linux servers.
