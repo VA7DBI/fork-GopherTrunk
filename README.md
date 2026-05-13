@@ -293,16 +293,22 @@ to its own package and lands independently.
   activates cleanly when no chip is connected. The actual FTDI
   hardware integration lands when a DVSI USB-3000 is available for
   round-trip testing.
-- **Vocoder level calibration.** Pure-Go IMBE / AMBE+2 produce real
-  audio end-to-end today. Absolute-level calibration against a
-  DSD-FME or OP25 reference recording (capture a P25 P1 / DMR voice
-  exchange, decode through both, compare RMS + cross-correlation
-  against a reference WAV under `internal/voice/{imbe,ambe2}/testdata/`)
-  is a polish item — useful when downstream pipelines need consistent
-  loudness across decoders. AMBE+2 DTMF dual-tone synthesis
-  (b₁ ∈ [128, 143]) is wired against the ITU-T Q.23 4×4 matrix;
-  knox / call-alert pairs (b₁ ∈ [144, 163]) are vendor-specific
-  and stay silent pending per-vendor frequency tables.
+- **Vocoder level calibration (reference data).** The plumbing
+  ships — comparison harness at `internal/voice/calibrate`,
+  per-vocoder testdata READMEs at
+  `internal/voice/{imbe,ambe2}/testdata/`, the end-to-end recipe at
+  [docs/voice-calibration.md](docs/voice-calibration.md), and a
+  one-off CLI wrapper at `cmd/voice-calibrate` (run
+  `go run ./cmd/voice-calibrate -raw call.raw -ref-wav ref.wav
+  -vocoder imbe`). Operators just need to drop reference WAVs
+  decoded by DSD-FME / OP25 from the same `.raw` into testdata; the
+  existing calibrate tests run unguarded once both files are
+  present. AMBE+2 DTMF dual-tone synthesis (b₁ ∈ [128, 143]) is
+  wired against the ITU-T Q.23 4×4 matrix; knox / call-alert pairs
+  (b₁ ∈ [144, 163]) are vendor-specific — operators with a per-
+  vendor reference register the (freqA, freqB) pair via
+  `ambe2.SetKnoxTone` and the matching tone frames synthesise
+  through the same dual-tone path as DTMF.
 - **YSF on-air interleaver / puncture validation (real-air capture).**
   The spec-level on-air codec ships in
   `internal/radio/ysf/fich_trellis.go`'s `EncodeFICHOnAir` /
