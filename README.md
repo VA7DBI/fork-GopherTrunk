@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/gophertrunk-logo.png" alt="GopherTrunk logo" width="320">
+</p>
+
 # GopherTrunk 📻🐹
 
 A low-latency digital-trunking scanner engine in Go.
