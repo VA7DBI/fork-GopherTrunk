@@ -7,26 +7,19 @@ name: CI
 #     narrowing to main fixes that.
 #   - pull_request: every PR, every update. The branch's CI runs come
 #     in via this trigger.
-#   - paths-ignore: docs-only / config-example-only / license-only
-#     changes don't compile any Go code, so skip the CI matrix
-#     entirely. Branch protection auto-passes the required checks
-#     when a workflow is skipped via paths-ignore (GitHub default
-#     since the actions/runner #2080 fix), so this doesn't block PR
-#     merges.
+#
+# We deliberately do NOT use paths-ignore here. The `Protect main`
+# repository ruleset requires build-test / usb-windows / usb-macos to
+# report a successful conclusion before merge, and rulesets (unlike the
+# legacy branch-protection-rules system) do not auto-pass required
+# checks when the workflow is skipped via paths-ignore. A skipped
+# workflow leaves the PR in mergeable_state=blocked, even for docs-only
+# changes. Running the full matrix on every PR is the simplest way to
+# keep the required-check contract honest.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "LICENSE"
-      - "config.example.yaml"
   pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "LICENSE"
-      - "config.example.yaml"
 
 jobs:
   build-test:

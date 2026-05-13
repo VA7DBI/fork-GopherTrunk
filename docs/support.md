@@ -6,6 +6,10 @@ description: Help keep GopherTrunk going
 
 # Support GopherTrunk
 
+<p align="center">
+  <img src="assets/gophertrunk-logo.png" alt="GopherTrunk logo" width="240">
+</p>
+
 GopherTrunk is a one-developer project: a pure-Go RTL-SDR scanner that
 decodes ten-plus trunked-radio protocols, runs across Linux / Windows /
 macOS, and has no commercial backing. Every hour of development, every

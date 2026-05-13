@@ -12,6 +12,12 @@
     <![endif]-->
     {% include head-custom.html %}
     <style>
+      .project-logo {
+        display: block;
+        margin: 0 auto 1rem;
+        width: 160px;
+        height: auto;
+      }
       .site-support {
         margin: 2rem 0 1rem;
         padding: 1rem 1.25rem;
@@ -50,6 +56,7 @@
     <a id="skip-to-content" href="#content">Skip to the content.</a>
 
     <header class="page-header" role="banner">
+      <img class="project-logo" src="{{ '/assets/gophertrunk-logo.png' | relative_url }}" alt="GopherTrunk logo">
       <h1 class="project-name">{{ page.title | default: site.title | default: site.github.repository_name }}</h1>
       <h2 class="project-tagline">{{ page.description | default: site.description | default: site.github.project_tagline }}</h2>
       {% if site.github.is_project_page %}
