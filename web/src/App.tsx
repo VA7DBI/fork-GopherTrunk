@@ -7,8 +7,12 @@ import { TabBar, type Tab } from "./components/TabBar";
 import { AudioPlayer } from "./components/AudioPlayer";
 import { InstallPrompt } from "./components/InstallPrompt";
 import { Dashboard } from "./panels/Dashboard";
-import { Settings } from "./panels/Settings";
+import { Devices } from "./panels/Devices";
+import { Events } from "./panels/Events";
 import { Placeholder } from "./panels/Placeholder";
+import { Settings } from "./panels/Settings";
+import { Systems } from "./panels/Systems";
+import { Talkgroups } from "./panels/Talkgroups";
 import {
   selectClientConfig,
   useShared,
@@ -131,32 +135,13 @@ export function App() {
               />
             }
           />
-          <Route
-            path="/systems"
-            element={<Placeholder title="Systems" hint="Trunked-system browser." />}
-          />
-          <Route
-            path="/talkgroups"
-            element={
-              <Placeholder
-                title="Talkgroups"
-                hint="Priority / lockout / scan toggles per talkgroup."
-              />
-            }
-          />
+          <Route path="/systems" element={<Systems />} />
+          <Route path="/talkgroups" element={<Talkgroups />} />
           <Route
             path="/history"
             element={<Placeholder title="History" hint="Call log explorer." />}
           />
-          <Route
-            path="/events"
-            element={
-              <Placeholder
-                title="Events"
-                hint="Live ring buffer of every event the daemon publishes."
-              />
-            }
-          />
+          <Route path="/events" element={<Events />} />
           <Route
             path="/tones"
             element={
@@ -175,10 +160,7 @@ export function App() {
               />
             }
           />
-          <Route
-            path="/devices"
-            element={<Placeholder title="Devices" hint="SDR pool inspector." />}
-          />
+          <Route path="/devices" element={<Devices />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>

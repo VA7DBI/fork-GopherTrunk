@@ -312,17 +312,21 @@ to its own package and lands independently.
 
 - **Web operator console — remaining panels.** The browser SPA in
   [`web/`](web/) (Vite + React + TypeScript + Tailwind) currently
-  ships a working Dashboard with the live WebSocket event feed and
-  audio cockpit, a Settings tab (theme / write-mode / forget device),
-  and a ConnectScreen that points the SPA at any daemon on the
-  network. The remaining 9 TUI panels (Systems, Talkgroups, Active,
-  History, Events, Tones, Metrics, Devices, Scanner) are stubbed via
+  ships Dashboard (live WebSocket event feed + audio cockpit),
+  Settings (theme / write-mode / forget device), ConnectScreen
+  (server-URL + token entry), plus the read-only data browsers:
+  **Systems**, **Talkgroups**, **Devices** (sortable tables with
+  detail modals), and **Events** (live ring-buffer viewer with
+  filter + pause + inline JSON expansion). The remaining 5 TUI
+  panels (Active, History, Tones, Metrics, Scanner) are stubbed via
   `Placeholder` and land panel-by-panel in follow-up PRs against the
-  same shared `src/store/` + `src/api/` plumbing. Daemon-side support
-  (CORS middleware, `GET /api/v1/audio/stream` PCM-over-WAV endpoint)
-  already ships; no further Go-side work is required to fill the
-  panels in. Operator playbook for running the daemon on a Raspberry
-  Pi and driving it from a laptop is in [`web/README.md`](web/README.md).
+  same shared `src/store/` + `src/api/` plumbing — Scanner and the
+  Talkgroup-priority / call-end mutations introduce the daemon-write
+  gate UI. Daemon-side support (CORS middleware,
+  `GET /api/v1/audio/stream` PCM-over-WAV endpoint) already ships;
+  no further Go-side work is required to fill the panels in.
+  Operator playbook for running the daemon on a Raspberry Pi and
+  driving it from a laptop is in [`web/README.md`](web/README.md).
 - **DVSI USB-3000 / AMBE-3003 hardware backend (USB transport).**
   The `Vocoder` + AMBE-3003 wire protocol + `voice.Vocoder` interface
   conformance ship in [`internal/voice/dvsi/`](internal/voice/dvsi/)
@@ -2234,7 +2238,7 @@ screen. The SPA is installable as a Progressive Web App (Add to Home
 Screen) and persists server URL + token in browser storage so return
 visits skip the connect screen.
 
-**Status: foundation only.** The current build ships:
+**Status: read panels landing.** The current build ships:
 
 - **ConnectScreen** — server-URL + bearer-token entry with a
   `GET /api/v1/health` reachability probe before commit.
@@ -2243,18 +2247,31 @@ visits skip the connect screen.
   PCM-over-WAV playback from the new `GET /api/v1/audio/stream`
   endpoint, volume / mute / record-toggle wired to
   `PATCH /api/v1/audio`.
+- **Systems** — sortable browser of every trunked system in
+  `GET /api/v1/systems`, with a detail modal exposing protocol,
+  WACN / System ID / RFSS / Site, and control-channel frequencies.
+- **Talkgroups** — sortable, filterable browser of every talkgroup
+  with priority / scan / lockout flag pills and a detail modal. Read-
+  only in this pass; PATCH mutations land with the write-mode pass.
+- **Devices** — SDR pool inspector with attached/detached status,
+  driver / tuner / role columns, and a detail modal for gain / PPM /
+  bias-T. Live via the same `sdr.attached` / `sdr.detached` events
+  the Dashboard already subscribes to.
+- **Events** — live ring-buffer viewer (capped at 500 to mirror the
+  TUI) with substring filter across kind / timestamp / payload, a
+  Pause/Resume toggle that freezes the snapshot for forensic review,
+  and click-to-expand row that pretty-prints the full event JSON.
 - **Settings** — theme toggle (dark / monochrome), write-mode gate
   mirroring the TUI's `--write` flag, "forget this device" to clear
   stored credentials.
 
-The remaining nine TUI panels (Systems, Talkgroups, Active, History,
-Events, Tones, Metrics, Devices, Scanner) are stubbed via
-`Placeholder` and land panel-by-panel in follow-up PRs against the
-same `src/store/` + `src/api/` plumbing — every read and mutation
-endpoint they need already lives on the daemon. See
-[`web/README.md`](web/README.md) for the operator playbook (LAN
-deployment, CORS config, PWA install steps) and the dev workflow
-(`make web-dev`, `make web-build`).
+The remaining five TUI panels (Active, History, Tones, Metrics,
+Scanner) are stubbed via `Placeholder` and land panel-by-panel in
+follow-up PRs against the same `src/store/` + `src/api/` plumbing —
+every read and mutation endpoint they need already lives on the
+daemon. See [`web/README.md`](web/README.md) for the operator
+playbook (LAN deployment, CORS config, PWA install steps) and the
+dev workflow (`make web-dev`, `make web-build`).
 
 For full feature parity with the TUI today, continue using
 `gophertrunk tui` (above).
