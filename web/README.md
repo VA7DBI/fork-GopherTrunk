@@ -107,6 +107,33 @@ The dev server proxies `/api/*` and `/metrics` to
 same-origin to the browser and you don't need CORS during
 development.
 
+## Status
+
+The SPA is built incrementally; each PR ships a slice of panels
+behind the same shared store + API client.
+
+Shipping today:
+
+| Panel         | Backed by                                       |
+| ------------- | ----------------------------------------------- |
+| ConnectScreen | `GET /api/v1/health` reachability probe         |
+| Dashboard     | `GET /api/v1/{health,calls/active,devices,audio}` + WebSocket event feed + `/api/v1/audio/stream` |
+| Systems       | `GET /api/v1/systems` (sortable list + detail)  |
+| Talkgroups    | `GET /api/v1/talkgroups` (sortable list + filter + detail) |
+| Devices       | `GET /api/v1/devices` (live attach/detach)      |
+| Events        | WebSocket ring buffer (filter + pause + JSON expansion) |
+| Settings      | theme, write-mode, forget-device                |
+
+Pending — stubbed by `Placeholder` and arriving in follow-up PRs:
+
+| Panel        | Will mirror                                     |
+| ------------ | ----------------------------------------------- |
+| Active       | `GET /api/v1/calls/active` + end-call mutation  |
+| History      | `GET /api/v1/calls/history` + filters           |
+| Tones        | `tone.alert` ring + per-device reset            |
+| Metrics      | `GET /metrics` charted via Chart.js             |
+| Scanner      | `GET /api/v1/scanner` + hold/resume/retune/lockout mutations |
+
 ## Architecture
 
 - **React 18** + **React Router** (hash mode so `file://` works)
