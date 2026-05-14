@@ -36,7 +36,11 @@ jobs:
         run: |
           {
             printf -- '---\nlayout: default\ntitle: Home\n---\n\n'
-            cat README.md
+            # Rewrite README image/link paths that are relative to the repo
+            # root so they resolve correctly when served from the Jekyll
+            # site root (./docs is the Jekyll source, so docs/assets/foo
+            # is published at /assets/foo).
+            sed -e 's#docs/assets/#/assets/#g' README.md
           } > docs/index.md
 
       - uses: actions/configure-pages@v5
