@@ -61,6 +61,10 @@ nav_group: Install
   Jump to: <a href="#linux">Linux quick start</a> · <a href="#macos">macOS quick start</a> · <a href="#windows-11">Windows quick start</a> · <a href="#verify-your-download">Verify</a> · <a href="#build-from-source">Build from source</a> · <a href="#docker">Docker</a>
 </p>
 
+<p class="downloads-jump">
+  Every release archive includes the standalone browser console at <code>gophertrunk-web/</code> alongside the daemon binary — open <code>index.html</code> in any browser to operate from a laptop, tablet, or phone on the LAN. Setup walkthrough: <a href="{{ '/web.html' | relative_url }}">Web console quick start</a>.
+</p>
+
 [releases]: https://github.com/MattCheramie/GopherTrunk/releases
 [latest]: https://github.com/MattCheramie/GopherTrunk/releases/latest
 
