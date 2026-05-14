@@ -41,7 +41,7 @@ cp config.example.yaml config.yaml
 ./gophertrunk run -config config.yaml
 ```
 
-Full per-OS install (Windows installer / macOS Apple Silicon / Linux aarch64): **[gophertrunk.org/downloads.html](https://gophertrunk.org/downloads.html)** · TUI keybindings: [`docs/tui.md`](docs/tui.md) · Hardware setup (udev rules, WinUSB / Zadig): [`docs/hardware.md`](docs/hardware.md) · Production hardening (TLS, bearer-token auth, Docker): [`docs/hardening.md`](docs/hardening.md).
+Full per-OS install (Windows installer / macOS Apple Silicon / Linux aarch64): **[gophertrunk.org/downloads.html](https://gophertrunk.org/downloads.html)** · Web console setup + quick start: **[gophertrunk.org/web.html](https://gophertrunk.org/web.html)** · TUI keybindings: [`docs/tui.md`](docs/tui.md) · Hardware setup (udev rules, WinUSB / Zadig): [`docs/hardware.md`](docs/hardware.md) · Production hardening (TLS, bearer-token auth, Docker): [`docs/hardening.md`](docs/hardening.md).
 
 ## Features
 
@@ -2282,8 +2282,11 @@ counterpart:
 All mutations are AND-gated by `selectCanMutate` (write mode +
 daemon `allow_mutations`) and the destructive ones are wrapped in a
 `ConfirmModal` so a fat-finger tap in the bottom nav doesn't end a
-call. See [`web/README.md`](web/README.md) for the operator
-playbook (LAN deployment, CORS config, PWA install steps) and the
+call. See the **setup + quick-start guide at
+[gophertrunk.org/web.html](https://gophertrunk.org/web.html)** (also
+[`docs/web.md`](docs/web.md)) for the operator playbook — LAN
+deployment, CORS config, PWA install — and
+[`web/README.md`](web/README.md) for the developer reference + the
 dev workflow (`make web-dev`, `make web-build`).
 
 ## API authentication
@@ -2422,9 +2425,13 @@ opt-in field as a `omitempty` JSON value.
   concurrency model, driver registry, build tags
 - [`docs/tui.md`](docs/tui.md) — TUI keybindings, panel reference,
   troubleshooting
-- [`web/README.md`](web/README.md) — browser web console (standalone
-  `gophertrunk-web/` package): LAN deployment recipe, CORS config,
-  PWA install steps, dev workflow (`make web-dev` / `make web-build`)
+- [`docs/web.md`](docs/web.md) — browser web console setup + quick
+  start: getting the bundle, daemon CORS/auth config, opening
+  `index.html`, LAN scenario, PWA install, troubleshooting. Also at
+  **[gophertrunk.org/web.html](https://gophertrunk.org/web.html)**
+- [`web/README.md`](web/README.md) — web console developer reference:
+  shipping panel matrix, architecture, dev workflow
+  (`make web-dev` / `make web-build`)
 - [`docs/hardware.md`](docs/hardware.md) — udev rules, DVB blacklist,
   IQ capture for replay
 - [`docs/vocoders.md`](docs/vocoders.md) — IMBE / AMBE+2 licensing
