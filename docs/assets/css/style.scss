@@ -310,11 +310,18 @@ button { font: inherit; cursor: pointer; }
     background: var(--bg);
     border-bottom: 1px solid var(--border);
     box-shadow: var(--shadow);
-    transform: translateY(-110%);
-    transition: transform 0.18s ease;
+    transform: translateY(-100%);
+    visibility: hidden;
+    pointer-events: none;
+    transition: transform 0.18s ease, visibility 0s linear 0.18s;
     z-index: 99;
   }
-  body.nav-open .site-nav__menu { transform: translateY(0); }
+  body.nav-open .site-nav__menu {
+    transform: translateY(0);
+    visibility: visible;
+    pointer-events: auto;
+    transition: transform 0.18s ease, visibility 0s linear 0s;
+  }
   .site-nav__groups {
     flex-direction: column;
     align-items: stretch;
