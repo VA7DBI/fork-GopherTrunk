@@ -19,7 +19,7 @@ import (
 //   -force             overwrite an existing system block with the same name
 func runImport(args []string) {
 	fs := flag.NewFlagSet("import-pdf", flag.ExitOnError)
-	cfgPath := fs.String("config", "./config.yaml", "path to existing config.yaml (merged in place)")
+	cfgPath := fs.String("config", defaultConfigPath(), "path to existing config.yaml (merged in place)")
 	csvDir := fs.String("csv-dir", "", "directory to write talkgroup CSVs (default: directory of -config)")
 	noTUI := fs.Bool("no-tui", false, "skip the review TUI and write straight from parsed defaults")
 	dryRun := fs.Bool("dry-run", false, "print the planned changes and exit without writing")
