@@ -726,11 +726,26 @@ func (m configWizardModel) commitReview() (tea.Model, tea.Cmd) {
 		m.status = "render error: " + err.Error()
 		return m, nil
 	}
-	// Ensure parent dir exists.
-	if dir := filepath.Dir(m.answers.ConfigPath); dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
+	// Resolve env-var references (%VAR%, $VAR, ~) and lift to an
+	// absolute path. Doing it here — rather than in the field
+	// setter — means the operator sees what they typed all the way
+	// through editing, and the success message reports the actual
+	// on-disk destination instead of a possibly-relative input.
+	target := expandConfigPath(m.answers.ConfigPath)
+	if abs, aerr := filepath.Abs(target); aerr == nil {
+		target = abs
 	}
-	if err := os.WriteFile(m.answers.ConfigPath, out, 0o644); err != nil {
+	// Ensure parent dir exists. Previously this swallowed the error;
+	// surfacing it explicitly avoids the "no error but no file"
+	// failure mode where MkdirAll failed silently and WriteFile then
+	// failed for an unrelated-looking reason.
+	if dir := filepath.Dir(target); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			m.status = "mkdir " + dir + ": " + err.Error()
+			return m, nil
+		}
+	}
+	if err := os.WriteFile(target, out, 0o644); err != nil {
 		m.status = "write error: " + err.Error()
 		// Permission-denied is almost always because the operator
 		// launched the binary from a protected dir (Program Files,
@@ -743,6 +758,7 @@ func (m configWizardModel) commitReview() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	m.answers.ConfigPath = target
 	m.wrote = true
 	m.done = true
 	return m, tea.Quit
@@ -837,6 +853,18 @@ func (m configWizardModel) View() string {
 		} else {
 			b.WriteString("Destination: ")
 			b.WriteString(lipgloss.NewStyle().Bold(true).Render(m.answers.ConfigPath))
+			// If the path contains env-var references or a leading
+			// ~, also show what it resolves to. The same expansion +
+			// abs runs in commitReview, so what's displayed here is
+			// exactly what gets written.
+			resolved := expandConfigPath(m.answers.ConfigPath)
+			if abs, aerr := filepath.Abs(resolved); aerr == nil {
+				resolved = abs
+			}
+			if resolved != m.answers.ConfigPath {
+				b.WriteString("\n  resolves to: ")
+				b.WriteString(resolved)
+			}
 			b.WriteString("\n\n")
 			b.WriteString(previewLines(string(out), 24))
 		}
@@ -927,6 +955,65 @@ func previewLines(s string, max int) string {
 				strings.Count(s, "\n")+1))
 	}
 	return s
+}
+
+// expandConfigPath resolves env-var references and a leading ~ in
+// the operator's chosen config path. Without this, an operator who
+// types "%APPDATA%\GopherTrunk\config.yaml" (Windows) or
+// "~/.config/gophertrunk/config.yaml" (POSIX) ends up with a file
+// whose literal name contains the unexpanded syntax — looks like a
+// silent no-op because the wizard reports success but the file isn't
+// where the operator expected.
+//
+// Expansion order: ~ first, then $VAR / ${VAR}, then Windows %VAR%.
+// Unknown vars are preserved as-written rather than dropped so the
+// failure (if any) at WriteFile time is at least debuggable.
+func expandConfigPath(p string) string {
+	switch {
+	case p == "~":
+		if home, err := os.UserHomeDir(); err == nil {
+			p = home
+		}
+	case strings.HasPrefix(p, "~/"), strings.HasPrefix(p, `~\`):
+		if home, err := os.UserHomeDir(); err == nil {
+			p = filepath.Join(home, p[2:])
+		}
+	}
+	p = os.ExpandEnv(p)         // $VAR, ${VAR}
+	p = expandWindowsEnv(p)     // %VAR%
+	return p
+}
+
+// expandWindowsEnv replaces %VAR% references with their env values.
+// Go's os.ExpandEnv only understands POSIX-style $VAR / ${VAR}, so on
+// Windows we need this for cmd.exe-style references that operators
+// reflexively type. Unmatched/unknown vars are preserved verbatim.
+func expandWindowsEnv(p string) string {
+	var b strings.Builder
+	for {
+		i := strings.IndexByte(p, '%')
+		if i < 0 {
+			b.WriteString(p)
+			return b.String()
+		}
+		b.WriteString(p[:i])
+		rest := p[i+1:]
+		j := strings.IndexByte(rest, '%')
+		if j < 0 {
+			b.WriteByte('%')
+			b.WriteString(rest)
+			return b.String()
+		}
+		name := rest[:j]
+		if val, ok := os.LookupEnv(name); ok {
+			b.WriteString(val)
+		} else {
+			b.WriteByte('%')
+			b.WriteString(name)
+			b.WriteByte('%')
+		}
+		p = rest[j+1:]
+	}
 }
 
 // defaultConfigPath picks a sensible default location for the

@@ -158,3 +158,66 @@ func TestWizard_SDRDeviceBuilder(t *testing.T) {
 		t.Errorf("device gain default = %q, want auto", d.Gain)
 	}
 }
+
+// TestExpandConfigPath verifies env-var expansion handles the
+// cmd.exe-style %VAR% references Windows operators reach for first,
+// the POSIX $VAR / ${VAR} forms, and the leading ~ shorthand. Unknown
+// vars are preserved verbatim so a typo doesn't silently become a
+// path with empty segments.
+func TestExpandConfigPath(t *testing.T) {
+	t.Setenv("GTTEST_DIR", "/tmp/gtwiz")
+	t.Setenv("GTTEST_NAME", "config.yaml")
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		t.Skipf("UserHomeDir: %v", herr)
+	}
+
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{`%GTTEST_DIR%/%GTTEST_NAME%`, "/tmp/gtwiz/config.yaml"},
+		{`$GTTEST_DIR/$GTTEST_NAME`, "/tmp/gtwiz/config.yaml"},
+		{`${GTTEST_DIR}/${GTTEST_NAME}`, "/tmp/gtwiz/config.yaml"},
+		{`~/configs/config.yaml`, filepath.Join(home, "configs/config.yaml")},
+		{`./config.yaml`, "./config.yaml"},
+		{`%GTTEST_DOES_NOT_EXIST%/config.yaml`, "%GTTEST_DOES_NOT_EXIST%/config.yaml"},
+		{`%unterminated/path`, "%unterminated/path"},
+	}
+	for _, tc := range cases {
+		if got := expandConfigPath(tc.in); got != tc.want {
+			t.Errorf("expandConfigPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestWizard_WritesAfterEnvVarPath drives the wizard end-to-end with
+// a ConfigPath that contains a %VAR% reference. The path the operator
+// sees on the review screen contains the unexpanded var, but the
+// actual write goes to the resolved location and m.answers.ConfigPath
+// is updated so the success message reports the real destination.
+func TestWizard_WritesAfterEnvVarPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("GTWIZ_TARGET_DIR", dir)
+
+	seed := defaultWizardAnswers()
+	seed.ConfigPath = `%GTWIZ_TARGET_DIR%/config.yaml`
+	m := newConfigWizard(seed, false)
+
+	for safety := 0; safety < 80; safety++ {
+		if m.done {
+			break
+		}
+		m = wizardStepKey(m, tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	if !m.wrote {
+		t.Fatalf("wizard did not write (status=%q)", m.status)
+	}
+	want := filepath.Join(dir, "config.yaml")
+	if m.answers.ConfigPath != want {
+		t.Errorf("answers.ConfigPath = %q after commit, want %q (the resolved path, for the success message)", m.answers.ConfigPath, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("file not created at resolved path %s: %v", want, err)
+	}
+}
