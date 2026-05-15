@@ -130,6 +130,14 @@ against a second config for testing), use `-config`:
 gophertrunk run -config "C:\path\to\other.yaml"
 ```
 
+If you drop multiple `*.yaml` files into the editable-files folder
+(e.g. `config.yaml` + `prod.yaml` + `test.yaml`), the daemon prints
+a numbered menu on startup and asks which one to load. Pick the
+number, press Enter, and that file is used. Set `-config` or
+`GOPHERTRUNK_CONFIG` to skip the prompt for unattended runs (a
+non-interactive launch — Windows service, scheduled task —
+auto-selects the first file and logs the choice).
+
 A read-only reference copy of the full annotated template lives at
 `C:\Program Files\GopherTrunk\config.example.yaml` (Start Menu →
 "Configuration template").
