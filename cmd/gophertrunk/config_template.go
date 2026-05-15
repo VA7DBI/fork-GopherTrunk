@@ -88,7 +88,7 @@ type wizardSDR struct {
 // serials and (optionally) trunked systems via -pdf / -csv.
 func defaultWizardAnswers() wizardAnswers {
 	return wizardAnswers{
-		ConfigPath: "./config.yaml",
+		ConfigPath: defaultConfigPath(),
 
 		LogLevel:  "info",
 		LogFormat: "text",

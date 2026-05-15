@@ -732,6 +732,15 @@ func (m configWizardModel) commitReview() (tea.Model, tea.Cmd) {
 	}
 	if err := os.WriteFile(m.answers.ConfigPath, out, 0o644); err != nil {
 		m.status = "write error: " + err.Error()
+		// Permission-denied is almost always because the operator
+		// launched the binary from a protected dir (Program Files,
+		// /usr/local/bin, etc.). Point them at a writable location
+		// so the next Esc → "Config file path" edit is obvious.
+		if os.IsPermission(err) {
+			if dir, derr := os.UserConfigDir(); derr == nil {
+				m.status += "\n  try: " + filepath.Join(dir, "GopherTrunk", "config.yaml")
+			}
+		}
 		return m, nil
 	}
 	m.wrote = true
@@ -918,6 +927,40 @@ func previewLines(s string, max int) string {
 				strings.Count(s, "\n")+1))
 	}
 	return s
+}
+
+// defaultConfigPath picks a sensible default location for the
+// generated config.yaml. Returns "./config.yaml" when the current
+// working directory is writable; otherwise falls back to
+// <os.UserConfigDir()>/GopherTrunk/config.yaml.
+//
+// Windows operators frequently launch the installed binary from
+// C:\Program Files\GopherTrunk\, which is read-only for non-Admin
+// users — defaulting to ./config.yaml there guarantees a write
+// error on the final review screen. The probe sidesteps that.
+func defaultConfigPath() string {
+	if cwdWritable() {
+		return "./config.yaml"
+	}
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "GopherTrunk", "config.yaml")
+	}
+	return "./config.yaml"
+}
+
+// cwdWritable returns true when the process can create a file in
+// its current working directory. Uses a unique temp filename so a
+// concurrent run never collides; the file is removed before
+// returning regardless of outcome.
+func cwdWritable() bool {
+	f, err := os.CreateTemp(".", ".gophertrunk-wiz-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
 }
 
 func boolStr(b bool) string {
