@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -57,8 +58,8 @@ func TestSIGHUP_TriggersReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new daemon: %v", err)
 	}
-	if d.cfg.Scanner.ScanMode != "all" {
-		t.Fatalf("pre-reload scan_mode = %q want all", d.cfg.Scanner.ScanMode)
+	if d.Cfg().Scanner.ScanMode != "all" {
+		t.Fatalf("pre-reload scan_mode = %q want all", d.Cfg().Scanner.ScanMode)
 	}
 
 	// Stand up the SIGHUP watcher in a goroutine, with a context
@@ -80,19 +81,38 @@ func TestSIGHUP_TriggersReload(t *testing.T) {
 	}
 
 	// Poll for the in-memory cfg to flip — the reload is async
-	// inside the goroutine and we don't expose a synchronous
-	// "reload done" hook in production code.
+	// inside the goroutine. Use Cfg() so the read is serialised
+	// against Reload's write lock and -race stays happy.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if d.cfg.Scanner.ScanMode == "list" {
+		if d.Cfg().Scanner.ScanMode == "list" {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if d.cfg.Scanner.ScanMode != "list" {
-		t.Errorf("post-SIGHUP scan_mode = %q want list (reload did not run)",
-			d.cfg.Scanner.ScanMode)
+	if got := d.Cfg().Scanner.ScanMode; got != "list" {
+		t.Errorf("post-SIGHUP scan_mode = %q want list (reload did not run)", got)
 	}
+}
+
+// safeBuffer is a minimal thread-safe io.Writer + reader so the
+// test goroutine can scan for log output produced by a watcher
+// goroutine without tripping -race. Wraps a single mutex.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // TestSIGHUP_BadConfigDoesNotCrash verifies that a malformed
@@ -109,8 +129,8 @@ func TestSIGHUP_BadConfigDoesNotCrash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var captured strings.Builder
-	logger := slog.New(slog.NewTextHandler(&captured, nil))
+	captured := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(captured, nil))
 	d, err := NewDaemonWithPath(cfg, path, "test", logger)
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +161,7 @@ func TestSIGHUP_BadConfigDoesNotCrash(t *testing.T) {
 	}
 	// Pre-reload state should still be intact — the bad reload
 	// must not have mutated d.cfg.
-	if d.cfg.Scanner.ScanMode != "all" {
-		t.Errorf("scan_mode mutated after failed reload: %q", d.cfg.Scanner.ScanMode)
+	if got := d.Cfg().Scanner.ScanMode; got != "all" {
+		t.Errorf("scan_mode mutated after failed reload: %q", got)
 	}
 }
