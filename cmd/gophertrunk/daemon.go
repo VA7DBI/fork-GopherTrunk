@@ -647,6 +647,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		if d.writer != nil {
 			opts.ConfigWriter = d.writer
 			opts.SettingsApplier = newDaemonSettingsApplier(d, version)
+			opts.Importer = newDaemonImporter(d)
 		}
 		srv, err := api.NewServer(opts)
 		if err != nil {

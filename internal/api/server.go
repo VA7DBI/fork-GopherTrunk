@@ -205,6 +205,8 @@ type Server struct {
 	runtime      RuntimeProvider
 	configWriter ConfigWriter
 	settings     SettingsApplier
+	importer     Importer
+	imports      *importStaging
 	talkgroups   *trunking.TalkgroupDB
 	systems      []trunking.System
 	history      HistoryQuery
@@ -345,6 +347,12 @@ type ServerOptions struct {
 	// Optional: when nil, every field is reported as
 	// "restart_required" in the response.
 	SettingsApplier SettingsApplier
+	// Importer enables the live system-import endpoints
+	// (POST /api/v1/import, POST /api/v1/import/{id}/commit,
+	// DELETE /api/v1/import/{id}). nil disables the endpoints —
+	// the daemon emits 503 so the SPA can present a clear "import
+	// disabled" message.
+	Importer Importer
 	// AudioPublisher, when non-nil, enables the
 	// GET /api/v1/audio/stream HTTP endpoint that streams live
 	// composed PCM as a continuous WAV body. Reuses the same
@@ -424,6 +432,8 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		runtime:        opts.Runtime,
 		configWriter:   opts.ConfigWriter,
 		settings:       opts.SettingsApplier,
+		importer:       opts.Importer,
+		imports:        newImportStaging(5 * time.Minute),
 		talkgroups:     opts.Talkgroups,
 		systems:        append([]trunking.System(nil), opts.Systems...),
 		history:        opts.History,
@@ -576,6 +586,14 @@ func (s *Server) routes() *http.ServeMux {
 	// response carries the new runtime DTO + a per-field list of
 	// what applied vs what needs a daemon restart.
 	mux.HandleFunc("PATCH /api/v1/settings", s.gate(s.handleSettingsPatch))
+
+	// Live import — upload one or more RadioReference PDFs / CSV
+	// bundles, preview the parsed systems, then commit (or discard)
+	// the staged batch. Multipart upload at POST /api/v1/import;
+	// commit/discard keyed by the returned staging ID.
+	mux.HandleFunc("POST /api/v1/import", s.gate(s.handleImportUpload))
+	mux.HandleFunc("POST /api/v1/import/{id}/commit", s.gate(s.handleImportCommit))
+	mux.HandleFunc("DELETE /api/v1/import/{id}", s.gate(s.handleImportDiscard))
 	// Live audio stream — open like every other read route. Emits
 	// a continuous WAV body of composed PCM frames; browsers play
 	// it via <audio src="/api/v1/audio/stream">. Returns 503 when
