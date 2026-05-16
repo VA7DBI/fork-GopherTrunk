@@ -34,6 +34,23 @@ for tagged releases.
 
 ### Internal
 
+- **DVSI mock-transport error-path coverage.** The
+  `internal/voice/dvsi` test suite previously exercised the happy
+  paths (scripted exchange, loopback silence, ErrNoDevice fall-
+  through) but left the error-wrapping branches uncovered.
+  Fifteen new tests now lock in: `Open(DefaultOptions())` returns
+  `ErrNoDevice` carrying VID/PID/serial diagnostics, zero-valued
+  VID/PID falls back to the documented FT2232H defaults, explicit
+  `Transport` beats `LoopbackOnly` in `Open`'s switch, `Decode`
+  wraps `transport.Write` / `transport.Read` errors with their
+  origin labels, the loopback `Transport` rejects `Read` before
+  `Write` + `Write`/`Read` after `Close` + malformed packets,
+  and `PktControl` / unknown-type packets get cleanly Ack-mirrored
+  so a future fuzz target won't stall on them. Hardware
+  integration unchanged — `openUSBTransport` still returns
+  `ErrNoDevice` until a chip is available for round-trip
+  testing.
+
 - **Calibrate harness math is testable without external fixtures.**
   Extracted `calibrate.CompareSamples([]int16, []int16) Result` so
   the RMS-ratio + cross-correlation math can be exercised on
