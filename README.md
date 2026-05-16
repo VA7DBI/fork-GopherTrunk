@@ -114,7 +114,14 @@ The remaining gaps:
     use. Both are wired through the connector; the
     interleaver/puncture detail-level matching against captured
     MMDVMHost transmissions is the calibration step that lands
-    next.
+    next. The 4-FSK slicer's peak-deviation reference now
+    surfaces as a per-system `nxdn_deviation_hz` knob (default
+    1800 Hz per the Common Air Interface) so captures from
+    transmitters that deviate from spec — symptom: bimodal
+    dibit distribution at the slicer output — can be rebalanced
+    without code changes. See
+    [`samples/nxdn/README.md`](samples/nxdn/README.md#tuning-deviation-for-non-spec-captures)
+    for the sweep recipe.
   - **P25 Phase 2 FEC chain (trellis + outer RS + PN44
     scrambler + per-burst offset probe, all shipping).** The
     full TIA-102 chain wraps the MAC PDU in three layers, each
@@ -204,14 +211,22 @@ The remaining gaps:
   loop's noise margin on live captures.
 - **Digital-voice level calibration.** Pure-Go IMBE / AMBE+2
   emit real audio end-to-end. The comparison harness at
-  `internal/voice/calibrate/` is ready;
-  reference data (captured P25 P1 / DMR voice exchanges plus
-  DSD-FME / OP25 decodes belong at
-  `internal/voice/{imbe,ambe2}/testdata/`) is the remaining gap.
-  Knox / call-alert AMBE+2 tones (b₁ ∈ [144, 163]) are
+  `internal/voice/calibrate/` is ready; reference data
+  (captured P25 P1 / DMR voice exchanges plus DSD-FME / OP25
+  decodes belong at `internal/voice/{imbe,ambe2}/testdata/`)
+  is the remaining gap. The harness math itself is now
+  unconditionally test-covered via the extracted
+  `calibrate.CompareSamples([]int16, []int16) Result` helper
+  plus `TestCompareSamplesSyntheticGainOffset` — a regression
+  in the RMS-ratio or cross-correlation math surfaces in CI
+  without reference data needing to land first. Knox /
+  call-alert AMBE+2 tones (b₁ ∈ [144, 163]) are
   vendor-specific and stay silent until per-vendor frequency
-  tables land. See [docs/vocoders.md](docs/vocoders.md) for the
-  licensing posture.
+  tables land; operators with a curated table can register a
+  named bundle via `ambe2.RegisterPreset` (preset names
+  surface through `ambe2.ListPresets()` for diagnostics).
+  See [docs/vocoders.md](docs/vocoders.md) for the licensing
+  posture and sourcing checklist.
 - **CTCSS + DCS sub-audible squelch + tail-fade on call end.** The
   conventional FM scanner optionally gates squelch on a sub-audible
   tone or digital code in addition to IQ power, so adjacent-system
@@ -319,12 +334,19 @@ to its own package and lands independently.
   behind `-tags dvsi`; the package's `init()` registers `"dvsi"`
   with `voice.DefaultRegistry`. CI exercises the wire protocol +
   Vocoder plumbing through the scripted mock Transport and the
-  software-loopback Transport (`make test-dvsi`). The USB / FTDI
-  bulk-endpoint plumbing that talks to a physical chip remains a
-  stub returning `ErrNoDevice` — the recorder fallback chain
-  activates cleanly when no chip is connected. The actual FTDI
-  hardware integration lands when a DVSI USB-3000 is available for
-  round-trip testing.
+  software-loopback Transport (`make test-dvsi`). The mock
+  Transport now covers the full error surface — `Write` /
+  `Read` failure wrapping, loopback Close-then-Write,
+  out-of-order Read, malformed-packet rejection, the
+  `Transport`-beats-`LoopbackOnly` precedence in `Open`, and
+  the VID/PID-defaulting + diagnostic-error paths — so a
+  contributor refactoring the chip-comms layer can rely on the
+  test suite catching regressions without hardware. The USB /
+  FTDI bulk-endpoint plumbing that talks to a physical chip
+  remains a stub returning `ErrNoDevice` — the recorder
+  fallback chain activates cleanly when no chip is connected.
+  The actual FTDI hardware integration lands when a DVSI
+  USB-3000 is available for round-trip testing.
 - **Vocoder level calibration (reference data).** The plumbing
   ships — comparison harness at `internal/voice/calibrate`,
   per-vocoder testdata READMEs at
@@ -340,7 +362,11 @@ to its own package and lands independently.
   (b₁ ∈ [144, 163]) are vendor-specific — operators with a per-
   vendor reference register the (freqA, freqB) pair via
   `ambe2.SetKnoxTone` and the matching tone frames synthesise
-  through the same dual-tone path as DTMF.
+  through the same dual-tone path as DTMF. Curated tables ship
+  as named `ambe2.KnoxPreset` bundles via `ambe2.RegisterPreset`
+  so a per-vendor sub-package's `init()` lights up an entire
+  table in one call; `ambe2.ListPresets()` reports which
+  bundles are active for operator diagnostics.
 - **YSF on-air interleaver / puncture validation (real-air capture).**
   The spec-level on-air codec ships in
   `internal/radio/ysf/fich_trellis.go`'s `EncodeFICHOnAir` /

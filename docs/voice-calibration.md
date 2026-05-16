@@ -20,10 +20,24 @@ DSD-FME or OP25. This document is the operator-facing recipe.
   [`internal/voice/calibrate`](../internal/voice/calibrate/) reads a
   `.raw` vocoder-frame stream and a reference `.wav` and computes
   RMS-ratio (dB) + best-alignment normalised cross-correlation.
+- The RMS + cross-correlation math is exposed separately as
+  [`calibrate.CompareSamples([]int16, []int16) Result`](../internal/voice/calibrate/calibrate.go)
+  for callers that already have PCM in memory — and so the
+  math is unconditionally test-covered against synthetic
+  fixtures (e.g. a +3 dB-louder reference must produce
+  `RMSRatioDb = −3.0 ± 0.5`). The skip-gated `Compare` tests
+  for the actual vocoders still wait on captured reference
+  WAVs landing under `internal/voice/{imbe,ambe2}/testdata/`,
+  but a regression in the loudness / similarity math now
+  fails CI without that step.
 - The vendor-extension hook
   [`ambe2.SetKnoxTone(b1, freqA, freqB)`](../internal/voice/ambe2/knox.go)
   lets operators register per-vendor knox / call-alert dual-tone
   pairs (b1 ∈ [144, 163]) the public AMBE+2 spec doesn't document.
+  For curated tables, the bundle API
+  [`ambe2.RegisterPreset(KnoxPreset)`](../internal/voice/ambe2/knox.go)
+  registers many entries at once with a name surfacing through
+  `ambe2.ListPresets()` for diagnostics.
 - The wrapper CLI [`cmd/voice-calibrate`](../cmd/voice-calibrate/main.go)
   exposes `calibrate.Compare` so a one-off check doesn't require a
   test.
