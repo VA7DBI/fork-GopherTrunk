@@ -92,30 +92,41 @@ func TestTUIWriteCallsWriteFn(t *testing.T) {
 	}
 }
 
-func TestPageBounds(t *testing.T) {
-	cases := []struct {
-		name   string
-		cursor int
-		total  int
-		page   int
-		want   [2]int
-	}{
-		{"cursor at start", 0, 100, 10, [2]int{0, 10}},
-		{"cursor mid", 50, 100, 10, [2]int{45, 55}},
-		{"cursor near end clamps to fit", 98, 100, 10, [2]int{90, 100}},
-		{"cursor at end clamps to fit", 99, 100, 10, [2]int{90, 100}},
-		{"total smaller than page", 2, 5, 10, [2]int{0, 5}},
-		{"empty list", 0, 0, 10, [2]int{0, 0}},
-		{"page=0 falls back to 1", 0, 10, 0, [2]int{0, 1}},
+func TestEnsureCursorVisible(t *testing.T) {
+	sys := manySitesParsedSystem(100)
+	m := newImportTUI([]parsedSystem{sys}, dummyWrite)
+	// Simulate WindowSizeMsg so the viewport gets non-zero Height.
+	mAny, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = mAny.(importTUIModel)
+
+	// Enter Sites tab.
+	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.vp.YOffset != 0 {
+		t.Fatalf("initial YOffset = %d, want 0", m.vp.YOffset)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gs, ge := pageBounds(tc.cursor, tc.total, tc.page)
-			if gs != tc.want[0] || ge != tc.want[1] {
-				t.Errorf("pageBounds(%d,%d,%d) = (%d,%d), want (%d,%d)",
-					tc.cursor, tc.total, tc.page, gs, ge, tc.want[0], tc.want[1])
-			}
-		})
+
+	// pgdown pushes cursor past viewport height (24), so the viewport
+	// must scroll to keep the cursor on screen.
+	m = step(m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if m.cursor < m.vp.YOffset || m.cursor >= m.vp.YOffset+m.vp.Height {
+		t.Errorf("cursor %d out of viewport [%d, %d) after pgdown",
+			m.cursor, m.vp.YOffset, m.vp.YOffset+m.vp.Height)
+	}
+
+	// end jumps to last row; viewport must follow.
+	m = step(m, tea.KeyMsg{Type: tea.KeyEnd})
+	if m.cursor != 99 {
+		t.Fatalf("after end: cursor=%d, want 99", m.cursor)
+	}
+	if m.cursor < m.vp.YOffset || m.cursor >= m.vp.YOffset+m.vp.Height {
+		t.Errorf("cursor %d out of viewport [%d, %d) after end",
+			m.cursor, m.vp.YOffset, m.vp.YOffset+m.vp.Height)
+	}
+
+	// home brings cursor and viewport back to top.
+	m = step(m, tea.KeyMsg{Type: tea.KeyHome})
+	if m.vp.YOffset != 0 {
+		t.Errorf("after home: YOffset=%d, want 0", m.vp.YOffset)
 	}
 }
 
