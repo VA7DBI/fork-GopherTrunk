@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -32,6 +33,11 @@ type importTUIModel struct {
 	width   int
 	height  int
 	wrote   bool
+	// vp scrolls the Sites / Talkgroups list. Cursor selection still
+	// lives on the model (`cursor` above); the viewport only owns the
+	// vertical scroll offset so we get mouse-wheel and smooth scrolling
+	// without rewriting row rendering.
+	vp viewport.Model
 }
 
 type tuiView int
@@ -54,6 +60,7 @@ func newImportTUI(systems []parsedSystem, writeFn func([]parsedSystem) (mergeRes
 		systems: systems,
 		view:    viewSystems,
 		writeFn: writeFn,
+		vp:      viewport.New(80, 20),
 	}
 }
 
@@ -66,12 +73,22 @@ func (m importTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.vp.Width = msg.Width
+		m.vp.Height = m.visibleRows()
+		m = m.syncViewport()
 		return m, nil
 	case tea.KeyMsg:
 		if m.editing {
 			return m.updateEditAlpha(msg)
 		}
 		return m.handleKey(msg)
+	}
+	// Non-key, non-resize messages (mouse-wheel scroll, etc.) flow to
+	// the viewport when the scrolling list view is active.
+	if m.view == viewSystemTabs {
+		var cmd tea.Cmd
+		m.vp, cmd = m.vp.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
@@ -115,6 +132,7 @@ func (m importTUIModel) updateSystemsView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = viewSystemTabs
 			m.tab = tabSites
 			m.cursor = 0
+			m = m.syncViewport()
 		}
 	}
 	return m, nil
@@ -134,6 +152,7 @@ func (m importTUIModel) updateSystemTabsView(msg tea.KeyMsg) (tea.Model, tea.Cmd
 			m.tab = tabSites
 		}
 		m.cursor = 0
+		m = m.syncViewport()
 		return m, nil
 	}
 
@@ -171,6 +190,7 @@ func (m importTUIModel) updateSitesTab(msg tea.KeyMsg, sys *parsedSystem) (tea.M
 			sys.Sites[m.cursor].Include = !sys.Sites[m.cursor].Include
 		}
 	}
+	m = m.syncViewport()
 	return m, nil
 }
 
@@ -214,6 +234,7 @@ func (m importTUIModel) updateTalkgroupsTab(msg tea.KeyMsg, sys *parsedSystem) (
 			sys.Talkgroups[m.cursor].Priority = int(msg.String()[0] - '0')
 		}
 	}
+	m = m.syncViewport()
 	return m, nil
 }
 
@@ -222,6 +243,7 @@ func (m importTUIModel) updateEditAlpha(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		m.systems[m.sysIdx].Talkgroups[m.cursor].AlphaTag = m.editBuf
 		m.editing = false
+		m = m.syncViewport()
 	case tea.KeyEsc:
 		m.editing = false
 	case tea.KeyBackspace:
@@ -268,23 +290,18 @@ func (m importTUIModel) renderSystemsList() string {
 	return b.String()
 }
 
-func (m importTUIModel) renderSystemTabs() string {
+// renderTabsContent builds the full multi-line listing for the active
+// tab (one row per site / talkgroup, cursor marker on the cursored
+// row). Pure builder — fed into the viewport via SetContent.
+func (m importTUIModel) renderTabsContent() string {
 	if m.sysIdx >= len(m.systems) {
 		return ""
 	}
 	sys := &m.systems[m.sysIdx]
-	var b strings.Builder
-	b.WriteString(headerStyle.Render(fmt.Sprintf("%s — %s",
-		sys.Name, tabLabel(m.tab))))
-	b.WriteString("\n")
-	page := m.visibleRows()
+	var content strings.Builder
 	switch m.tab {
 	case tabSites:
-		total := len(sys.Sites)
-		start, end := pageBounds(m.cursor, total, page)
-		b.WriteString(hintStyle.Render(positionLabel("Site", m.cursor, total, start, end)))
-		b.WriteString("\n")
-		for i := start; i < end; i++ {
+		for i := 0; i < len(sys.Sites); i++ {
 			site := sys.Sites[i]
 			cursor := "  "
 			if i == m.cursor {
@@ -300,17 +317,13 @@ func (m importTUIModel) renderSystemTabs() string {
 					ccCount++
 				}
 			}
-			fmt.Fprintf(&b, "%s%s  RFSS %d Site %d  %-35s %-12s %d freqs  %d CCs\n",
+			fmt.Fprintf(&content, "%s%s  RFSS %d Site %d  %-35s %-12s %d freqs  %d CCs\n",
 				cursor, marker, site.RFSS, site.SiteID,
 				trunc(site.SiteName, 35), site.Cty,
 				len(site.Frequencies), ccCount)
 		}
 	case tabTalkgroups:
-		total := len(sys.Talkgroups)
-		start, end := pageBounds(m.cursor, total, page)
-		b.WriteString(hintStyle.Render(positionLabel("Talkgroup", m.cursor, total, start, end)))
-		b.WriteString("\n")
-		for i := start; i < end; i++ {
+		for i := 0; i < len(sys.Talkgroups); i++ {
 			tg := sys.Talkgroups[i]
 			cursor := "  "
 			if i == m.cursor {
@@ -328,11 +341,53 @@ func (m importTUIModel) renderSystemTabs() string {
 			if tg.Priority > 0 {
 				pri = fmt.Sprintf("%d", tg.Priority)
 			}
-			fmt.Fprintf(&b, "%s[%s%s%s] %-6d %-18s %-30s %s\n",
+			fmt.Fprintf(&content, "%s[%s%s%s] %-6d %-18s %-30s %s\n",
 				cursor, scan, lockout, pri, tg.Dec,
 				trunc(tg.AlphaTag, 18), trunc(tg.Description, 30), tg.Tag)
 		}
 	}
+	return content.String()
+}
+
+// syncViewport refreshes the viewport's content from the current model
+// state and re-anchors the scroll offset so the cursored row stays on
+// screen. Called from every Update handler that mutates list state —
+// SetYOffset clamps against the line count last set via SetContent, so
+// both must move together to keep cursor and viewport consistent.
+func (m importTUIModel) syncViewport() importTUIModel {
+	m.vp.SetContent(m.renderTabsContent())
+	m.vp = ensureCursorVisible(m.vp, m.cursor)
+	return m
+}
+
+func (m importTUIModel) renderSystemTabs() string {
+	if m.sysIdx >= len(m.systems) {
+		return ""
+	}
+	sys := &m.systems[m.sysIdx]
+	var total int
+	var noun string
+	switch m.tab {
+	case tabSites:
+		total = len(sys.Sites)
+		noun = "Site"
+	case tabTalkgroups:
+		total = len(sys.Talkgroups)
+		noun = "Talkgroup"
+	}
+
+	start := m.vp.YOffset
+	end := start + m.vp.Height
+	if end > total {
+		end = total
+	}
+
+	var b strings.Builder
+	b.WriteString(headerStyle.Render(fmt.Sprintf("%s — %s", sys.Name, tabLabel(m.tab))))
+	b.WriteString("\n")
+	b.WriteString(hintStyle.Render(positionLabel(noun, m.cursor, total, start, end)))
+	b.WriteString("\n")
+	b.WriteString(m.vp.View())
 	return b.String()
 }
 
@@ -417,26 +472,20 @@ func trunc(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-func pageBounds(cursor, total, page int) (int, int) {
-	if page <= 0 {
-		page = 1
+// ensureCursorVisible nudges the viewport's YOffset so the row at
+// `cursor` stays inside the visible window. Mouse-wheel scrolling
+// moves the viewport without touching `cursor`; cursor-driven keys
+// then re-anchor the view here.
+func ensureCursorVisible(vp viewport.Model, cursor int) viewport.Model {
+	if vp.Height <= 0 {
+		return vp
 	}
-	if total <= 0 {
-		return 0, 0
+	if cursor < vp.YOffset {
+		vp.SetYOffset(cursor)
+	} else if cursor >= vp.YOffset+vp.Height {
+		vp.SetYOffset(cursor - vp.Height + 1)
 	}
-	start := cursor - page/2
-	if start < 0 {
-		start = 0
-	}
-	end := start + page
-	if end > total {
-		end = total
-		start = end - page
-		if start < 0 {
-			start = 0
-		}
-	}
-	return start, end
+	return vp
 }
 
 // visibleRows returns how many list rows fit in the current terminal
