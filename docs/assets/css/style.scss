@@ -435,7 +435,43 @@ button { font: inherit; cursor: pointer; }
   border-color: var(--border);
 }
 .btn--ghost:hover { color: var(--fg); background: var(--bg-elev); }
+.btn--discord {
+  background: #5865f2;
+  color: #ffffff;
+  border-color: #5865f2;
+}
+.btn--discord:hover { color: #ffffff; background: #4752c4; border-color: #4752c4; }
+.btn--reddit {
+  background: #ff4500;
+  color: #ffffff;
+  border-color: #ff4500;
+}
+.btn--reddit:hover { color: #ffffff; background: #d93c00; border-color: #d93c00; }
 .btn svg { width: 16px; height: 16px; }
+
+/* ---------- Hero community callout ---------- */
+.hero__community {
+  margin: 2.25rem auto 0;
+  max-width: 32rem;
+  padding: 1rem 1.25rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.hero__community-lede {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: 0.01em;
+}
+.hero__community-cta {
+  display: flex;
+  justify-content: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
 
 /* ---------- Page chrome ---------- */
 .page__container {
