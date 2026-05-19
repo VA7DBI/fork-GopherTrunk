@@ -216,10 +216,10 @@ func TestTalkgroupsTabNavigation(t *testing.T) {
 
 func TestPositionLabel(t *testing.T) {
 	cases := []struct {
-		name                       string
-		noun                       string
-		cursor, total, start, end  int
-		want                       string
+		name                      string
+		noun                      string
+		cursor, total, start, end int
+		want                      string
 	}{
 		{"empty", "Site", 0, 0, 0, 0, "(no sites)"},
 		{"full list fits", "Site", 1, 5, 0, 5, "Site 2 of 5"},
