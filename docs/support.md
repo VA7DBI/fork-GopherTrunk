@@ -15,7 +15,8 @@ GopherTrunk is a one-developer project: a pure-Go RTL-SDR scanner that
 decodes ten-plus trunked-radio protocols, runs across Linux / Windows /
 macOS, and has no commercial backing. Every hour of development, every
 test capture, every spec sheet I track down comes out of personal time
-and budget.
+and budget. (For the backstory on why this project exists, see
+[The Story of GopherTrunk](story.md).)
 
 If GopherTrunk is useful to you — whether you're a hobbyist, an
 amateur-radio operator, a public-safety researcher, or just curious
