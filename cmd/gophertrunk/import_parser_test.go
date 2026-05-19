@@ -59,7 +59,7 @@ func TestParseSystem(t *testing.T) {
 			wantName:        "Metropolitan Mobile Radio (MMR) System",
 			wantSysID:       "164",
 			wantWACN:        "BEE00",
-			wantMinSites:    40,
+			wantMinSites:    51,
 			wantMinTGs:      500,
 			wantContainsTag: "Law Dispatch",
 		},
@@ -96,6 +96,23 @@ func TestParseSystem(t *testing.T) {
 			}
 			if len(sys.Talkgroups) < tc.wantMinTGs {
 				t.Errorf("Talkgroups = %d, want >= %d", len(sys.Talkgroups), tc.wantMinTGs)
+			}
+
+			// Regression guard for #278: MMR rows whose parenthesised
+			// alt-SiteID is hex (e.g. "2-010 (2-A)") used to fall through
+			// siteRowDashRE and disappear silently.
+			if tc.name == "mmr" {
+				present := make(map[[2]int]bool, len(sys.Sites))
+				for _, site := range sys.Sites {
+					present[[2]int{site.RFSS, site.SiteID}] = true
+				}
+				for _, want := range [][2]int{
+					{2, 10}, {2, 11}, {2, 12}, {2, 13}, {2, 14}, {2, 15},
+				} {
+					if !present[want] {
+						t.Errorf("missing site RFSS=%d SiteID=%d (regex regression for hex alt-IDs)", want[0], want[1])
+					}
+				}
 			}
 
 			// Every site has at least one frequency. CC requirement
