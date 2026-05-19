@@ -8,10 +8,10 @@ import "time"
 type AffiliationResponse uint8
 
 const (
-	AffiliationAccepted  AffiliationResponse = 0
-	AffiliationFailed    AffiliationResponse = 1
-	AffiliationDenied    AffiliationResponse = 2
-	AffiliationRefused   AffiliationResponse = 3
+	AffiliationAccepted AffiliationResponse = 0
+	AffiliationFailed   AffiliationResponse = 1
+	AffiliationDenied   AffiliationResponse = 2
+	AffiliationRefused  AffiliationResponse = 3
 )
 
 func (r AffiliationResponse) String() string {
