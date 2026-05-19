@@ -582,7 +582,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 
 	// Metrics — optional. Subscribes to the bus at construction time.
 	if cfg.Metrics.Enabled {
-		m, err := metrics.New(d.bus, version)
+		m, err := metrics.New(d.bus, d.pool, version)
 		if err != nil {
 			return nil, fmt.Errorf("daemon: metrics: %w", err)
 		}
