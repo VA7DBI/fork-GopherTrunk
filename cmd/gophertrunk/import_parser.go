@@ -381,7 +381,7 @@ var (
 	// siteRowDashRE matches the "dash-joined" layout used by newer
 	// non-US RR PDFs (e.g. MMR): "1-001 (1-1) Melbourne 420.01250c …".
 	// RFSS and SiteID are dash-joined; there's no county column.
-	siteRowDashRE = regexp.MustCompile(`^(\d+)-(\d+)\s*\((\d+)-(\d+)\)\s*(.+)$`)
+	siteRowDashRE = regexp.MustCompile(`^(\d+)-(\d+)\s*\((\d+)-([0-9A-Fa-f]+)\)\s*(.+)$`)
 	freqRE        = regexp.MustCompile(`(\d{3}\.\d{2,5})([ca]?)`)
 )
 

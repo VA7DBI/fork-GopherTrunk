@@ -420,7 +420,16 @@
         {
           "hz": 469287500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 10,
+      "site_name": "Dandenong",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 421825000,
           "cc": true
@@ -464,7 +473,16 @@
         {
           "hz": 468837500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 11,
+      "site_name": "Ferny Creek",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 420062500,
           "cc": true
@@ -556,7 +574,16 @@
         {
           "hz": 469275000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 12,
+      "site_name": "Mt Beenak",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 420125000,
           "cc": true
@@ -576,7 +603,16 @@
         {
           "hz": 422475000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 13,
+      "site_name": "Greensborough",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 421512500,
           "cc": true
@@ -640,7 +676,16 @@
         {
           "hz": 469150000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 14,
+      "site_name": "Flinders",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 422987500,
           "cc": false
@@ -672,7 +717,16 @@
         {
           "hz": 469300000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 15,
+      "site_name": "Frankston",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 422375000,
           "cc": true
@@ -1018,7 +1072,16 @@
         {
           "hz": 421837500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 29,
+      "site_name": "Mt Cottrell",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 420125000,
           "cc": true
@@ -1364,7 +1427,16 @@
         {
           "hz": 469050000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 43,
+      "site_name": "Phillip Island",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 420137500,
           "cc": false
@@ -1404,7 +1476,16 @@
         {
           "hz": 469312500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 44,
+      "site_name": "Point Leo",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 421550000,
           "cc": false
@@ -1452,7 +1533,16 @@
         {
           "hz": 469425000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 45,
+      "site_name": "Ferny Creek - BDA",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 503150000,
           "cc": true
@@ -1476,7 +1566,16 @@
         {
           "hz": 503400000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 46,
+      "site_name": "Pretty Sally",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 418375000,
           "cc": false
@@ -1756,7 +1855,16 @@
         {
           "hz": 469375000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 58,
+      "site_name": "Doncaster",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 422600000,
           "cc": false
@@ -1816,7 +1924,16 @@
         {
           "hz": 469387500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 60,
+      "site_name": "Craigieburn",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 421525000,
           "cc": true
@@ -1864,7 +1981,16 @@
         {
           "hz": 469187500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 61,
+      "site_name": "Cranbourne",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 420087500,
           "cc": false
@@ -1900,7 +2026,16 @@
         {
           "hz": 469400000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 62,
+      "site_name": "Diamond Creek",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 420050000,
           "cc": false
@@ -1940,7 +2075,16 @@
         {
           "hz": 469300000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 63,
+      "site_name": "Mt Elevyn",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 420387500,
           "cc": true
@@ -2380,7 +2524,16 @@
         {
           "hz": 425812500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 90,
+      "site_name": "Pakenham",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 418525000,
           "cc": true
@@ -2416,7 +2569,16 @@
         {
           "hz": 425837500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 91,
+      "site_name": "Cockatoo",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 418500000,
           "cc": true
@@ -2452,7 +2614,16 @@
         {
           "hz": 425725000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 1,
+      "site_id": 92,
+      "site_name": "Pakenham Upper",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 421525000,
           "cc": true
@@ -2973,7 +3144,16 @@
         {
           "hz": 468987500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 2,
+      "site_id": 10,
+      "site_name": "Mt Blackwood",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 421837500,
           "cc": true
@@ -3021,7 +3201,16 @@
         {
           "hz": 469050000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 2,
+      "site_id": 11,
+      "site_name": "Mt Cowley",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 421350000,
           "cc": false
@@ -3049,7 +3238,16 @@
         {
           "hz": 425487500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 2,
+      "site_id": 12,
+      "site_name": "Mt Gellibrand",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 422750000,
           "cc": true
@@ -3069,7 +3267,16 @@
         {
           "hz": 425875000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 2,
+      "site_id": 13,
+      "site_name": "Anglesea",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 422312500,
           "cc": true
@@ -3089,7 +3296,16 @@
         {
           "hz": 425712500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 2,
+      "site_id": 14,
+      "site_name": "Mt Macedon",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 419137500,
           "cc": false
@@ -3141,7 +3357,16 @@
         {
           "hz": 469425000,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 2,
+      "site_id": 15,
+      "site_name": "Ocean Grove",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 420025000,
           "cc": false
@@ -3304,7 +3529,16 @@
         {
           "hz": 469212500,
           "cc": false
-        },
+        }
+      ],
+      "include": true
+    },
+    {
+      "rfss": 2,
+      "site_id": 26,
+      "site_name": "Mount Helen",
+      "cty": "",
+      "frequencies": [
         {
           "hz": 421475000,
           "cc": false
