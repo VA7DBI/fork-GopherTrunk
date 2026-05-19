@@ -25,6 +25,8 @@
 
 GopherTrunk is a software-defined-radio scanner that follows digital trunked-radio voice calls and decodes them to audio. It runs on a pool of cheap RTL-SDR dongles, has no C dependencies (no `librtlsdr` / `libusb` at build or runtime), and ships as a single ~10 MB static binary for Linux, macOS, and Windows.
 
+Why does this exist? Read **[The Story of GopherTrunk](https://gophertrunk.org/story.html)** — the personal backstory behind the project, from a kid listening to an analog scanner to a pure-Go digital trunking scanner built with the help of modern AI tooling.
+
 <!-- TODO: replace this comment with a screenshot of the TUI cockpit once one is captured -->
 <!-- <p align="center"><img src="docs/assets/tui-screenshot.png" alt="GopherTrunk TUI showing live call activity" width="800"></p> -->
 
