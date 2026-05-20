@@ -154,4 +154,3 @@ func TestParseDemodMode(t *testing.T) {
 		}
 	}
 }
-
