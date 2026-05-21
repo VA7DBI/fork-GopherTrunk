@@ -20,6 +20,12 @@ import (
 	shine "github.com/braheezy/shine-mp3/pkg/mp3"
 )
 
+// shineFrame is the largest MPEG layer-3 samples-per-frame the Shine
+// encoder uses (MPEG-1: 2 granules × 576). It is a multiple of the
+// MPEG-2/2.5 frame size (576), so rounding the input up to a multiple
+// of shineFrame yields whole frames for every supported sample rate.
+const shineFrame = 1152
+
 // Encode compresses mono 16-bit PCM sampled at sampleRate Hz into a
 // complete MP3 byte stream. The input is treated as a single channel;
 // callers with stereo audio must downmix first.
@@ -30,9 +36,20 @@ func Encode(samples []int16, sampleRate int) ([]byte, error) {
 	if len(samples) == 0 {
 		return nil, errors.New("mp3: no samples to encode")
 	}
+	// The Shine encoder's subband/MDCT stage reads a frame of
+	// look-ahead past the final frame it encodes. Backing the input
+	// with extra zeroed headroom (and rounding the encoded length up
+	// to a whole number of frames) keeps that look-ahead inside the
+	// allocation — without it the encoder reads stray heap memory,
+	// which the race detector's checkptr validation aborts on.
+	frames := (len(samples) + shineFrame - 1) / shineFrame
+	encodeLen := frames * shineFrame
+	backed := make([]int16, encodeLen+shineFrame)
+	copy(backed, samples)
+
 	enc := shine.NewEncoder(sampleRate, 1)
 	var buf bytes.Buffer
-	if err := enc.Write(&buf, samples); err != nil {
+	if err := enc.Write(&buf, backed[:encodeLen]); err != nil {
 		return nil, fmt.Errorf("mp3: encode: %w", err)
 	}
 	if buf.Len() == 0 {
