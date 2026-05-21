@@ -344,9 +344,10 @@ func (c *Composer) handleStart(parent context.Context, cs trunking.CallStart) {
 	isFM := proto == "" || proto == "fm" || proto == "analog"
 	isDMRVoice := proto == "dmr-tier2" || proto == "dmr-tier3"
 	isP25P2Voice := proto == "p25-phase2"
-	if !isFM && !isDMRVoice && !isP25P2Voice {
-		// Other digital protocols (P25 Phase 1, NXDN, ...) have no
-		// composer voice chain yet — their voice bursts are not decoded.
+	isP25P1Voice := proto == "p25"
+	if !isFM && !isDMRVoice && !isP25P2Voice && !isP25P1Voice {
+		// Other digital protocols (NXDN, ...) have no composer voice
+		// chain yet — their voice bursts are not decoded.
 		c.log.Info("composer: digital protocol not yet decoded; chain bypassed",
 			"device", cs.DeviceSerial, "protocol", proto,
 			"group", cs.Grant.GroupID)
@@ -383,6 +384,8 @@ func (c *Composer) handleStart(parent context.Context, cs trunking.CallStart) {
 		go c.runDMRVoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
 	case isP25P2Voice:
 		go c.runP25Phase2VoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
+	case isP25P1Voice:
+		go c.runP25Phase1VoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
 	default:
 		go c.runFMChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
 	}

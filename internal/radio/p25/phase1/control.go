@@ -53,6 +53,20 @@ type ControlChannel struct {
 	buf     []uint8
 	bufBase int
 	pending []pendingHit
+
+	// aliasAsm reassembles multi-fragment vendor talker-alias TSBKs
+	// into a radio's display name. Self-synchronised (its own mutex).
+	aliasAsm *TalkerAliasAssembler
+
+	// netModel accumulates the site's status-broadcast TSBKs into a
+	// queryable system-topology snapshot. Self-synchronised.
+	netModel NetworkModel
+}
+
+// NetworkSnapshot returns the system topology accumulated from the
+// site's Network / RFSS / Secondary-CC / Adjacent-Site status TSBKs.
+func (c *ControlChannel) NetworkSnapshot() NetworkConfig {
+	return c.netModel.Snapshot()
 }
 
 // pendingHit is an FSW match awaiting enough buffered dibits to decode
@@ -97,6 +111,7 @@ func New(opts Options) *ControlChannel {
 		freqHz:     opts.FrequencyHz,
 		bandPlan:   bp,
 		now:        now,
+		aliasAsm:   NewTalkerAliasAssembler(now),
 	}
 }
 
@@ -313,6 +328,13 @@ func (c *ControlChannel) logNIDRotationProbe(rawNID []uint8) {
 // logged at debug but not republished, since they're the bulk of what
 // a busy site emits and would drown signal in noise.
 func (c *ControlChannel) dispatchTSBK(t TSBK, nac uint16, metric int) {
+	// Manufacturer-specific TSBKs are decoded in the vendor's opcode
+	// namespace (Motorola patch/regroup, Harris regroup, talker alias)
+	// — see tsbk_vendor.go.
+	if t.IsVendorMFID() {
+		c.dispatchVendorTSBK(t, nac)
+		return
+	}
 	switch t.Opcode {
 	case OpIdentifierUpdate:
 		u := ParseIdentifierUpdate(t.Payload)
@@ -323,6 +345,47 @@ func (c *ControlChannel) dispatchTSBK(t TSBK, nac uint16, metric int) {
 			"tx_offset_hz", u.TxOffsetHz)
 	case OpGroupVoiceChannelGrant:
 		c.publishGroupGrant(ParseGroupVoiceChannelGrant(t.Payload), nac)
+	case OpGroupVoiceChannelUpdate:
+		u := ParseGroupVoiceChannelUpdate(t.Payload)
+		c.publishVoiceGrant(voiceGrant{
+			groupID: uint32(u.GroupAddressA), channelID: u.ChannelAID,
+			channelNumber: u.ChannelANumber,
+		}, nac)
+		if u.GroupAddressB != 0 {
+			c.publishVoiceGrant(voiceGrant{
+				groupID: uint32(u.GroupAddressB), channelID: u.ChannelBID,
+				channelNumber: u.ChannelBNumber,
+			}, nac)
+		}
+	case OpGroupVoiceChannelUpdateExpl:
+		c.publishGroupGrant(ParseGroupVoiceChannelUpdateExplicit(t.Payload), nac)
+	case OpUnitToUnitVoiceChannelGrant:
+		g := ParseUnitToUnitVoiceChannelGrant(t.Payload)
+		c.publishVoiceGrant(voiceGrant{
+			groupID: g.TargetID, sourceID: g.SourceID,
+			channelID: g.ChannelID, channelNumber: g.ChannelNumber,
+		}, nac)
+	case OpTelephoneInterconnectGrant:
+		g := ParseTelephoneInterconnectGrant(t.Payload)
+		c.publishVoiceGrant(voiceGrant{
+			groupID: g.TargetID, channelID: g.ChannelID,
+			channelNumber: g.ChannelNumber, serviceOptions: g.ServiceOptions,
+		}, nac)
+	case OpSNDCPDataChannelGrant:
+		g := ParseSNDCPDataChannelGrant(t.Payload)
+		c.publishVoiceGrant(voiceGrant{
+			groupID: g.TargetID, channelID: g.ChannelID,
+			channelNumber: g.ChannelNumber, serviceOptions: g.ServiceOptions,
+			dataCall: true,
+		}, nac)
+	case OpNetworkStatusBroadcast:
+		c.netModel.ApplyNetworkStatus(ParseNetworkStatusBroadcast(t.Payload))
+	case OpRFSSStatusBroadcast:
+		c.netModel.ApplyRFSSStatus(ParseRFSSStatusBroadcast(t.Payload))
+	case OpSecondaryControlChannel:
+		c.netModel.ApplySecondaryControlChannel(ParseSecondaryControlChannelBroadcast(t.Payload))
+	case OpAdjacentSiteStatusBroadcast:
+		c.netModel.ApplyAdjacentSite(ParseAdjacentSiteStatusBroadcast(t.Payload))
 	case OpGroupAffiliationResponse:
 		c.publishAffiliation(ParseGroupAffiliationResponse(t.Payload), nac)
 	case OpUnitRegistrationResponse:
@@ -333,47 +396,136 @@ func (c *ControlChannel) dispatchTSBK(t TSBK, nac uint16, metric int) {
 	}
 }
 
-// publishGroupGrant resolves the grant's channel through the band
-// plan and publishes a trunking.Grant on the bus. If the channel ID
-// hasn't been seen yet, a `decode.error` with stage="no-bandplan"
-// is published instead — the engine can't do anything with a
-// zero-frequency grant, and surfacing this lets operators see when
-// a site's IdentifierUpdate cadence is too slow for their capture.
-func (c *ControlChannel) publishGroupGrant(g GroupVoiceChannelGrant, nac uint16) {
-	freq, err := c.bandPlan.Frequency(g.ChannelID, g.ChannelNumber)
+// dispatchVendorTSBK routes a manufacturer-specific TSBK (Motorola or
+// Harris MFID) through the vendor accessors in tsbk_vendor.go and
+// publishes the trunking event it carries.
+func (c *ControlChannel) dispatchVendorTSBK(t TSBK, nac uint16) {
+	if pg, ok := t.AsMotorolaPatchGroup(); ok {
+		members := make([]uint32, len(pg.Patched))
+		for i, m := range pg.Patched {
+			members[i] = uint32(m)
+		}
+		c.publishPatch(uint32(pg.SuperGroup), members, "motorola", true)
+		return
+	}
+	if super, ok := t.AsMotorolaPatchDelete(); ok {
+		c.publishPatch(uint32(super), nil, "motorola", false)
+		return
+	}
+	if hr, ok := t.AsHarrisRegroup(); ok {
+		c.publishPatch(uint32(hr.RegroupGroup), nil, "harris", true)
+		return
+	}
+	if f, ok := t.AsTalkerAliasFragment(); ok {
+		if alias, src, done := c.aliasAsm.Add(f); done {
+			c.publishTalkerAlias(src, alias)
+		}
+		return
+	}
+	c.log.Debug("p25: vendor tsbk", "mfid", t.MFID, "opcode", t.Opcode, "nac", nac)
+}
+
+// publishPatch publishes an events.KindPatch for a vendor patch /
+// dynamic-regroup TSBK so the engine can attribute later grants on the
+// super-group to its member talkgroups. add=false cancels a patch.
+func (c *ControlChannel) publishPatch(superGroup uint32, members []uint32, vendor string, add bool) {
+	c.bus.Publish(events.Event{
+		Kind: events.KindPatch,
+		Payload: trunking.Patch{
+			System:     c.systemName,
+			Protocol:   "p25",
+			SuperGroup: superGroup,
+			Members:    members,
+			Vendor:     vendor,
+			Add:        add,
+			At:         c.now(),
+		},
+	})
+	c.log.Debug("p25: patch",
+		"system", c.systemName, "vendor", vendor,
+		"super", superGroup, "members", members, "add", add)
+}
+
+// publishTalkerAlias publishes an events.KindTalkerAlias once a radio's
+// display name has been fully reassembled from its fragment TSBKs.
+func (c *ControlChannel) publishTalkerAlias(sourceID uint32, alias string) {
+	c.bus.Publish(events.Event{
+		Kind: events.KindTalkerAlias,
+		Payload: trunking.TalkerAlias{
+			System:   c.systemName,
+			Protocol: "p25",
+			SourceID: sourceID,
+			Alias:    alias,
+			At:       c.now(),
+		},
+	})
+	c.log.Debug("p25: talker alias",
+		"system", c.systemName, "src", sourceID, "alias", alias)
+}
+
+// voiceGrant is the protocol-internal shape publishVoiceGrant resolves
+// and publishes. It generalises the several P25 grant TSBKs (group,
+// group-update, unit-to-unit, telephone, SNDCP data) over one path.
+type voiceGrant struct {
+	groupID        uint32 // talkgroup, or destination unit / phone target
+	sourceID       uint32
+	channelID      uint8
+	channelNumber  uint16
+	serviceOptions uint8
+	dataCall       bool
+}
+
+// publishVoiceGrant resolves a grant's channel through the band plan
+// and publishes a trunking.Grant on the bus. If the channel ID hasn't
+// been seen yet, a `decode.error` with stage="no-bandplan" is
+// published instead — the engine can't do anything with a
+// zero-frequency grant, and surfacing this lets operators see when a
+// site's IdentifierUpdate cadence is too slow for their capture.
+func (c *ControlChannel) publishVoiceGrant(g voiceGrant, nac uint16) {
+	freq, err := c.bandPlan.Frequency(g.channelID, g.channelNumber)
 	if err != nil {
 		c.log.Debug("p25: grant before identifier update",
-			"nac", nac, "id", g.ChannelID, "num", g.ChannelNumber, "err", err)
+			"nac", nac, "id", g.channelID, "num", g.channelNumber, "err", err)
 		c.bus.Publish(events.Event{
 			Kind:    events.KindDecodeError,
 			Payload: events.DecodeError{Protocol: "p25", Stage: events.StageNoBandPlan},
 		})
 		return
 	}
-	// SVC_OPTIONS bit layout per TIA-102.AABF: bit 7 = Emergency,
-	// bit 6 = Protected (encryption indicator).
-	emergency := g.ServiceOptions&0x80 != 0
-	encrypted := g.ServiceOptions&0x40 != 0
+	so := ServiceOptions(g.serviceOptions)
 	c.bus.Publish(events.Event{
 		Kind: events.KindGrant,
 		Payload: trunking.Grant{
 			System:      c.systemName,
 			Protocol:    "p25",
-			GroupID:     uint32(g.GroupAddress),
-			SourceID:    g.SourceID,
+			GroupID:     g.groupID,
+			SourceID:    g.sourceID,
 			FrequencyHz: freq,
-			ChannelID:   g.ChannelID,
-			ChannelNum:  g.ChannelNumber,
-			Encrypted:   encrypted,
-			Emergency:   emergency,
+			ChannelID:   g.channelID,
+			ChannelNum:  g.channelNumber,
+			Encrypted:   so.Encrypted(),
+			Emergency:   so.Emergency(),
+			DataCall:    g.dataCall,
 			At:          c.now(),
 		},
 	})
 	c.log.Debug("p25: grant",
 		"system", c.systemName, "nac", nac,
-		"tg", g.GroupAddress, "src", g.SourceID,
-		"id", g.ChannelID, "num", g.ChannelNumber, "freq_hz", freq,
-		"enc", encrypted, "emer", emergency)
+		"tg", g.groupID, "src", g.sourceID,
+		"id", g.channelID, "num", g.channelNumber, "freq_hz", freq,
+		"enc", so.Encrypted(), "emer", so.Emergency(), "data", g.dataCall)
+}
+
+// publishGroupGrant publishes a standard group voice grant (opcode
+// 0x00 / 0x03) via publishVoiceGrant.
+func (c *ControlChannel) publishGroupGrant(g GroupVoiceChannelGrant, nac uint16) {
+	c.publishVoiceGrant(voiceGrant{
+		groupID:        uint32(g.GroupAddress),
+		sourceID:       g.SourceID,
+		channelID:      g.ChannelID,
+		channelNumber:  g.ChannelNumber,
+		serviceOptions: g.ServiceOptions,
+	}, nac)
 }
 
 // publishAffiliation publishes a trunking.Affiliation on the bus when
