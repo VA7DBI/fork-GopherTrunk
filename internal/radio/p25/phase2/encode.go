@@ -91,6 +91,19 @@ func EncodeEncryptionSync(es EncryptionSync) MACPDU {
 	return MACPDU{Opcode: OpEncryptionSync, Payload: payload}
 }
 
+// EncodeTalkerAliasFragment builds the MAC PDU form of a talker-alias
+// fragment — the inverse of MACPDU.AsTalkerAliasFragment.
+func EncodeTalkerAliasFragment(f TalkerAliasFragment) MACPDU {
+	payload := make([]byte, 5+len(f.Data))
+	payload[0] = byte(f.SourceID >> 16)
+	payload[1] = byte(f.SourceID >> 8)
+	payload[2] = byte(f.SourceID)
+	payload[3] = f.BlockIndex
+	payload[4] = f.BlockCount
+	copy(payload[5:], f.Data)
+	return MACPDU{Opcode: OpVendorTalkerAlias, MFID: MFIDMotorola, Payload: payload}
+}
+
 // EncodeVoiceSubframe builds a DibitsPerSubframe-long voice sub-frame:
 // the ISCH for slotType (which must be SlotTypeVoice4V or
 // SlotTypeVoice2V) at counter, followed by the AMBE+2-FEC-encoded voice

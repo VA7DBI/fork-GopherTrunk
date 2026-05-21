@@ -41,6 +41,10 @@ type ControlChannel struct {
 	// first Process call.
 	proc *processState
 
+	// aliasAsm reassembles multi-fragment talker-alias MAC PDUs into
+	// a radio's display name. Self-synchronised (its own mutex).
+	aliasAsm *TalkerAliasAssembler
+
 	mu               sync.Mutex
 	locked           bool
 	strictValidation bool
@@ -414,6 +418,7 @@ func New(opts Options) *ControlChannel {
 		systemName: opts.SystemName,
 		freqHz:     opts.FrequencyHz,
 		now:        now,
+		aliasAsm:   NewTalkerAliasAssembler(now),
 	}
 }
 
@@ -458,6 +463,11 @@ func (c *ControlChannel) Ingest(p MACPDU) {
 	}
 	if hr, ok := p.AsHarrisRegroup(); ok {
 		c.publishPatch(uint32(hr.RegroupGroup), nil, "harris")
+	}
+	if f, ok := p.AsTalkerAliasFragment(); ok {
+		if alias, src, complete := c.aliasAsm.Add(f); complete {
+			c.publishTalkerAlias(src, alias)
+		}
 	}
 	if p.IsIdle() {
 		return
@@ -603,6 +613,26 @@ func (c *ControlChannel) publishPatch(superGroup uint32, members []uint32, vendo
 	c.log.Debug("p25/phase2 patch",
 		"system", c.systemName, "vendor", vendor,
 		"super", superGroup, "members", members)
+}
+
+// publishTalkerAlias publishes an events.KindTalkerAlias once a radio's
+// display name has been fully reassembled from its fragment MAC PDUs.
+func (c *ControlChannel) publishTalkerAlias(sourceID uint32, alias string) {
+	if c.bus == nil {
+		return
+	}
+	c.bus.Publish(events.Event{
+		Kind: events.KindTalkerAlias,
+		Payload: trunking.TalkerAlias{
+			System:   c.systemName,
+			Protocol: "p25-phase2",
+			SourceID: sourceID,
+			Alias:    alias,
+			At:       c.now(),
+		},
+	})
+	c.log.Debug("p25/phase2 talker alias",
+		"system", c.systemName, "src", sourceID, "alias", alias)
 }
 
 // resolveFreq looks the (channelID, channelNumber) pair up in the band

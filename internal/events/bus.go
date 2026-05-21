@@ -62,6 +62,12 @@ const (
 	// (trunking.Patch) carries the super-group, its member talkgroups,
 	// and whether the patch is being added or removed.
 	KindPatch Kind = "patch"
+	// KindTalkerAlias fires when a radio's display name (its "talker
+	// alias") has been fully reassembled from the multi-fragment vendor
+	// MAC PDUs that carry it. P25 Phase 2 publishes one per completed
+	// alias. The payload (trunking.TalkerAlias) is keyed by source unit
+	// so a consumer can associate it with the active call.
+	KindTalkerAlias Kind = "talker.alias"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol

@@ -71,6 +71,8 @@ func (o Opcode) String() string {
 		return "UnitToUnitVoiceChannelGrant"
 	case OpVendorGroupRegroup:
 		return "VendorGroupRegroup"
+	case OpVendorTalkerAlias:
+		return "VendorTalkerAlias"
 	case OpEncryptionSync:
 		return "EncryptionSync"
 	case OpIdentifierUpdate:
@@ -249,7 +251,8 @@ func (o Opcode) IsKnown() bool {
 	case OpMACPTT, OpMACEnd, OpMACIdle, OpMACHangtime, OpMACActive,
 		OpGroupVoiceChannelGrant, OpGroupVoiceChannelGrantUpdate,
 		OpGroupVoiceChannelUserExt, OpUnitToUnitVoiceChannelGrant,
-		OpIdentifierUpdate, OpVendorGroupRegroup, OpEncryptionSync,
+		OpIdentifierUpdate, OpVendorGroupRegroup, OpVendorTalkerAlias,
+		OpEncryptionSync,
 		OpNetworkStatusBroadcastUpdate, OpRFSSStatusBroadcastUpdate:
 		return true
 	}

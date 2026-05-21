@@ -34,6 +34,10 @@ const (
 	// as a Motorola patch group (AsMotorolaPatchGroup) under MFID 0x90
 	// and as a Harris regroup (AsHarrisRegroup) under MFID 0xA4.
 	OpVendorGroupRegroup Opcode = 0x81
+	// OpVendorTalkerAlias carries one fragment of a radio's display
+	// name (talker alias). Both Motorola (MFID 0x90) and Harris
+	// (MFID 0xA4) emit it; AsTalkerAliasFragment decodes either.
+	OpVendorTalkerAlias Opcode = 0x82
 )
 
 // ManufacturerName returns a human-readable label for an MFID.
