@@ -304,6 +304,11 @@ func (r *Recorder) handleStart(cs trunking.CallStart) {
 		// completion via handleEnd.
 		return
 	}
+	if cs.Talkgroup != nil && !cs.Talkgroup.Record {
+		// Talkgroup is flagged record=false — follow and play the
+		// call live, but write no WAV/raw files for it.
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, busy := r.sessions[cs.DeviceSerial]; busy {

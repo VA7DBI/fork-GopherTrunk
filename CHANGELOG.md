@@ -26,6 +26,12 @@ for tagged releases.
   and a talkgroup can opt out of all feeds with `stream: false`
   in its CSV/JSON. Feed counters are exposed at
   `GET /api/v1/broadcast`.
+- **Per-talkgroup recording assignment.** A talkgroup can now be
+  flagged `record: false` (CSV column, JSON field, or
+  `PATCH /api/v1/talkgroups/{id}`) to follow and play its calls live
+  while writing no WAV/raw files for it — the recording analogue of
+  the `stream` opt-out. Both `stream` and `record` are now surfaced
+  in the talkgroup API DTO and accepted by the PATCH endpoint.
 - **Decoded-message log.** A new optional `MessageLog`
   (`internal/log`) writes a human-readable, timestamped text log of
   every trunking event the bus carries — grants, control-channel
