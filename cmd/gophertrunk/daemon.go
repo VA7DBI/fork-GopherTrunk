@@ -81,30 +81,31 @@ type Daemon struct {
 	log     *slog.Logger
 	writer  *config.Writer // optional; nil when daemon ran without -config
 
-	bus         *events.Bus
-	pool        *sdr.Pool
-	talkgroups  *trunking.TalkgroupDB
-	systems     []trunking.System
-	engine      *trunking.Engine
-	voicePool   *trunking.VoicePool
-	recorder    *voice.Recorder
-	broadcast   *broadcast.Manager
-	composer    *composer.Composer
-	player      *player.Player
-	toneout     *toneout.Detector
-	audioPub    *api.AudioPublisher
-	db          *storage.DB
-	callLog     *storage.CallLog
-	locationLog *storage.LocationLog
-	messageLog  *gtlog.MessageLog
-	retention   *storage.Retention
-	ccCache     *trunking.Cache
-	cchuntSup   *cchunt.Supervisor
-	ccDecoder   *ccdecoder.Decoder
-	convScan    *conventional.Scanner
-	metrics     *metrics.Metrics
-	httpAPI     *api.Server
-	grpcAPI     *api.GRPCServer
+	bus          *events.Bus
+	pool         *sdr.Pool
+	talkgroups   *trunking.TalkgroupDB
+	systems      []trunking.System
+	engine       *trunking.Engine
+	voicePool    *trunking.VoicePool
+	affiliations *trunking.AffiliationTracker
+	recorder     *voice.Recorder
+	broadcast    *broadcast.Manager
+	composer     *composer.Composer
+	player       *player.Player
+	toneout      *toneout.Detector
+	audioPub     *api.AudioPublisher
+	db           *storage.DB
+	callLog      *storage.CallLog
+	locationLog  *storage.LocationLog
+	messageLog   *gtlog.MessageLog
+	retention    *storage.Retention
+	ccCache      *trunking.Cache
+	cchuntSup    *cchunt.Supervisor
+	ccDecoder    *ccdecoder.Decoder
+	convScan     *conventional.Scanner
+	metrics      *metrics.Metrics
+	httpAPI      *api.Server
+	grpcAPI      *api.GRPCServer
 
 	// startupWarnings collects non-fatal observations from
 	// NewDaemon / preflight (missing talkgroup CSV, SDR enumeration
@@ -398,6 +399,17 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			return nil, fmt.Errorf("daemon: message log: %w", err)
 		}
 		d.messageLog = ml
+	}
+
+	// Affiliation tracker — always on. Subscribes to the bus and
+	// maintains the protocol-agnostic unit-activity table surfaced at
+	// GET /api/v1/affiliations.
+	{
+		at, err := trunking.NewAffiliationTracker(trunking.AffiliationTrackerOptions{Bus: d.bus})
+		if err != nil {
+			return nil, fmt.Errorf("daemon: affiliation tracker: %w", err)
+		}
+		d.affiliations = at
 	}
 
 	// Tone-out detector — optional. Built before the composer so it can
@@ -710,6 +722,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		if d.locationLog != nil {
 			opts.Locations = api.LocationsFromStorage(d.locationLog)
 		}
+		if d.affiliations != nil {
+			opts.Affiliations = affiliationProvider{d.affiliations}
+		}
 		if d.metrics != nil {
 			opts.MetricsHandler = d.metrics.Handler()
 		}
@@ -826,6 +841,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.messageLog != nil {
 		d.spawn(runCtx, "messagelog", false, func(ctx context.Context) error {
 			return d.messageLog.Run(ctx)
+		})
+	}
+	if d.affiliations != nil {
+		d.spawn(runCtx, "affiliations", false, func(ctx context.Context) error {
+			return d.affiliations.Run(ctx)
 		})
 	}
 	if d.retention != nil {
@@ -974,6 +994,9 @@ func (d *Daemon) Close() {
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
+		}
+		if d.affiliations != nil {
+			_ = d.affiliations.Close()
 		}
 		if d.metrics != nil {
 			_ = d.metrics.Close()
@@ -1156,6 +1179,12 @@ func (s playerSink) WritePCM(serial string, samples []int16) error {
 type broadcastStatus struct{ mgr *broadcast.Manager }
 
 func (b broadcastStatus) BroadcastStats() any { return b.mgr.Stats() }
+
+// affiliationProvider adapts the AffiliationTracker into the
+// api.AffiliationProvider interface.
+type affiliationProvider struct{ t *trunking.AffiliationTracker }
+
+func (a affiliationProvider) Affiliations() []trunking.UnitActivity { return a.t.Snapshot() }
 
 // wrapBasebandRecorders replaces the Device of every pool entry whose
 // serial appears in baseband.record with a RecordingDevice, teeing its
