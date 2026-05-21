@@ -121,17 +121,22 @@ func (d *SuperframeDecoder) trim() {
 
 // sliceSuperframe cuts the 12 fixed-length sub-frames starting at
 // absolute dibit index start. The caller has confirmed the full
-// superframe span is buffered.
+// superframe span is buffered. Each sub-frame's ISCH is decoded so the
+// SlotType is populated; an uncorrectable ISCH leaves SlotTypeUnknown.
 func (d *SuperframeDecoder) sliceSuperframe(start int) Superframe {
 	sf := Superframe{StartDibit: start}
 	off := start - d.bufStart
 	for i := 0; i < SubframesPerSuperframe; i++ {
 		sub := make([]uint8, DibitsPerSubframe)
 		copy(sub, d.buf[off+i*DibitsPerSubframe:off+(i+1)*DibitsPerSubframe])
+		slot := SlotTypeUnknown
+		if isch, _, err := DecodeISCH(sub[ISCHOffset : ISCHOffset+ISCHDibits]); err == nil {
+			slot = isch.SlotType
+		}
 		sf.Subframes[i] = Subframe{
 			Index:    i,
 			Timeslot: i & 1,
-			SlotType: SlotTypeUnknown,
+			SlotType: slot,
 			Dibits:   sub,
 		}
 	}

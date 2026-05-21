@@ -40,8 +40,10 @@ func TestSuperframeDecoderSlicesOneSuperframe(t *testing.T) {
 		if len(s.Dibits) != DibitsPerSubframe {
 			t.Errorf("sub-frame %d: len(Dibits) = %d, want %d", i, len(s.Dibits), DibitsPerSubframe)
 		}
+		// idleSuperframe builds all-zero sub-frames; an all-zero ISCH
+		// codeword Golay-decodes to SlotType 0 = Unknown.
 		if s.SlotType != SlotTypeUnknown {
-			t.Errorf("sub-frame %d: SlotType = %v, want Unknown (ISCH decode is Phase B)", i, s.SlotType)
+			t.Errorf("sub-frame %d: SlotType = %v, want Unknown for an idle fixture", i, s.SlotType)
 		}
 	}
 	// Sub-frame SyncSubframeIndex must carry the outbound sync verbatim.

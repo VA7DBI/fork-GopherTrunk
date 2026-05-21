@@ -13,6 +13,18 @@ func IdleSubframe() []uint8 {
 	return make([]uint8, DibitsPerSubframe)
 }
 
+// WriteISCH overwrites the ISCH region of a DibitsPerSubframe-long
+// sub-frame body in place with the Golay-encoded ISCH for slotType +
+// counter, so SuperframeDecoder decodes the sub-frame as that SlotType.
+// Panics if sub is not exactly DibitsPerSubframe dibits.
+func WriteISCH(sub []uint8, slotType SlotType, counter uint8) {
+	if len(sub) != DibitsPerSubframe {
+		panic("p25/phase2: WriteISCH sub-frame must be DibitsPerSubframe dibits")
+	}
+	copy(sub[ISCHOffset:ISCHOffset+ISCHDibits],
+		EncodeISCH(ISCH{SlotType: slotType, Counter: counter}))
+}
+
 // EncodeSuperframe concatenates 12 sub-frame dibit bodies into one
 // DibitsPerSuperframe-long superframe stream and injects the 20-dibit
 // outbound sync word at the head of sub-frame SyncSubframeIndex so a
