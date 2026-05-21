@@ -15,6 +15,27 @@ const (
 	DibitsPerSubframe      = (SymbolsPerSecond * SubframeMs) / 1000 / 1 // 180
 )
 
+// Superframe-grid constants. SuperframeDecoder (superframe_decoder.go)
+// uses these to slice a structured Superframe out of the raw dibit
+// stream.
+const (
+	// DibitsPerSuperframe is the dibit span of one 360 ms superframe:
+	// 12 sub-frames × 180 dibits. 2160 dibits × 2 bits/dibit = 4320
+	// bits, matching the PN44 superframe period in process.go.
+	DibitsPerSuperframe = SubframesPerSuperframe * DibitsPerSubframe
+
+	// SyncSubframeIndex is the sub-frame whose leading SyncDibits dibits
+	// carry the 20-dibit outbound sync word; SuperframeDecoder anchors
+	// the 0..11 sub-frame grid on a sync match there.
+	//
+	// TIA-102.BBAB §6/§7 fixes the exact sync cadence and the repo has
+	// no figure for it, so this is the project's working value. If a
+	// real capture shows the sync recurring at a different sub-frame,
+	// this single constant is the fix: the decoder anchors on every
+	// match and the slice geometry is derived entirely from here.
+	SyncSubframeIndex = 0
+)
+
 // SlotType is the 4-bit identifier that names what a sub-frame
 // contains. The full enum is defined in TIA-102.BBAB Table 7.x; the
 // subset below covers what the trunking layer cares about.

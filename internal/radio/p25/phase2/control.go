@@ -46,9 +46,14 @@ type ControlChannel struct {
 	strictValidation bool
 	trellisMode      TrellisMode
 	rsMode           RSMode
+	interleaveMode   InterleaveMode
 	scramblerMode    ScramblerMode
 	scramblerSeed    uint64
 	scramblerOffset  int
+	// bandPlan accumulates IdentifierUpdate MAC PDUs so publishGrant
+	// can resolve a voice grant's (ChannelID, ChannelNumber) into a
+	// downlink frequency. Guarded by mu.
+	bandPlan BandPlan
 }
 
 // TrellisMode selects how the Process adapter interprets the MAC
@@ -183,6 +188,56 @@ func ParseRSMode(s string) (RSMode, bool) {
 		return RSOn, true
 	default:
 		return RSOff, false
+	}
+}
+
+// InterleaveMode selects whether the Process adapter applies the
+// TIA-102.BBAC per-burst block deinterleaver to the collected MAC-burst
+// dibits before trellis decoding.
+//
+//   - InterleaveOff (default): the MAC-burst dibits go straight to the
+//     trellis decoder. Matches every shipped capture fixture (which
+//     synthesize the burst without interleaving) and the historical
+//     decoder output.
+//
+//   - InterleaveOn: the MAC-burst dibits are run through
+//     framing.DeinterleaveMACBurst first, undoing the block interleaver
+//     a real Phase 2 transmitter applies between trellis coding and the
+//     channel.
+type InterleaveMode uint8
+
+const (
+	InterleaveOff InterleaveMode = iota
+	InterleaveOn
+)
+
+// SetInterleaveMode toggles the per-burst block deinterleaver. The mode
+// applies to every subsequent Process call.
+func (c *ControlChannel) SetInterleaveMode(mode InterleaveMode) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.interleaveMode = mode
+}
+
+// InterleaveMode returns the current InterleaveMode.
+func (c *ControlChannel) InterleaveMode() InterleaveMode {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.interleaveMode
+}
+
+// ParseInterleaveMode maps a config / user-facing string into an
+// InterleaveMode. Recognised values (case-insensitive): "" / "off" /
+// "false" / "0" → InterleaveOff (the default); "on" / "true" / "1" →
+// InterleaveOn. Unknown strings return InterleaveOff with ok = false.
+func ParseInterleaveMode(s string) (InterleaveMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "off", "false", "0":
+		return InterleaveOff, true
+	case "on", "true", "1":
+		return InterleaveOn, true
+	default:
+		return InterleaveOff, false
 	}
 }
 
@@ -377,6 +432,11 @@ func (c *ControlChannel) Ingest(p MACPDU) {
 	if nsb, ok := p.AsNetworkStatusBroadcast(); ok {
 		c.installSeedFromNSB(nsb)
 	}
+	if u, ok := p.AsIdentifierUpdate(); ok {
+		c.mu.Lock()
+		c.bandPlan.Apply(u)
+		c.mu.Unlock()
+	}
 	if p.IsIdle() {
 		return
 	}
@@ -396,7 +456,18 @@ func (c *ControlChannel) Ingest(p MACPDU) {
 		c.mu.Unlock()
 	}
 	if g, ok := p.AsGroupVoiceChannelGrant(); ok {
-		c.publishGrant(g, p.Opcode)
+		c.publishGrant(g, p.Opcode, uint32(g.GroupAddress))
+	}
+	if u, ok := p.AsUnitToUnitVoiceChannelGrant(); ok {
+		// A unit-to-unit (private) call is still a voice grant the
+		// engine must tune; map the 24-bit target unit into GroupID so
+		// the recorder files it under the destination.
+		c.publishGrant(GroupVoiceChannelGrant{
+			ServiceOptions: u.ServiceOptions,
+			ChannelID:      u.ChannelID,
+			ChannelNumber:  u.ChannelNumber,
+			SourceID:       u.SourceID,
+		}, p.Opcode, u.TargetID)
 	}
 }
 
@@ -438,27 +509,50 @@ type LockState struct {
 func (s LockState) LockedFrequencyHz() uint32 { return s.FrequencyHz }
 func (s LockState) LockedNAC() uint16         { return 0 }
 
-func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode) {
+func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode, groupID uint32) {
 	if c.bus == nil {
 		return
 	}
+	// Resolve the grant's channel through the band plan. Resolution is
+	// best-effort: a grant that arrives before the site's first
+	// IdentifierUpdate is still published (with FrequencyHz left 0, as
+	// before band-plan support landed) so the event surface is
+	// unchanged; the engine drops a zero-frequency grant on its own.
+	freq := c.resolveFreq(g.ChannelID, g.ChannelNumber)
 	c.bus.Publish(events.Event{
 		Kind: events.KindGrant,
 		Payload: trunking.Grant{
-			System:     c.systemName,
-			Protocol:   "p25-phase2",
-			GroupID:    uint32(g.GroupAddress),
-			SourceID:   g.SourceID,
-			ChannelID:  g.ChannelID,
-			ChannelNum: g.ChannelNumber,
-			At:         c.now(),
+			System:      c.systemName,
+			Protocol:    "p25-phase2",
+			GroupID:     groupID,
+			SourceID:    g.SourceID,
+			FrequencyHz: freq,
+			ChannelID:   g.ChannelID,
+			ChannelNum:  g.ChannelNumber,
+			At:          c.now(),
 		},
 	})
 	c.log.Debug("p25/phase2 grant",
 		"system", c.systemName,
-		"opcode", op, "tg", g.GroupAddress,
+		"opcode", op, "tg", groupID,
 		"src", g.SourceID,
-		"channel_id", g.ChannelID, "channel_num", g.ChannelNumber)
+		"channel_id", g.ChannelID, "channel_num", g.ChannelNumber,
+		"freq_hz", freq)
+}
+
+// resolveFreq looks the (channelID, channelNumber) pair up in the band
+// plan, returning 0 (and logging) when no IdentifierUpdate has defined
+// the channel's slot yet.
+func (c *ControlChannel) resolveFreq(channelID uint8, channelNumber uint16) uint32 {
+	c.mu.Lock()
+	f, err := c.bandPlan.Frequency(channelID, channelNumber)
+	c.mu.Unlock()
+	if err != nil {
+		c.log.Debug("p25/phase2 grant before identifier update",
+			"id", channelID, "num", channelNumber, "err", err)
+		return 0
+	}
+	return f
 }
 
 // MarkLost publishes cc.lost and resets the locked flag. The
