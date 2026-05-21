@@ -472,7 +472,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			sinks = append(sinks, d.toneout)
 		}
 		if d.player != nil {
-			sinks = append(sinks, playerSink{d.player})
+			sinks = append(sinks, playerSink{p: d.player, engine: d.engine})
 		}
 		sinks = append(sinks, d.audioPub)
 		var sink composer.PCMSink = d.recorder
@@ -626,7 +626,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			}
 			var convRec conventional.Recorder = d.recorder
 			if d.player != nil {
-				convRec = convFanoutRecorder{d.recorder, playerSink{d.player}}
+				convRec = convFanoutRecorder{d.recorder, playerSink{p: d.player, engine: d.engine}}
 			}
 			cs, err := conventional.New(conventional.Options{
 				Log:          log,
@@ -1163,13 +1163,21 @@ func toneProfilesFromConfig(in []config.ToneProfileConfig) ([]toneout.Profile, e
 	return out, nil
 }
 
-// playerSink adapts *player.Player to composer.PCMSink. The Player's
-// WritePCM signature is identical so the adapter is a zero-cost shim
-// that exists only to satisfy Go's nominal-typing for the fan-out
-// slice element type.
-type playerSink struct{ p *player.Player }
+// playerSink adapts *player.Player to composer.PCMSink. When engine is
+// non-nil it also honours the per-talkgroup Mute flag: PCM for a call
+// whose talkgroup is muted is dropped before reaching the speakers
+// (the call is still recorded and streamed).
+type playerSink struct {
+	p      *player.Player
+	engine *trunking.Engine
+}
 
 func (s playerSink) WritePCM(serial string, samples []int16) error {
+	if s.engine != nil {
+		if tg := s.engine.TalkgroupForDevice(serial); tg != nil && tg.Mute {
+			return nil
+		}
+	}
 	return s.p.WritePCM(serial, samples)
 }
 
