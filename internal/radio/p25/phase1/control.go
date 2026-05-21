@@ -57,6 +57,16 @@ type ControlChannel struct {
 	// aliasAsm reassembles multi-fragment vendor talker-alias TSBKs
 	// into a radio's display name. Self-synchronised (its own mutex).
 	aliasAsm *TalkerAliasAssembler
+
+	// netModel accumulates the site's status-broadcast TSBKs into a
+	// queryable system-topology snapshot. Self-synchronised.
+	netModel NetworkModel
+}
+
+// NetworkSnapshot returns the system topology accumulated from the
+// site's Network / RFSS / Secondary-CC / Adjacent-Site status TSBKs.
+func (c *ControlChannel) NetworkSnapshot() NetworkConfig {
+	return c.netModel.Snapshot()
 }
 
 // pendingHit is an FSW match awaiting enough buffered dibits to decode
@@ -368,6 +378,14 @@ func (c *ControlChannel) dispatchTSBK(t TSBK, nac uint16, metric int) {
 			channelNumber: g.ChannelNumber, serviceOptions: g.ServiceOptions,
 			dataCall: true,
 		}, nac)
+	case OpNetworkStatusBroadcast:
+		c.netModel.ApplyNetworkStatus(ParseNetworkStatusBroadcast(t.Payload))
+	case OpRFSSStatusBroadcast:
+		c.netModel.ApplyRFSSStatus(ParseRFSSStatusBroadcast(t.Payload))
+	case OpSecondaryControlChannel:
+		c.netModel.ApplySecondaryControlChannel(ParseSecondaryControlChannelBroadcast(t.Payload))
+	case OpAdjacentSiteStatusBroadcast:
+		c.netModel.ApplyAdjacentSite(ParseAdjacentSiteStatusBroadcast(t.Payload))
 	case OpGroupAffiliationResponse:
 		c.publishAffiliation(ParseGroupAffiliationResponse(t.Payload), nac)
 	case OpUnitRegistrationResponse:

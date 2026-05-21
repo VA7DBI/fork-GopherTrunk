@@ -359,6 +359,80 @@ type RFSSStatusBroadcast struct {
 	ServiceClass  uint16
 }
 
+// SecondaryControlChannelBroadcast (opcode 0x39) announces alternate
+// control-channel frequencies for the site. Working-model payload
+// layout:
+//
+//	byte 0    : RFSS ID
+//	byte 1    : Site ID
+//	bytes 2-3 : secondary control channel A
+//	bytes 4-5 : secondary control channel B (zero when only one)
+//	bytes 6-7 : system service class
+type SecondaryControlChannelBroadcast struct {
+	RFSS, Site                     uint8
+	ChannelAID, ChannelBID         uint8
+	ChannelANumber, ChannelBNumber uint16
+}
+
+// ParseSecondaryControlChannelBroadcast decodes payload for opcode 0x39.
+func ParseSecondaryControlChannelBroadcast(p [8]byte) SecondaryControlChannelBroadcast {
+	cA := binary.BigEndian.Uint16(p[2:4])
+	cB := binary.BigEndian.Uint16(p[4:6])
+	return SecondaryControlChannelBroadcast{
+		RFSS:           p[0],
+		Site:           p[1],
+		ChannelAID:     uint8(cA >> 12),
+		ChannelANumber: cA & 0x0FFF,
+		ChannelBID:     uint8(cB >> 12),
+		ChannelBNumber: cB & 0x0FFF,
+	}
+}
+
+// AssembleSecondaryControlChannelBroadcast is the inverse; for tests.
+func AssembleSecondaryControlChannelBroadcast(s SecondaryControlChannelBroadcast) [8]byte {
+	var p [8]byte
+	p[0], p[1] = s.RFSS, s.Site
+	binary.BigEndian.PutUint16(p[2:4], uint16(s.ChannelAID&0x0F)<<12|s.ChannelANumber&0x0FFF)
+	binary.BigEndian.PutUint16(p[4:6], uint16(s.ChannelBID&0x0F)<<12|s.ChannelBNumber&0x0FFF)
+	return p
+}
+
+// AdjacentSiteStatusBroadcast (opcode 0x3C) announces a neighbouring
+// site a radio may roam to. Working-model payload layout:
+//
+//	byte 0    : LRA (Location Registration Area)
+//	byte 1    : RFSS ID
+//	byte 2    : Site ID
+//	bytes 3-4 : the neighbour's control channel
+//	bytes 5-6 : system service class
+//	byte 7    : reserved
+type AdjacentSiteStatusBroadcast struct {
+	LRA           uint8
+	RFSS, Site    uint8
+	ChannelID     uint8
+	ChannelNumber uint16
+}
+
+// ParseAdjacentSiteStatusBroadcast decodes payload for opcode 0x3C.
+func ParseAdjacentSiteStatusBroadcast(p [8]byte) AdjacentSiteStatusBroadcast {
+	ch := binary.BigEndian.Uint16(p[3:5])
+	return AdjacentSiteStatusBroadcast{
+		LRA:           p[0],
+		RFSS:          p[1],
+		Site:          p[2],
+		ChannelID:     uint8(ch >> 12),
+		ChannelNumber: ch & 0x0FFF,
+	}
+}
+
+// AssembleAdjacentSiteStatusBroadcast is the inverse; for tests.
+func AssembleAdjacentSiteStatusBroadcast(a AdjacentSiteStatusBroadcast) [8]byte {
+	var p [8]byte
+	p[0], p[1], p[2] = a.LRA, a.RFSS, a.Site
+	binary.BigEndian.PutUint16(p[3:5], uint16(a.ChannelID&0x0F)<<12|a.ChannelNumber&0x0FFF)
+	return p
+}
+
 func ParseRFSSStatusBroadcast(p [8]byte) RFSSStatusBroadcast {
 	chanField := binary.BigEndian.Uint16(p[4:6])
 	return RFSSStatusBroadcast{
