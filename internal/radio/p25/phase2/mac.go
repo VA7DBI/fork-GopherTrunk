@@ -11,15 +11,20 @@ import (
 // Solomon / Trellis FEC removal, a MAC PDU resolves to:
 //
 //	byte 0     : opcode (the MAC_PDU_OPCODE field)
-//	bytes 1-N  : opcode-specific payload (typically up to 17 bytes
+//	byte 1     : MFID — present only for a manufacturer-specific
+//	             opcode (Opcode.IsManufacturerSpecific); absent for
+//	             standard opcodes.
+//	bytes N..  : opcode-specific payload (typically up to 17 bytes
 //	             across the MAC slot's 21-byte "MAC PDU SLOT" field;
 //	             exact length depends on opcode + format).
 //
 // The structure is intentionally permissive: callers parse the
-// opcode and then dispatch to a per-opcode accessor.
+// opcode (and MFID, for vendor PDUs) and then dispatch to a per-opcode
+// accessor — see mac_standard.go and mac_vendor.go.
 type MACPDU struct {
 	Opcode  Opcode
-	Payload []byte // copy of bytes 1..end
+	MFID    uint8  // Manufacturer ID; MFIDStandard (0) for standard PDUs
+	Payload []byte // copy of the opcode-specific payload bytes
 }
 
 // Opcode is the MAC PDU opcode field. Values follow TIA-102.AABF /
@@ -63,6 +68,8 @@ func (o Opcode) String() string {
 		return "GroupVoiceChannelUserExt"
 	case OpUnitToUnitVoiceChannelGrant:
 		return "UnitToUnitVoiceChannelGrant"
+	case OpVendorGroupRegroup:
+		return "VendorGroupRegroup"
 	case OpIdentifierUpdate:
 		return "IdentifierUpdate"
 	case OpNetworkStatusBroadcastUpdate:
@@ -76,22 +83,37 @@ func (o Opcode) String() string {
 
 // ParseMACPDU consumes 18-byte MAC PDU information bytes (opcode +
 // up to 17 payload bytes, the standard size after FEC removal) and
-// returns the structured PDU.
+// returns the structured PDU. A manufacturer-specific opcode carries
+// its 8-bit MFID in the octet right after the opcode; standard opcodes
+// do not, so their payload starts at byte 1 exactly as before.
 func ParseMACPDU(info []byte) (MACPDU, error) {
 	if len(info) < 1 {
 		return MACPDU{}, errors.New("p25/phase2: MAC PDU info needs at least 1 byte")
 	}
 	pdu := MACPDU{Opcode: Opcode(info[0])}
-	if len(info) > 1 {
-		pdu.Payload = make([]byte, len(info)-1)
-		copy(pdu.Payload, info[1:])
+	rest := info[1:]
+	if pdu.Opcode.IsManufacturerSpecific() && len(rest) >= 1 {
+		pdu.MFID = rest[0]
+		rest = rest[1:]
+	}
+	if len(rest) > 0 {
+		pdu.Payload = make([]byte, len(rest))
+		copy(pdu.Payload, rest)
 	}
 	return pdu, nil
 }
 
-// AssembleMACPDU re-packs a MAC PDU into bytes (opcode + payload).
-// Used by tests; encoder support for Phase 2 isn't a project goal.
+// AssembleMACPDU re-packs a MAC PDU into bytes (opcode + optional MFID
+// + payload). Used by tests; encoder support for Phase 2 isn't a
+// project goal.
 func AssembleMACPDU(p MACPDU) []byte {
+	if p.Opcode.IsManufacturerSpecific() {
+		out := make([]byte, 2+len(p.Payload))
+		out[0] = byte(p.Opcode)
+		out[1] = p.MFID
+		copy(out[2:], p.Payload)
+		return out
+	}
 	out := make([]byte, 1+len(p.Payload))
 	out[0] = byte(p.Opcode)
 	copy(out[1:], p.Payload)
@@ -224,9 +246,17 @@ func (o Opcode) IsKnown() bool {
 	case OpMACPTT, OpMACEnd, OpMACIdle, OpMACHangtime, OpMACActive,
 		OpGroupVoiceChannelGrant, OpGroupVoiceChannelGrantUpdate,
 		OpGroupVoiceChannelUserExt, OpUnitToUnitVoiceChannelGrant,
-		OpIdentifierUpdate,
+		OpIdentifierUpdate, OpVendorGroupRegroup,
 		OpNetworkStatusBroadcastUpdate, OpRFSSStatusBroadcastUpdate:
 		return true
 	}
 	return false
+}
+
+// IsManufacturerSpecific reports whether the opcode falls in the P25
+// MAC manufacturer-specific range (0x80..0xBF). A PDU with such an
+// opcode carries an MFID octet right after the opcode; the vendor
+// accessors in mac_vendor.go dispatch on the (MFID, Opcode) pair.
+func (o Opcode) IsManufacturerSpecific() bool {
+	return o >= 0x80 && o <= 0xBF
 }

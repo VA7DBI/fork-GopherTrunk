@@ -405,7 +405,18 @@ func (c *ControlChannel) Ingest(p MACPDU) {
 		c.mu.Unlock()
 	}
 	if g, ok := p.AsGroupVoiceChannelGrant(); ok {
-		c.publishGrant(g, p.Opcode)
+		c.publishGrant(g, p.Opcode, uint32(g.GroupAddress))
+	}
+	if u, ok := p.AsUnitToUnitVoiceChannelGrant(); ok {
+		// A unit-to-unit (private) call is still a voice grant the
+		// engine must tune; map the 24-bit target unit into GroupID so
+		// the recorder files it under the destination.
+		c.publishGrant(GroupVoiceChannelGrant{
+			ServiceOptions: u.ServiceOptions,
+			ChannelID:      u.ChannelID,
+			ChannelNumber:  u.ChannelNumber,
+			SourceID:       u.SourceID,
+		}, p.Opcode, u.TargetID)
 	}
 }
 
@@ -447,7 +458,7 @@ type LockState struct {
 func (s LockState) LockedFrequencyHz() uint32 { return s.FrequencyHz }
 func (s LockState) LockedNAC() uint16         { return 0 }
 
-func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode) {
+func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode, groupID uint32) {
 	if c.bus == nil {
 		return
 	}
@@ -456,22 +467,13 @@ func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode) {
 	// IdentifierUpdate is still published (with FrequencyHz left 0, as
 	// before band-plan support landed) so the event surface is
 	// unchanged; the engine drops a zero-frequency grant on its own.
-	var freq uint32
-	c.mu.Lock()
-	f, err := c.bandPlan.Frequency(g.ChannelID, g.ChannelNumber)
-	c.mu.Unlock()
-	if err == nil {
-		freq = f
-	} else {
-		c.log.Debug("p25/phase2 grant before identifier update",
-			"id", g.ChannelID, "num", g.ChannelNumber, "err", err)
-	}
+	freq := c.resolveFreq(g.ChannelID, g.ChannelNumber)
 	c.bus.Publish(events.Event{
 		Kind: events.KindGrant,
 		Payload: trunking.Grant{
 			System:      c.systemName,
 			Protocol:    "p25-phase2",
-			GroupID:     uint32(g.GroupAddress),
+			GroupID:     groupID,
 			SourceID:    g.SourceID,
 			FrequencyHz: freq,
 			ChannelID:   g.ChannelID,
@@ -481,10 +483,25 @@ func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode) {
 	})
 	c.log.Debug("p25/phase2 grant",
 		"system", c.systemName,
-		"opcode", op, "tg", g.GroupAddress,
+		"opcode", op, "tg", groupID,
 		"src", g.SourceID,
 		"channel_id", g.ChannelID, "channel_num", g.ChannelNumber,
 		"freq_hz", freq)
+}
+
+// resolveFreq looks the (channelID, channelNumber) pair up in the band
+// plan, returning 0 (and logging) when no IdentifierUpdate has defined
+// the channel's slot yet.
+func (c *ControlChannel) resolveFreq(channelID uint8, channelNumber uint16) uint32 {
+	c.mu.Lock()
+	f, err := c.bandPlan.Frequency(channelID, channelNumber)
+	c.mu.Unlock()
+	if err != nil {
+		c.log.Debug("p25/phase2 grant before identifier update",
+			"id", channelID, "num", channelNumber, "err", err)
+		return 0
+	}
+	return f
 }
 
 // MarkLost publishes cc.lost and resets the locked flag. The
