@@ -1,6 +1,8 @@
 package phase2
 
 import (
+	"encoding/binary"
+
 	dmrvoice "github.com/MattCheramie/GopherTrunk/internal/radio/dmr/voice"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/framing"
 )
@@ -77,6 +79,16 @@ func EncodeMACSubframe(slotType SlotType, counter uint8, pdu MACPDU, mode Trelli
 	WriteISCH(sub, slotType, counter)
 	copy(sub[MACPayloadOffset:MACPayloadOffset+len(channelDibits)], channelDibits)
 	return sub
+}
+
+// EncodeEncryptionSync builds the MAC PDU form of an Encryption Sync —
+// the inverse of MACPDU.AsEncryptionSync.
+func EncodeEncryptionSync(es EncryptionSync) MACPDU {
+	payload := make([]byte, 12)
+	payload[0] = es.AlgorithmID
+	binary.BigEndian.PutUint16(payload[1:3], es.KeyID)
+	copy(payload[3:12], es.MessageIndicator[:])
+	return MACPDU{Opcode: OpEncryptionSync, Payload: payload}
 }
 
 // EncodeVoiceSubframe builds a DibitsPerSubframe-long voice sub-frame:

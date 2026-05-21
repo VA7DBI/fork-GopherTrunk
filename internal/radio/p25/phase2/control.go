@@ -54,6 +54,12 @@ type ControlChannel struct {
 	// can resolve a voice grant's (ChannelID, ChannelNumber) into a
 	// downlink frequency. Guarded by mu.
 	bandPlan BandPlan
+	// lastEncSync holds the most recently ingested Encryption Sync
+	// (Algorithm ID + Key ID); publishGrant attaches it to an
+	// encrypted grant so encrypted calls surface which algorithm/key
+	// they use. Guarded by mu.
+	lastEncSync EncryptionSync
+	hasEncSync  bool
 }
 
 // TrellisMode selects how the Process adapter interprets the MAC
@@ -437,6 +443,12 @@ func (c *ControlChannel) Ingest(p MACPDU) {
 		c.bandPlan.Apply(u)
 		c.mu.Unlock()
 	}
+	if es, ok := p.AsEncryptionSync(); ok {
+		c.mu.Lock()
+		c.lastEncSync = es
+		c.hasEncSync = true
+		c.mu.Unlock()
+	}
 	if p.IsIdle() {
 		return
 	}
@@ -519,6 +531,21 @@ func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode, group
 	// before band-plan support landed) so the event surface is
 	// unchanged; the engine drops a zero-frequency grant on its own.
 	freq := c.resolveFreq(g.ChannelID, g.ChannelNumber)
+	// Decode the SVC_OPTIONS byte for the emergency + protected
+	// (encryption) indicators. When the call is protected and an
+	// Encryption Sync has been seen, attach its Algorithm ID / Key ID
+	// so the recorder + API can surface which crypto the call uses.
+	so := ServiceOptions(g.ServiceOptions)
+	var algID uint8
+	var keyID uint16
+	if so.Encrypted() {
+		c.mu.Lock()
+		if c.hasEncSync {
+			algID = c.lastEncSync.AlgorithmID
+			keyID = c.lastEncSync.KeyID
+		}
+		c.mu.Unlock()
+	}
 	c.bus.Publish(events.Event{
 		Kind: events.KindGrant,
 		Payload: trunking.Grant{
@@ -529,6 +556,10 @@ func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode, group
 			FrequencyHz: freq,
 			ChannelID:   g.ChannelID,
 			ChannelNum:  g.ChannelNumber,
+			Encrypted:   so.Encrypted(),
+			Emergency:   so.Emergency(),
+			AlgorithmID: algID,
+			KeyID:       keyID,
 			At:          c.now(),
 		},
 	})
@@ -537,7 +568,7 @@ func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode, group
 		"opcode", op, "tg", groupID,
 		"src", g.SourceID,
 		"channel_id", g.ChannelID, "channel_num", g.ChannelNumber,
-		"freq_hz", freq)
+		"freq_hz", freq, "enc", so.Encrypted(), "emer", so.Emergency())
 }
 
 // resolveFreq looks the (channelID, channelNumber) pair up in the band

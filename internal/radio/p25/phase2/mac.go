@@ -43,6 +43,7 @@ const (
 	OpGroupVoiceChannelGrant       Opcode = 0x44
 	OpGroupVoiceChannelUserExt     Opcode = 0x46
 	OpUnitToUnitVoiceChannelGrant  Opcode = 0x48
+	OpEncryptionSync               Opcode = 0x70
 	OpIdentifierUpdate             Opcode = 0x7D
 	OpNetworkStatusBroadcastUpdate Opcode = 0xFB
 	OpRFSSStatusBroadcastUpdate    Opcode = 0xFA
@@ -70,6 +71,8 @@ func (o Opcode) String() string {
 		return "UnitToUnitVoiceChannelGrant"
 	case OpVendorGroupRegroup:
 		return "VendorGroupRegroup"
+	case OpEncryptionSync:
+		return "EncryptionSync"
 	case OpIdentifierUpdate:
 		return "IdentifierUpdate"
 	case OpNetworkStatusBroadcastUpdate:
@@ -246,7 +249,7 @@ func (o Opcode) IsKnown() bool {
 	case OpMACPTT, OpMACEnd, OpMACIdle, OpMACHangtime, OpMACActive,
 		OpGroupVoiceChannelGrant, OpGroupVoiceChannelGrantUpdate,
 		OpGroupVoiceChannelUserExt, OpUnitToUnitVoiceChannelGrant,
-		OpIdentifierUpdate, OpVendorGroupRegroup,
+		OpIdentifierUpdate, OpVendorGroupRegroup, OpEncryptionSync,
 		OpNetworkStatusBroadcastUpdate, OpRFSSStatusBroadcastUpdate:
 		return true
 	}
