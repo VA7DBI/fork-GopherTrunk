@@ -285,7 +285,8 @@ func TestComposerSkipsDigitalProtocol(t *testing.T) {
 	bus.Publish(events.Event{
 		Kind: events.KindCallStart,
 		Payload: trunking.CallStart{
-			Grant:        trunking.Grant{Protocol: "p25", GroupID: 1, FrequencyHz: 851_000_000},
+			// NXDN has no composer voice chain yet — it must be bypassed.
+			Grant:        trunking.Grant{Protocol: "nxdn", GroupID: 1, FrequencyHz: 851_000_000},
 			DeviceSerial: "VOICE-1",
 			StartedAt:    time.Now().UTC(),
 		},
