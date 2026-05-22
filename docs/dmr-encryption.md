@@ -59,23 +59,26 @@ covered by unit + integration tests:
    C0..C3 sub-vectors, C0/C1 are Golay(23,12)-corrected, C1 is
    descrambled with its C0-seeded pseudo-random sequence, and the
    49-bit vocoder payload is assembled.
-4. **Capture** — the FEC-decoded 49-bit AMBE+2 frames are written to
-   the call's `.raw` sidecar, next to the (currently silent) `.wav`,
-   under the usual recordings layout.
+4. **Vocoder → WAV** (`internal/voice/ambe2`, `"ambe2-dmr"`) — the
+   FEC-decoded 49-bit frames are rendered to 8 kHz PCM by the AMBE+2
+   **3600x2450** decoder (the variant DMR uses, distinct from the
+   3600x2400 `"ambe2"` decoder used by P25 Phase 2 / NXDN) and written
+   to the call's `.wav`. The 49-bit frames are also kept in a `.raw`
+   sidecar for out-of-band tools.
 
 A dependency-free RC4 keystream generator
 (`internal/crypto/rc4`, verified against the canonical RC4 and
 RFC 6229 test vectors) is in the tree, ready for the descramble step.
 
-**Net result:** every DMR voice call — encrypted or not — is captured
-as a `.raw` file of standard 49-bit AMBE+2 frames, and the call log
-records whether it was flagged encrypted. When a call is encrypted,
-the composer logs a clear line so the operator understands why its
-audio is unintelligible.
+**Net result:** an *unencrypted* DMR voice call decodes end to end to
+a playable WAV. An *encrypted* call is still captured — its `.raw`
+holds the encrypted AMBE+2 frames and its WAV is unintelligible — and
+the call log records that it was flagged encrypted; the composer logs
+a clear line so the operator understands why.
 
 ## What is not yet implemented
 
-Two stages remain before an encrypted DMR call decodes to playable
+One stage remains before an *encrypted* DMR call decodes to playable
 audio **inside GopherTrunk**:
 
 - **In-process RC4 descramble.** This needs the PI-header parse
@@ -88,12 +91,13 @@ audio **inside GopherTrunk**:
   (the existing ones are GPL), and the project has no encrypted-DMR
   capture to validate an implementation against. Contributors who can
   supply a capture + known key should open an issue.
-- **In-process AMBE+2 vocoder → WAV.** The `.raw` frames are standard
-  49-bit AMBE+2 payloads but DMR uses the AMBE **3600x2450** parameter
-  layout, whereas the bundled `internal/voice/ambe2` decoder was
-  ported from the **3600x2400** variant. Rendering DMR voice to PCM
-  needs a 2450 parameter-decode path; until then the `.wav` for a DMR
-  voice call is silent and the `.raw` sidecar is the deliverable.
+
+The `"ambe2-dmr"` vocoder is a faithful port of mbelib's 3600x2450
+codebook and parameter decode, but — like the bundled `"ambe2"`
+decoder — it ships **uncalibrated**: GopherTrunk has no DMR reference
+recording to verify the synthesized audio against. See
+[`docs/voice-calibration.md`](voice-calibration.md) for the operator
+recipe to calibrate it against a DSD-FME / OP25 reference.
 
 ## Decoding the `.raw` sidecar out-of-band
 
@@ -114,9 +118,11 @@ The AMBE+2 FEC implementation is ported, with bit layouts preserved
 1:1, from two ISC-licensed projects (attribution in
 `THIRD_PARTY_LICENSES.md`):
 
-- **mbelib** (`ambe3600x2450.c`, `ecc.c`) — the C0/C1 Golay(23,12)
-  error correction, the C1 descramble pseudo-random sequence, and the
-  C0..C3 → 49-bit payload assembly.
+- **mbelib** (`ambe3600x2450.c`, `ambe3600x2450_const.h`, `ecc.c`) —
+  the C0/C1 Golay(23,12) error correction, the C1 descramble
+  pseudo-random sequence, the C0..C3 → 49-bit payload assembly, and
+  the 3600x2450 parameter decode plus codebook tables the
+  `"ambe2-dmr"` vocoder uses.
 - **szechyjs/dsd** (`dmr_const.h`, `dmr_voice.c`) — the 72-bit on-air
   → C0..C3 deinterleave schedule.
 
