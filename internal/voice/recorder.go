@@ -102,14 +102,15 @@ type RecorderOptions struct {
 // call) and mutate from there — RecorderOptions.VocoderForProtocol
 // is taken as-is, no merging.
 func DefaultVocoderForProtocol() map[string]string {
-	// DMR is intentionally absent: the composer's DMR voice chain
-	// emits pre-FEC 72-bit on-air AMBE frames, which the AMBE+2
-	// vocoder (49-bit post-FEC frames) cannot decode. DMR voice calls
-	// get a .raw sidecar instead; the mapping returns once the AMBE
-	// forward-error-correction lands (issue #276).
+	// DMR maps to "ambe2-dmr" — the AMBE+2 3600x2450 variant DMR uses,
+	// distinct from the 3600x2400 "ambe2" used by P25 Phase 2 / NXDN.
+	// The composer's DMR voice chain emits FEC-decoded 49-bit frames,
+	// which that decoder renders to PCM.
 	return map[string]string{
-		"p25":        "imbe",  // P25 Phase 1 — IMBE 4400
-		"p25-phase2": "ambe2", // P25 Phase 2 — AMBE+2 2400
+		"p25":        "imbe",      // P25 Phase 1 — IMBE 4400
+		"p25-phase2": "ambe2",     // P25 Phase 2 — AMBE+2 3600x2400
+		"dmr-tier2":  "ambe2-dmr", // DMR Tier II — AMBE+2 3600x2450
+		"dmr-tier3":  "ambe2-dmr", // DMR Tier III — AMBE+2 3600x2450
 		"nxdn":       "ambe2",
 		"dpmr":       "ambe2", // dPMR Mode 3 (digital)
 		"tetra":      "ambe2", // TETRA voice
@@ -117,10 +118,9 @@ func DefaultVocoderForProtocol() map[string]string {
 }
 
 // dmrVoiceProtocol reports whether protocol is a DMR voice protocol.
-// DMR voice calls always get a .raw sidecar: the recorder has no
-// in-process vocoder for DMR yet (see DefaultVocoderForProtocol), so
-// the on-air AMBE frames the composer extracts are the only capture
-// of the call.
+// DMR voice calls always get a .raw sidecar (alongside the decoded
+// WAV) so the on-air AMBE frames remain available for out-of-band
+// tools even though the in-process vocoder now renders them.
 func dmrVoiceProtocol(protocol string) bool {
 	return protocol == "dmr-tier2" || protocol == "dmr-tier3"
 }

@@ -661,10 +661,11 @@ func TestRecorderUnknownVocoderNameLogsAndProceeds(t *testing.T) {
 // silently drop a digital protocol from the auto-decode path.
 func TestDefaultVocoderForProtocolMappings(t *testing.T) {
 	got := DefaultVocoderForProtocol()
-	// DMR is intentionally absent — see DefaultVocoderForProtocol.
 	want := map[string]string{
 		"p25":        "imbe",
 		"p25-phase2": "ambe2",
+		"dmr-tier2":  "ambe2-dmr",
+		"dmr-tier3":  "ambe2-dmr",
 		"nxdn":       "ambe2",
 		"dpmr":       "ambe2",
 		"tetra":      "ambe2",

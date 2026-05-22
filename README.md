@@ -364,17 +364,17 @@ to its own package and lands independently.
 - **DMR ARC4 / RC4 known-key voice decryption (issue #276).** DMR
   systems that protect voice with ARC4-based "Enhanced Privacy" can be
   given known keys per system under
-  `trunking.systems[].encryption_keys`. Most of the pipeline has
-  shipped — the dependency-free RC4 keystream generator
-  ([`internal/crypto/rc4/`](internal/crypto/rc4/)), the DMR voice
-  superframe decoder plus AMBE+2 forward-error-correction
-  ([`internal/radio/dmr/voice/`](internal/radio/dmr/voice/) — 72-bit
-  on-air frame → C0/C1 Golay(23,12) + C1 descramble → 49-bit vocoder
-  payload, ported from mbelib/DSD), and the composer DMR voice chain
-  that captures every DMR voice call as a `.raw` of standard AMBE+2
-  frames. The two remaining stages are the in-process RC4 descramble
-  (PI-header parse + keystream application) and the AMBE+2 2450
-  vocoder hookup that renders `.raw` frames to PCM — see
+  `trunking.systems[].encryption_keys`. The decode pipeline is
+  complete for *unencrypted* DMR voice — it now decodes end to end to
+  a playable WAV: the DMR voice superframe decoder + AMBE+2
+  forward-error-correction ([`internal/radio/dmr/voice/`](internal/radio/dmr/voice/)
+  — 72-bit on-air frame → C0/C1 Golay(23,12) + C1 descramble → 49-bit
+  payload), the composer DMR voice chain, and the AMBE+2 3600x2450
+  vocoder (`"ambe2-dmr"`, ported from mbelib) that renders the frames
+  to PCM. The dependency-free RC4 keystream generator
+  ([`internal/crypto/rc4/`](internal/crypto/rc4/)) is in place; the
+  one remaining stage for *encrypted* calls is the in-process RC4
+  descramble (PI-header parse + keystream application) — see
   [`docs/dmr-encryption.md`](docs/dmr-encryption.md) for the full
   status, configuration guide, and out-of-band decode recipe.
   Decryption is known-key only — no key recovery — matching the

@@ -27,6 +27,11 @@ const (
 	// startup. Same name libmbe registered under so existing
 	// configs work without change.
 	VocoderName = "ambe2"
+
+	// DMRVocoderName is the registry key for the AMBE+2 3600x2450
+	// variant DMR voice uses; the default "ambe2" decoder is the
+	// 3600x2400 variant. See unpackParams2450 in params2450.go.
+	DMRVocoderName = "ambe2-dmr"
 )
 
 // Decoder is the pure-Go AMBE+2 2400 decoder. Mirrors the imbe
@@ -76,6 +81,12 @@ type Decoder struct {
 	lastGoodLog2M  [mbe.MaxL + 1]float64
 	lastGoodM      [mbe.MaxL + 1]float64
 	badFrameCount  int
+
+	// unpack selects the AMBE+2 parameter-bit layout: UnpackParams
+	// (3600x2400, the default) or unpackParams2450 (3600x2450, DMR).
+	unpack func([]byte) (Params, error)
+	// name is the registry key this decoder reports from Name().
+	name string
 }
 
 // New returns a fresh Decoder. The unvoiced-excitation noise
@@ -100,13 +111,26 @@ func NewWithSeed(seed int64) *Decoder {
 // parameters they care about. Mirrors imbe.NewWithConfig.
 func NewWithConfig(seed int64, cfg mbe.AGCConfig) *Decoder {
 	return &Decoder{
-		rng: rand.New(rand.NewSource(seed)),
-		agc: mbe.NewAGC(cfg),
+		rng:    rand.New(rand.NewSource(seed)),
+		agc:    mbe.NewAGC(cfg),
+		unpack: UnpackParams,
+		name:   VocoderName,
 	}
 }
 
-// Name returns the registry key. Matches VocoderName.
-func (d *Decoder) Name() string { return VocoderName }
+// NewDMR returns a Decoder for the AMBE+2 3600x2450 variant DMR voice
+// uses. It is otherwise identical to New(); only the parameter-bit
+// layout and codebook tables differ (see params2450.go).
+func NewDMR() *Decoder {
+	d := NewWithConfig(0, mbe.DefaultAGCConfig())
+	d.unpack = unpackParams2450
+	d.name = DMRVocoderName
+	return d
+}
+
+// Name returns the registry key — VocoderName or DMRVocoderName
+// depending on which constructor built the decoder.
+func (d *Decoder) Name() string { return d.name }
 
 // FrameSize returns the per-frame input byte count (7 bytes / 49
 // information bits with 7 trailing padding bits).
@@ -151,7 +175,7 @@ func (d *Decoder) Decode(frame []byte) ([]int16, error) {
 	out := make([]int16, mbe.SamplesPerFrame)
 	pcm := make([]float64, mbe.SamplesPerFrame)
 
-	p, err := UnpackParams(info)
+	p, err := d.unpack(info)
 
 	switch {
 	case err != nil && d.lastGoodParams.L > 0 && d.badFrameCount < mbe.MaxBadFrames:
@@ -502,5 +526,8 @@ var _ voice.Vocoder = (*Decoder)(nil)
 func init() {
 	voice.DefaultRegistry.Register(VocoderName, func() (voice.Vocoder, error) {
 		return New(), nil
+	})
+	voice.DefaultRegistry.Register(DMRVocoderName, func() (voice.Vocoder, error) {
+		return NewDMR(), nil
 	})
 }
