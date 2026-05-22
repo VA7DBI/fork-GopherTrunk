@@ -52,6 +52,20 @@ type usbdevfsURB struct {
 	Usercontext     *byte
 }
 
+// usbdevfsIoctlArg mirrors struct usbdevfs_ioctl in
+// <linux/usbdevice_fs.h> — the argument to USBDEVFS_IOCTL, the
+// "ioctl within an ioctl" used to drive a bound kernel driver. We use
+// it to issue USBDEVFS_DISCONNECT against a single interface so the
+// kernel unbinds whatever driver currently owns it. The build tag at
+// the top of this file keeps Go's natural layout (int32, int32,
+// pointer) wire-identical to the kernel's struct on every supported
+// arch.
+type usbdevfsIoctlArg struct {
+	Ifno      int32 // interface number the inner ioctl targets
+	IoctlCode int32 // the inner ioctl request (USBDEVFS_DISCONNECT)
+	Data      *byte // inner ioctl payload; nil for DISCONNECT
+}
+
 const (
 	usbdevfsURBTypeBULK = 3
 )
@@ -79,7 +93,9 @@ var (
 	usbdevfsReapURB          = ioc(iocWrite, 'U', 12, unsafe.Sizeof(uintptr(0)))
 	usbdevfsClaimInterface   = ioc(iocRead, 'U', 15, 4)
 	usbdevfsReleaseInterface = ioc(iocRead, 'U', 16, 4)
+	usbdevfsIoctlCmd         = ioc(iocRead|iocWrite, 'U', 18, unsafe.Sizeof(usbdevfsIoctlArg{}))
 	usbdevfsReset            = ioc(iocNone, 'U', 20, 0)
+	usbdevfsDisconnect       = ioc(iocNone, 'U', 22, 0)
 )
 
 func platformEnumerator() Enumerator { return &linuxEnumerator{} }
@@ -248,19 +264,72 @@ func (t *linuxTransport) ControlOut(bRequest uint8, wValue, wIndex uint16, data 
 	return nil
 }
 
+// ClaimInterface tells the kernel this transport owns the given USB
+// interface. If the first attempt fails with EBUSY a kernel driver is
+// bound to the interface — on RTL-SDR dongles that is dvb_usb_rtl28xxu,
+// the DVB-T TV-tuner driver the kernel binds at plug time. We detach it
+// and retry once, mirroring libusb's LIBUSB_OPTION_AUTO_DETACH_KERNEL_-
+// DRIVER, so GopherTrunk claims the dongle even when the operator never
+// blacklisted the module. The driver is intentionally left detached:
+// re-binding it would only let it re-grab the interface and reintroduce
+// the race on the next open.
 func (t *linuxTransport) ClaimInterface(num int) error {
 	if t.closed.Load() {
 		return ErrClosed
 	}
-	n := uint32(num)
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(t.fd), usbdevfsClaimInterface, uintptr(unsafe.Pointer(&n)))
-	if errno != 0 {
-		return translateErrno(errno)
+	if err := claimWithAutoDetach(
+		func() error { return t.claimInterface(num) },
+		func() error { return t.detachKernelDriver(num) },
+	); err != nil {
+		return err
 	}
 	t.claimMu.Lock()
 	t.claimed = append(t.claimed, num)
 	t.claimMu.Unlock()
 	return nil
+}
+
+// claimInterface issues a single USBDEVFS_CLAIMINTERFACE ioctl with no
+// retry and no bookkeeping — the raw building block ClaimInterface
+// drives through claimWithAutoDetach.
+func (t *linuxTransport) claimInterface(num int) error {
+	n := uint32(num)
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(t.fd), usbdevfsClaimInterface, uintptr(unsafe.Pointer(&n)))
+	if errno != 0 {
+		return translateErrno(errno)
+	}
+	return nil
+}
+
+// detachKernelDriver issues USBDEVFS_DISCONNECT against interface num
+// via the USBDEVFS_IOCTL wrapper, telling the kernel to unbind whatever
+// driver currently owns it. Mirrors libusb_detach_kernel_driver.
+func (t *linuxTransport) detachKernelDriver(num int) error {
+	arg := usbdevfsIoctlArg{
+		Ifno:      int32(num),
+		IoctlCode: int32(usbdevfsDisconnect),
+	}
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(t.fd), usbdevfsIoctlCmd, uintptr(unsafe.Pointer(&arg)))
+	if errno != 0 {
+		return translateErrno(errno)
+	}
+	return nil
+}
+
+// claimWithAutoDetach runs claim; on EBUSY (a kernel driver owns the
+// interface) it runs detach once and retries claim a single time.
+// Factored out of ClaimInterface as a pure function so the EBUSY →
+// detach → re-claim policy is unit-testable without a real usbdevfs
+// device node.
+func claimWithAutoDetach(claim, detach func() error) error {
+	err := claim()
+	if !errors.Is(err, unix.EBUSY) {
+		return err
+	}
+	if detachErr := detach(); detachErr != nil {
+		return fmt.Errorf("usbdevfs: interface busy, kernel-driver auto-detach failed: %w (original: %w)", detachErr, err)
+	}
+	return claim()
 }
 
 func (t *linuxTransport) ReleaseInterface(num int) error {

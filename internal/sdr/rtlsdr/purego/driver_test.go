@@ -464,6 +464,55 @@ func TestOpenDevice_WarmupTimeoutTwiceReturnsHintError(t *testing.T) {
 	}
 }
 
+// Regression for the "claim interface 0: device or resource busy"
+// report: the USB transport detaches the bound DVB kernel driver and
+// retries automatically, so an EBUSY that still reaches openDevice
+// means another user-space process holds the dongle. claimBusyHint
+// must turn that into actionable guidance; unrelated errors and nil
+// must pass through with an empty hint.
+func TestClaimBusyHint(t *testing.T) {
+	busy := claimBusyHint(fmt.Errorf("rtlsdr: claim interface 0: %w", syscall.EBUSY))
+	if !strings.Contains(busy, "another process") {
+		t.Errorf("claimBusyHint(EBUSY) = %q, want it to mention another process", busy)
+	}
+	if !strings.Contains(busy, "install-linux.html#troubleshooting") {
+		t.Errorf("claimBusyHint(EBUSY) = %q, want the troubleshooting link", busy)
+	}
+	if got := claimBusyHint(nil); got != "" {
+		t.Errorf("claimBusyHint(nil) = %q, want empty", got)
+	}
+	if got := claimBusyHint(errors.New("unrelated")); got != "" {
+		t.Errorf("claimBusyHint(unrelated) = %q, want empty", got)
+	}
+}
+
+// Regression for the "claim interface 0: device or resource busy"
+// report: when the USB transport cannot claim interface 0 because the
+// dongle is genuinely held by another process, openDevice must surface
+// the EBUSY wrapped with claimBusyHint — keeping the cause inspectable
+// via errors.Is while pointing the operator at the fix.
+func TestOpenDevice_ClaimBusySurfacesHint(t *testing.T) {
+	m := usb.NewMockTransport()
+	m.ClaimErr = syscall.EBUSY
+	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-claim-busy"}
+	_, err := openDevice(m, desc, 0)
+	if err == nil {
+		t.Fatal("openDevice succeeded; expected claim EBUSY to fail open")
+	}
+	if !errors.Is(err, syscall.EBUSY) {
+		t.Errorf("err = %v, want errors.Is(err, syscall.EBUSY)", err)
+	}
+	if !strings.Contains(err.Error(), "claim interface 0") {
+		t.Errorf("err = %v, want substring \"claim interface 0\" (identifies the failing stage)", err)
+	}
+	if !strings.Contains(err.Error(), "another process") {
+		t.Errorf("err = %v, want the claimBusyHint guidance appended", err)
+	}
+	if m.ResetCalls != 0 {
+		t.Errorf("ResetCalls = %d, want 0 (a claim failure must not trigger a USB reset)", m.ResetCalls)
+	}
+}
+
 // Regression: a non-resetable error class (here usb.ErrClosed) on the
 // warmup probe must surface immediately without any USB reset — reset
 // is the wrong hammer for "transport already closed" and would obscure
