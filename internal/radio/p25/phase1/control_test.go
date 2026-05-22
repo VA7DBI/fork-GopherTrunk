@@ -502,3 +502,77 @@ func TestControlChannelPublishesDecodeErrorOnCorruptTSBK(t *testing.T) {
 		}
 	}
 }
+
+// TestControlChannelLocksThroughPostFSWSlip splices surplus dibits
+// between the FSW and the NID — the post-FSW symbol slip issue #275's
+// reporter observed, where the FSW detects reliably but the NID, shifted
+// by a dibit or two, never BCH-decodes under a fixed single-offset read.
+// parseFrame's bounded alignment search must recover the lock.
+func TestControlChannelLocksThroughPostFSWSlip(t *testing.T) {
+	for _, slip := range []int{1, 2} {
+		bus := events.NewBus(8)
+		sub := bus.Subscribe()
+
+		base := buildLockedStream(10, 0x293, DUIDTrunkingSignaling, OpRFSSStatusBroadcast)
+		// The FSW occupies indices 10..33; splice `slip` surplus dibits
+		// in right after it, before the NID. Everything downstream —
+		// NID, its interleaved status symbol, the TSBK — shifts with it.
+		slipped := make([]uint8, 0, len(base)+slip)
+		slipped = append(slipped, base[:34]...)
+		for i := 0; i < slip; i++ {
+			slipped = append(slipped, 0)
+		}
+		slipped = append(slipped, base[34:]...)
+
+		cc := NewControlChannel(bus, nil, 851_000_000)
+		cc.Process(slipped, 0)
+		select {
+		case ev := <-sub.C:
+			if ev.Kind != events.KindCCLocked {
+				t.Errorf("slip=%d kind = %s, want cc.locked", slip, ev.Kind)
+			} else if ls := ev.Payload.(LockState); ls.NAC != 0x293 {
+				t.Errorf("slip=%d NAC = %#x, want 0x293", slip, ls.NAC)
+			}
+		case <-time.After(time.Second):
+			t.Errorf("slip=%d no lock — alignment search did not recover the NID", slip)
+		}
+		sub.Close()
+		bus.Close()
+	}
+}
+
+// TestControlChannelNoFalseLockOnNoise feeds a valid FSW followed by
+// pseudo-random dibits. parseFrame's search probes 5×2×4 alignment
+// hypotheses; the BCH(63,16,11) + even-parity + DUID acceptance gate
+// must still reject every one — a wider search must not manufacture a
+// lock out of noise.
+func TestControlChannelNoFalseLockOnNoise(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	frame := make([]uint8, 24+32+98)
+	copy(frame, FrameSyncWord[:])
+	// Deterministic LCG fill so the test is reproducible.
+	r := uint32(0x9E3779B9)
+	for i := 24; i < len(frame); i++ {
+		r = r*1664525 + 1013904223
+		frame[i] = uint8(r>>13) & 0x3
+	}
+	onAir := InjectControlStatusSymbols(frame)
+	stream := make([]uint8, 10+len(onAir)+16)
+	copy(stream[10:], onAir)
+
+	cc := NewControlChannel(bus, nil, 851_000_000)
+	cc.Process(stream, 0)
+
+	select {
+	case ev := <-sub.C:
+		if ev.Kind == events.KindCCLocked {
+			t.Fatalf("false lock on noise: %+v", ev.Payload)
+		}
+		// KindDecodeError is the correct outcome here.
+	case <-time.After(100 * time.Millisecond):
+	}
+}
