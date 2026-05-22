@@ -73,6 +73,12 @@ func preflight(cfg config.Config) ([]string, error) {
 			warnings = append(warnings,
 				fmt.Sprintf("trunking.systems[%s].talkgroup_file: %q is a directory; expected a CSV file",
 					sys.Name, sys.TalkgroupFile))
+			continue
+		}
+		if info.Size() == 0 {
+			warnings = append(warnings,
+				fmt.Sprintf("trunking.systems[%s].talkgroup_file: %q is empty — calls on this system will have no alpha tags",
+					sys.Name, sys.TalkgroupFile))
 		}
 	}
 
