@@ -137,6 +137,13 @@ func (d *TalkgroupDB) LoadCSV(r io.Reader) (int, error) {
 	cr.TrimLeadingSpace = true
 	cr.FieldsPerRecord = -1
 	header, err := cr.Read()
+	if errors.Is(err, io.EOF) {
+		// An empty file is a legitimate "no talkgroups" state, not a
+		// load failure — a freshly-touched placeholder CSV or a system
+		// whose talkgroups aren't catalogued yet. Reporting zero loaded
+		// lets the daemon log a clean count instead of a cryptic EOF.
+		return 0, nil
+	}
 	if err != nil {
 		return 0, fmt.Errorf("trunking: read csv header: %w", err)
 	}

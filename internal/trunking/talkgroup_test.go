@@ -94,6 +94,32 @@ func TestLoadCSVRequiresDecimal(t *testing.T) {
 	}
 }
 
+func TestLoadCSVEmptyFile(t *testing.T) {
+	// An empty file (zero bytes) is a valid "no talkgroups" state —
+	// it must load cleanly as zero records, not surface a csv-header
+	// EOF error that the daemon would log as a scary load failure.
+	d := NewTalkgroupDB()
+	n, err := d.LoadCSV(strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("LoadCSV(empty): unexpected error %v", err)
+	}
+	if n != 0 {
+		t.Errorf("loaded %d from empty file, want 0", n)
+	}
+}
+
+func TestLoadCSVHeaderOnly(t *testing.T) {
+	// A header with no data rows is also a clean zero-record load.
+	d := NewTalkgroupDB()
+	n, err := d.LoadCSV(strings.NewReader("Decimal,Alpha Tag\n"))
+	if err != nil {
+		t.Fatalf("LoadCSV(header only): unexpected error %v", err)
+	}
+	if n != 0 {
+		t.Errorf("loaded %d from header-only file, want 0", n)
+	}
+}
+
 func TestLoadJSON(t *testing.T) {
 	js := `[
   {"id": 100, "alpha_tag": "OPS-1", "priority": 1},

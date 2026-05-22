@@ -7,6 +7,16 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Empty talkgroup CSV no longer reported as a load failure.** A
+  talkgroup CSV that existed but was empty (a freshly-touched
+  placeholder, or a system whose talkgroups aren't catalogued yet)
+  made the daemon log a scary `WARN talkgroup load failed … err="read
+  csv header: EOF"`. An empty file is a legitimate "no talkgroups"
+  state: `LoadCSV` now loads it cleanly as zero records, and preflight
+  surfaces an actionable `talkgroup_file … is empty` warning instead.
+
 ## [v0.1.8] — 2026-05-21
 
 P25 reception + voice-path release. The bulk of the work makes

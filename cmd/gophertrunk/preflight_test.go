@@ -61,6 +61,35 @@ func TestPreflightTalkgroupWarning(t *testing.T) {
 	}
 }
 
+func TestPreflightTalkgroupEmptyWarning(t *testing.T) {
+	// A talkgroup CSV that exists but is empty (zero bytes) must
+	// surface an actionable preflight warning rather than letting the
+	// daemon trip over a cryptic csv-header EOF at load time.
+	empty := filepath.Join(t.TempDir(), "talkgroups.csv")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatalf("write empty file: %v", err)
+	}
+	cfg := config.Config{
+		Trunking: config.TrunkingConfig{
+			Systems: []config.SystemConfig{{
+				Name:          "X",
+				Protocol:      "p25",
+				TalkgroupFile: empty,
+			}},
+		},
+	}
+	warnings, err := preflight(cfg)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if len(warnings) == 0 {
+		t.Fatal("expected a warning for the empty talkgroup file")
+	}
+	if !strings.Contains(warnings[0], "empty") {
+		t.Errorf("warning %q should mention the file is empty", warnings[0])
+	}
+}
+
 func TestPreflightTLSMissing(t *testing.T) {
 	cfg := config.Config{
 		API: config.APIConfig{
