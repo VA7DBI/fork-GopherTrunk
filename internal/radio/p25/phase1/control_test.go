@@ -543,9 +543,10 @@ func TestControlChannelLocksThroughPostFSWSlip(t *testing.T) {
 
 // TestControlChannelNoFalseLockOnNoise feeds a valid FSW followed by
 // pseudo-random dibits. parseFrame's search probes 5×2×4 alignment
-// hypotheses; the BCH(63,16,11) + even-parity + DUID acceptance gate
-// must still reject every one — a wider search must not manufacture a
-// lock out of noise.
+// hypotheses across the trusted (BCH + even-parity) and marginal (NID
+// errs 7..11 corroborated by the TSBK CRC) tiers; neither may
+// manufacture a lock out of noise — a noise NID has no clean TSBK to
+// corroborate it.
 func TestControlChannelNoFalseLockOnNoise(t *testing.T) {
 	bus := events.NewBus(16)
 	defer bus.Close()
@@ -574,5 +575,92 @@ func TestControlChannelNoFalseLockOnNoise(t *testing.T) {
 		}
 		// KindDecodeError is the correct outcome here.
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestControlChannelLocksOnMarginalNIDCorroboratedByTSBK injects 8 bit
+// errors into the NID — inside BCH(63,16,11)'s t=11 radius but past the
+// nidAcceptErrs=6 trusted threshold — while leaving the TSBK intact.
+// searchNID's marginal tier must still lock, because the frame's TSBK
+// decodes cleanly under the same alignment and corroborates the NID.
+// This is issue #275's strong-site symptom: a NID that BCH-decodes but
+// pegs above the trusted gate (the reporter's 9/10/11-error probes).
+func TestControlChannelLocksOnMarginalNIDCorroboratedByTSBK(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	frame := buildControlFrame(0x293, DUIDTrunkingSignaling,
+		TSBK{LB: true, Opcode: OpRFSSStatusBroadcast})
+	// Flip the MSB of 8 distinct NID dibits (frame[24:56]). Each is a
+	// distinct even-indexed codeword bit, so exactly 8 BCH errors land;
+	// the trailing parity bit (LSB of NID dibit 31) is left untouched,
+	// so the corrected codeword still passes even-parity.
+	for _, i := range []int{1, 4, 8, 12, 16, 20, 25, 30} {
+		frame[24+i] ^= 0b10
+	}
+	onAir := InjectControlStatusSymbols(frame)
+	stream := make([]uint8, 10+len(onAir)+16)
+	copy(stream[10:], onAir)
+
+	cc := NewControlChannel(bus, nil, 851_000_000)
+	cc.Process(stream, 0)
+
+	select {
+	case ev := <-sub.C:
+		if ev.Kind != events.KindCCLocked {
+			t.Fatalf("kind = %s, want cc.locked", ev.Kind)
+		}
+		if ls := ev.Payload.(LockState); ls.NAC != 0x293 {
+			t.Errorf("NAC = %#x, want 0x293", ls.NAC)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no lock — marginal NID not corroborated by its clean TSBK")
+	}
+}
+
+// TestControlChannelRejectsMarginalNIDWithoutTSBK is the false-lock
+// guard for the marginal tier: the same 8-bit-error NID, but with the
+// TSBK channel block corrupted too. With no clean TSBK to corroborate
+// the alignment, searchNID must reject the NID — a NID 7..11 BCH
+// corrections from the received word is as plausibly a miscorrection as
+// a real noisy NID, and only the TSBK CRC can tell them apart.
+func TestControlChannelRejectsMarginalNIDWithoutTSBK(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	frame := buildControlFrame(0x293, DUIDTrunkingSignaling,
+		TSBK{LB: true, Opcode: OpRFSSStatusBroadcast})
+	for _, i := range []int{1, 4, 8, 12, 16, 20, 25, 30} {
+		frame[24+i] ^= 0b10
+	}
+	// Flip every TSBK dibit — well past the Viterbi correction radius,
+	// so the CRC trailer fails and the alignment cannot be corroborated.
+	for i := 24 + 32; i < 24+32+98; i++ {
+		frame[i] = (^frame[i]) & 0x3
+	}
+	onAir := InjectControlStatusSymbols(frame)
+	stream := make([]uint8, 10+len(onAir)+16)
+	copy(stream[10:], onAir)
+
+	cc := NewControlChannel(bus, nil, 851_000_000)
+	cc.Process(stream, 0)
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindCCLocked {
+				t.Fatal("false lock: marginal NID accepted without TSBK corroboration")
+			}
+			if ev.Kind == events.KindDecodeError {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no decode-error event for uncorroborated marginal NID")
+		}
 	}
 }

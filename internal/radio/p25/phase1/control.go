@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/events"
@@ -174,12 +175,27 @@ const frameLookahead = 130 + 4
 // only adds chances for a miscorrection to slip through it.
 const nidSearchSpan = 2
 
-// nidAcceptErrs is the highest BCH-corrected error count parseFrame
-// will treat as a genuine NID. The code corrects up to 11, but a
-// window that only resolves with 7+ corrections is far more likely a
-// miscorrection of a misaligned guess than a real noisy NID, so the
-// search stays well below the t=11 ceiling.
+// nidAcceptErrs is the highest BCH-corrected error count searchNID
+// treats as a genuine NID on the strength of the BCH + even-parity
+// gate alone — the "trusted tier". BCH(63,16,11) corrects up to 11,
+// but a parity-valid codeword 7+ corrections from the received word is
+// as likely a miscorrection of a misaligned guess as a real noisy NID,
+// so BCH+parity cannot safely admit it by itself.
+//
+// Issue #275: the reporter's strong-site NID never cleared this gate —
+// the per-rotation probe sat at 9/10/11 errors. A NID in that 7..11
+// band is not discarded outright; it is deferred to the marginal tier,
+// which admits it only if the frame's TSBK also decodes (CRC) under the
+// same alignment. The TSBK CRC is a far stronger validator than the
+// NID's single parity bit, so a wrong alignment cannot fake it.
 const nidAcceptErrs = 6
+
+// nidCorroborateBudget caps how many marginal-tier NID hypotheses
+// (errs in (nidAcceptErrs, 11]) searchNID will TSBK-corroborate per FSW
+// hit. The grid yields at most 5×2×4 hypotheses; only the lowest-errs
+// few are worth a TSBK Viterbi decode, and the cap bounds the cost on
+// a noisy channel that never produces a trusted NID.
+const nidCorroborateBudget = 8
 
 // Process consumes a window of dibits and runs detection/parsing.
 // baseIdx is the absolute dibit index of dibits[0]. Returns the
@@ -247,9 +263,10 @@ func (c *ControlChannel) Process(dibits []uint8, baseIdx int) int {
 // probes a bounded grid of alignment hypotheses (NID start ±
 // nidSearchSpan, status symbols stripped or not, all four dibit
 // rotations) and accepts the one whose NID clears the BCH(63,16,11) +
-// even-parity gate with the fewest corrections. That gate is strong
-// enough that a wrong alignment cannot realistically be locked on, so
-// the search self-validates instead of guessing.
+// even-parity gate with the fewest corrections — or, when no NID
+// clears that gate cleanly, a marginal NID whose frame TSBK also
+// decodes. Either way the accepted alignment is validated, not
+// guessed, so a wrong alignment cannot realistically be locked on.
 func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 	best, found, diag := c.searchNID(buf, nidStart, fswRot)
 	if !found {
@@ -263,7 +280,8 @@ func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 	}
 	if best.errs > 0 {
 		c.log.Debug("nid corrected", "errs", best.errs, "nac", best.nid.NAC,
-			"rot", best.rot, "delta", best.delta, "strip", best.strip)
+			"rot", best.rot, "delta", best.delta, "strip", best.strip,
+			"corroborated", best.errs > nidAcceptErrs)
 	}
 	if best.nid.DUID != DUIDTrunkingSignaling {
 		// Some non-control DUID — record but don't lock.
@@ -316,18 +334,29 @@ type nidGuess struct {
 }
 
 // searchNID evaluates the bounded grid of NID-alignment hypotheses for
-// one FSW hit and returns the one whose NID BCH-decodes with a valid
-// even-parity bit and the fewest corrected errors (errs ≤
-// nidAcceptErrs). found is false when no hypothesis clears that gate;
-// diag then summarises the closest miss for the failure log, turning a
-// silent reject into a measurement (e.g. a low closest-miss errs at a
-// non-zero delta points straight at a symbol slip).
+// one FSW hit and returns the winning alignment. It accepts in two
+// tiers:
+//
+//   - Trusted: a NID that BCH-decodes with a valid even-parity bit and
+//     errs ≤ nidAcceptErrs. If any exists, the fewest-corrections one
+//     wins (betterNID) — the original, fast path, unchanged.
+//   - Marginal: only when no trusted NID exists, a NID with errs in
+//     (nidAcceptErrs, 11] is admitted if the frame's 98-dibit TSBK also
+//     decodes (Viterbi + CRC) under the same alignment. The TSBK CRC is
+//     the second validator a wrong alignment cannot fake — issue #275,
+//     where a strong-site NID sat permanently at 9/10/11 BCH errors.
+//
+// found is false when neither tier admits a hypothesis; diag then
+// summarises the closest miss for the failure log, turning a silent
+// reject into a measurement (a low marginal errs that fails only TSBK
+// corroboration points at demod-quality corruption, not misalignment).
 func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nidGuess, bool, string) {
 	var best nidGuess
 	found := false
 	closestMiss := -1 // lowest BCH errs of a parity-rejected near-miss
 	var missAt nidGuess
 	uncorrectable, tried := 0, 0
+	var marginal []nidGuess // parity-valid NIDs with errs > nidAcceptErrs
 
 	for delta := -nidSearchSpan; delta <= nidSearchSpan; delta++ {
 		start := nidStart + delta
@@ -349,18 +378,16 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 					}
 					continue
 				}
-				if errs > nidAcceptErrs {
-					// A parity-valid codeword this far from the received
-					// word is a miscorrection of a bad alignment, not a
-					// real NID — treat it as a near-miss, not a decode.
-					if closestMiss < 0 || errs < closestMiss {
-						closestMiss = errs
-						missAt = nidGuess{delta: delta, strip: strip, rot: rot, errs: errs}
-					}
-					continue
-				}
 				cand := nidGuess{delta: delta, strip: strip, rot: rot,
 					nid: nid, errs: errs, tsbkStart: tsbkStart}
+				if errs > nidAcceptErrs {
+					// Parity-valid but too far from the received word for
+					// BCH+parity to tell a noisy real NID from a bad
+					// alignment's miscorrection. Defer to the marginal
+					// tier, where the TSBK CRC decides.
+					marginal = append(marginal, cand)
+					continue
+				}
 				if !found || betterNID(cand, best, fswRot) {
 					best, found = cand, true
 				}
@@ -370,6 +397,28 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 	if found {
 		return best, true, ""
 	}
+
+	// No NID cleared the trusted gate. Fall back to the marginal tier:
+	// try the lowest-errs hypotheses first and accept the first whose
+	// TSBK corroborates the NID.
+	if len(marginal) > 0 {
+		sort.Slice(marginal, func(i, j int) bool {
+			return betterNID(marginal[i], marginal[j], fswRot)
+		})
+		budget := len(marginal)
+		if budget > nidCorroborateBudget {
+			budget = nidCorroborateBudget
+		}
+		for _, g := range marginal[:budget] {
+			if tsbkCorroborates(buf, g, nidStart) {
+				return g, true, ""
+			}
+		}
+		m := marginal[0]
+		return best, false, fmt.Sprintf(
+			"no NID corroborated over %d guesses; closest marginal errs=%d at delta=%d strip=%v rot=%d, TSBK uncorroborated",
+			tried, m.errs, m.delta, m.strip, m.rot)
+	}
 	if closestMiss >= 0 {
 		return best, false, fmt.Sprintf(
 			"no NID within accept gate over %d guesses; closest errs=%d at delta=%d strip=%v rot=%d",
@@ -377,6 +426,20 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 	}
 	return best, false, fmt.Sprintf(
 		"no NID within accept gate over %d guesses; all %d BCH-uncorrectable", tried, uncorrectable)
+}
+
+// tsbkCorroborates reports whether the 98-dibit TSBK channel block that
+// follows the NID under hypothesis g decodes cleanly — Viterbi trellis
+// plus CRC trailer, gathered under g's own alignment (delta / strip /
+// rot). It is the second, far stronger validator the marginal-NID
+// accept tier rests on: a miscorrected NID at a wrong alignment is
+// followed by garbage that will not pass the TSBK CRC. nidStart is the
+// FSW-derived NID start; g.delta offsets it, exactly as in parseFrame.
+func tsbkCorroborates(buf []uint8, g nidGuess, nidStart int) bool {
+	fswStart := nidStart + g.delta - len(FrameSyncWord)
+	tsbkChannel, _ := gatherFrameDibits(buf, g.tsbkStart, 98, fswStart, g.strip)
+	_, _, err := DecodeTSBKChannel(rotateDibits(tsbkChannel, g.rot))
+	return err == nil
 }
 
 // betterNID reports whether candidate a should replace the current
