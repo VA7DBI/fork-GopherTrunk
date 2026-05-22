@@ -80,6 +80,11 @@ type MockTransport struct {
 	ResetCalls int
 	ClaimCalls int
 
+	// ClaimErr, when non-nil, is returned by ClaimInterface instead of
+	// succeeding — lets tests exercise the driver's claim-failure path
+	// (e.g. an EBUSY that survives kernel-driver auto-detach).
+	ClaimErr error
+
 	BulkPackets  [][]byte
 	BulkInterval time.Duration
 
@@ -176,6 +181,9 @@ func (m *MockTransport) ClaimInterface(num int) error {
 	defer m.mu.Unlock()
 	if m.Closed {
 		return ErrClosed
+	}
+	if m.ClaimErr != nil {
+		return m.ClaimErr
 	}
 	m.ClaimedIfaces[num] = true
 	m.ClaimCalls++

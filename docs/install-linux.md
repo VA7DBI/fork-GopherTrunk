@@ -48,11 +48,15 @@ The tarball also bundles `config.example.yaml`, `README.md`, and
 ## 3. Grant USB access (one-time, every host)
 
 Linux ships a kernel DVB driver (`dvb_usb_rtl28xxu`) that grabs RTL-SDR
-dongles before user-space can claim them. We need to (a) stop the
-kernel from binding the device and (b) let your user open the USB
-device node without `sudo`. Both are one-shot config files.
+dongles before user-space can claim them. GopherTrunk detaches that
+driver automatically when it opens a dongle (the same trick `librtlsdr`
+uses), so blacklisting it is **optional** — but still recommended: a
+blacklist stops the kernel binding the device in the first place, one
+less moving part. The udev rule below is the step you do still need, so
+non-root processes can open the USB device node. Both are one-shot
+config files.
 
-**Blacklist the DVB driver** so it leaves the dongle alone:
+**Blacklist the DVB driver** (recommended) so it never touches the dongle:
 
 ```sh
 sudo tee /etc/modprobe.d/blacklist-dvb_usb_rtl28xxu.conf <<'EOF'
@@ -184,6 +188,7 @@ are left alone — remove them manually if you want a clean slate.
 | --------------------------------------- | -------------------------------------------------- |
 | `command not found: gophertrunk`        | Binary isn't on `PATH` — re-check step 2, or run `/usr/local/bin/gophertrunk` directly. |
 | `sdr list` prints nothing               | DVB driver still bound — `sudo modprobe -r dvb_usb_rtl28xxu` and re-plug. |
+| `claim interface 0: device or resource busy` | Another process already holds the dongle — close any other SDR app (`rtl_test`, SDR++, GQRX, or a second `gophertrunk`) and retry. GopherTrunk auto-detaches the DVB kernel driver, so this is no longer the DVB driver itself. |
 | `permission denied` on `/dev/bus/usb/…` | udev rule didn't apply — re-run `udevadm control --reload && udevadm trigger`, then re-plug. |
 | `usb: device disconnected` mid-stream   | Power-saving USB autosuspend kicked in — `echo on > /sys/bus/usb/devices/<id>/power/control`, or pin via udev. |
 | `tuner init: ... I2CWrite addr=0x34: broken pipe` | Tuner not ack-ing on the I²C bus. Most common: DVB kernel driver still bound — `sudo modprobe -r dvb_usb_rtl28xxu` and **physically re-plug** the dongle. Also seen with marginal USB power or USB 3.0 hubs — try a USB 2.0 port directly on the host. If `rtl_test` also prints `[R82XX] PLL not locked!` the tuner is in a half-init state; a full power cycle (unplug ~10s) clears it. If the workarounds above don't help, capture a wire-level trace with `RTLSDR_DEBUG_USB=1 gophertrunk sdr list --probe 2> usb-trace.log` and attach it to the issue alongside the matching `LIBUSB_DEBUG=4 rtl_test -t 2> rtl-test-trace.log` capture — diff-able traces tell us which control transfer is stalling. If those traces show the `data=18` SetI2CRepeater toggle firing right before the failing burst (gophertrunk emits it as of v0.1.6) and you've already pulled the latest release with the burst-EPIPE retry + open-path reset envelope (issue #248), escalate to a kernel-level usbmon capture — `LIBUSB_DEBUG=4` doesn't dump control-transfer payloads, but usbmon does: `sudo modprobe usbmon`, then `lsusb -d 0bda:2838` to find your bus number `N`, then in one session run `sudo tshark -i usbmon${N} -w gophertrunk.pcapng &` followed by the gophertrunk probe, kill the tshark, run a second `sudo tshark -i usbmon${N} -w rtl-test.pcapng &` followed by `LIBUSB_DEBUG=4 rtl_test -t`, kill the tshark, and attach both `.pcapng` files plus both `.log` files. usbmon shows the exact STALL response, NAK counts, and raw wire bytes that prove where librtlsdr and gophertrunk actually diverge on your hardware. |

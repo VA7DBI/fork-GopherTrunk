@@ -161,7 +161,7 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 // return immediately — reset is the wrong hammer for them.
 func openDevice(transport usb.Transport, desc usb.Descriptor, idx int) (*Device, error) {
 	if err := transport.ClaimInterface(0); err != nil {
-		return nil, fmt.Errorf("rtlsdr: claim interface 0: %w", err)
+		return nil, fmt.Errorf("rtlsdr: claim interface 0: %w%s", err, claimBusyHint(err))
 	}
 
 	var (
@@ -281,6 +281,24 @@ func isBringupResetable(err error) bool {
 	return errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, usb.ErrDeviceGone) ||
 		errors.Is(err, usb.ErrTimeout)
+}
+
+// claimBusyHint returns a parenthesized, space-prefixed remediation
+// string when err is an EBUSY that survived the USB transport's
+// kernel-driver auto-detach. The transport already detaches the DVB-T
+// driver (dvb_usb_rtl28xxu) and retries, so a surviving EBUSY means the
+// interface is held by another *user-space* process — a second
+// gophertrunk, rtl_test, SDR++, GQRX — which detaching a kernel driver
+// cannot clear. Returns "" for unrelated errors so the wrapped message
+// stays clean.
+func claimBusyHint(err error) string {
+	if errors.Is(err, syscall.EBUSY) {
+		return " (hint: the dongle is already claimed by another process —" +
+			" close any other SDR app holding it (rtl_test, SDR++, GQRX," +
+			" or a second gophertrunk instance) and retry." +
+			" See https://mattcheramie.github.io/GopherTrunk/install-linux.html#troubleshooting)"
+	}
+	return ""
 }
 
 // tunerBringupHint returns a parenthesized, space-prefixed remediation

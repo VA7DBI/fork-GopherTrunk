@@ -9,6 +9,20 @@ for tagged releases.
 
 ### Fixed
 
+- **RTL-SDR dongles now open even with the DVB kernel driver still
+  bound.** On Linux the kernel binds `dvb_usb_rtl28xxu` (the DVB-T
+  TV-tuner driver) to RTL-SDR dongles at plug time. An operator who
+  hadn't blacklisted that module saw the daemon fail every device
+  with `open device failed … claim interface 0: device or resource
+  busy` followed by `SDR pool open failed … no SDR devices opened` —
+  even though `sdr list` (which only reads USB descriptors) happily
+  showed the dongles. The USB layer now detaches the bound kernel
+  driver and retries the claim — the same auto-detach-kernel-driver
+  behaviour `librtlsdr` gets from libusb — so GopherTrunk opens the
+  dongle out of the box. Blacklisting the module is still recommended
+  (it stops the kernel grabbing the device first) but no longer
+  required. A claim error that survives the auto-detach now carries a
+  hint that another user-space process is holding the dongle.
 - **Empty talkgroup CSV no longer reported as a load failure.** A
   talkgroup CSV that existed but was empty (a freshly-touched
   placeholder, or a system whose talkgroups aren't catalogued yet)

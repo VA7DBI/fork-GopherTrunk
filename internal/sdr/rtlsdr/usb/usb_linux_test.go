@@ -3,10 +3,13 @@
 package usb
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // fakeUSBDevice writes the sysfs files that linuxEnumerator.List reads.
@@ -159,6 +162,11 @@ func TestIoctlEncodings(t *testing.T) {
 	if got, want := usbdevfsReleaseInterface, uintptr(0x80045510); got != want {
 		t.Errorf("usbdevfsReleaseInterface = 0x%X, want 0x%X", got, want)
 	}
+	// USBDEVFS_DISCONNECT is _IO('U', 22) — direction NONE, size 0.
+	// _IOC encoding: (0<<30) | ('U'<<8) | 22 = 0x5516.
+	if got, want := usbdevfsDisconnect, uintptr(0x5516); got != want {
+		t.Errorf("usbdevfsDisconnect = 0x%X, want 0x%X", got, want)
+	}
 }
 
 func TestIoctlEncodings_64Bit(t *testing.T) {
@@ -181,4 +189,93 @@ func TestIoctlEncodings_64Bit(t *testing.T) {
 	if got, want := usbdevfsReapURB, uintptr(0x4008550C); got != want {
 		t.Errorf("usbdevfsReapURB = 0x%X, want 0x%X", got, want)
 	}
+	// USBDEVFS_IOCTL is _IOWR('U', 18, sizeof(struct usbdevfs_ioctl)).
+	// On 64-bit the struct is {int, int, void*} = 16 bytes, so the
+	// encoding is _IOWR('U', 18, 16) = 0xC0105512.
+	if got, want := usbdevfsIoctlCmd, uintptr(0xC0105512); got != want {
+		t.Errorf("usbdevfsIoctlCmd = 0x%X, want 0x%X", got, want)
+	}
+}
+
+// TestClaimWithAutoDetach covers the EBUSY → detach → re-claim policy
+// the Linux transport applies so a DVB-kernel-driver-bound RTL-SDR
+// dongle still opens (the "claim interface 0: device or resource busy"
+// report). The policy is a pure function over two closures, so it is
+// exercised here without a real usbdevfs device node.
+func TestClaimWithAutoDetach(t *testing.T) {
+	t.Run("claim succeeds first try, detach not called", func(t *testing.T) {
+		detachCalls := 0
+		err := claimWithAutoDetach(
+			func() error { return nil },
+			func() error { detachCalls++; return nil },
+		)
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if detachCalls != 0 {
+			t.Errorf("detach called %d times, want 0 (no EBUSY)", detachCalls)
+		}
+	})
+
+	t.Run("EBUSY then detach then re-claim succeeds", func(t *testing.T) {
+		claimCalls, detachCalls := 0, 0
+		err := claimWithAutoDetach(
+			func() error {
+				claimCalls++
+				if claimCalls == 1 {
+					return unix.EBUSY
+				}
+				return nil
+			},
+			func() error { detachCalls++; return nil },
+		)
+		if err != nil {
+			t.Fatalf("err = %v, want nil (re-claim after detach must succeed)", err)
+		}
+		if claimCalls != 2 {
+			t.Errorf("claim called %d times, want 2 (initial + post-detach retry)", claimCalls)
+		}
+		if detachCalls != 1 {
+			t.Errorf("detach called %d times, want 1", detachCalls)
+		}
+	})
+
+	t.Run("EBUSY survives detach and re-claim", func(t *testing.T) {
+		err := claimWithAutoDetach(
+			func() error { return unix.EBUSY },
+			func() error { return nil },
+		)
+		if !errors.Is(err, unix.EBUSY) {
+			t.Errorf("err = %v, want EBUSY (a user-space process still holds the interface)", err)
+		}
+	})
+
+	t.Run("detach failure wraps both errors", func(t *testing.T) {
+		detachErr := errors.New("disconnect ioctl failed")
+		err := claimWithAutoDetach(
+			func() error { return unix.EBUSY },
+			func() error { return detachErr },
+		)
+		if !errors.Is(err, detachErr) {
+			t.Errorf("err = %v, want it to wrap the detach failure", err)
+		}
+		if !errors.Is(err, unix.EBUSY) {
+			t.Errorf("err = %v, want it to also wrap the original EBUSY", err)
+		}
+	})
+
+	t.Run("non-EBUSY error passes through, detach not called", func(t *testing.T) {
+		detachCalls := 0
+		sentinel := errors.New("some other claim failure")
+		err := claimWithAutoDetach(
+			func() error { return sentinel },
+			func() error { detachCalls++; return nil },
+		)
+		if !errors.Is(err, sentinel) {
+			t.Errorf("err = %v, want the original non-EBUSY error", err)
+		}
+		if detachCalls != 0 {
+			t.Errorf("detach called %d times, want 0 (detach is EBUSY-only)", detachCalls)
+		}
+	})
 }
