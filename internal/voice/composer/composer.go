@@ -390,6 +390,14 @@ func (c *Composer) handleStart(parent context.Context, cs trunking.CallStart) {
 
 	switch {
 	case isDMRVoice:
+		if cs.Grant.Encrypted {
+			// Surface encryption clearly: the .raw sidecar will hold
+			// encrypted AMBE+2 frames and the WAV will be unintelligible
+			// until in-process descramble lands (docs/dmr-encryption.md).
+			c.log.Info("composer: DMR voice call is encrypted; .raw sidecar holds encrypted AMBE+2 frames, in-process decryption not yet available",
+				"device", cs.DeviceSerial, "system", cs.Grant.System,
+				"group", cs.Grant.GroupID)
+		}
 		go c.runDMRVoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
 	case isP25P2Voice:
 		go c.runP25Phase2VoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
