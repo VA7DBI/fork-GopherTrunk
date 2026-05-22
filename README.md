@@ -361,23 +361,22 @@ sourcing.
 What's still on the table. Order isn't fixed; each item is contained
 to its own package and lands independently.
 
-- **DMR ARC4 / RC4 known-key voice decryption (issue #276).** Many
-  DMR systems protect voice with ARC4-based "Enhanced Privacy".
-  Operators authorized to monitor such a system — and holding the
-  key — list it per-system under `trunking.systems[].encryption_keys`
-  (`key_id` + `algorithm: rc4` + hex `key`), validated at load. Most
-  of the pipeline has shipped: the dependency-free RC4 keystream
-  generator ([`internal/crypto/rc4/`](internal/crypto/rc4/)), the DMR
-  voice superframe decoder plus AMBE+2 forward-error-correction
+- **DMR ARC4 / RC4 known-key voice decryption (issue #276).** DMR
+  systems that protect voice with ARC4-based "Enhanced Privacy" can be
+  given known keys per system under
+  `trunking.systems[].encryption_keys`. Most of the pipeline has
+  shipped — the dependency-free RC4 keystream generator
+  ([`internal/crypto/rc4/`](internal/crypto/rc4/)), the DMR voice
+  superframe decoder plus AMBE+2 forward-error-correction
   ([`internal/radio/dmr/voice/`](internal/radio/dmr/voice/) — 72-bit
   on-air frame → C0/C1 Golay(23,12) + C1 descramble → 49-bit vocoder
   payload, ported from mbelib/DSD), and the composer DMR voice chain
-  that runs IQ → DMR receiver → superframe decoder → AMBE FEC and
-  writes the FEC-decoded frames to the call's `.raw` sidecar (the
-  voice path GopherTrunk previously lacked entirely — DMR decoded
-  control channels only). The remaining work is the RC4 descramble +
-  PI-header (algorithm / key / message-indicator) parsing, and the
-  AMBE+2 vocoder hookup that renders the `.raw` frames to PCM.
+  that captures every DMR voice call as a `.raw` of standard AMBE+2
+  frames. The two remaining stages are the in-process RC4 descramble
+  (PI-header parse + keystream application) and the AMBE+2 2450
+  vocoder hookup that renders `.raw` frames to PCM — see
+  [`docs/dmr-encryption.md`](docs/dmr-encryption.md) for the full
+  status, configuration guide, and out-of-band decode recipe.
   Decryption is known-key only — no key recovery — matching the
   SDRTrunk / DSD-FME / OP25 model.
 - **DVSI USB-3000 / AMBE-3003 hardware backend (USB transport).**
@@ -2706,6 +2705,10 @@ opt-in field as a `omitempty` JSON value.
   defaults, receiver clock recovery, daemon-level features
   (mix of on / off / auto-detect), and the permanent build-time
   gates (DVSI patent tag, integration tests)
+- [`docs/dmr-encryption.md`](docs/dmr-encryption.md) — DMR ARC4 / RC4
+  "Enhanced Privacy" known-key support: configuring `encryption_keys`,
+  the decode-pipeline status, what is and isn't decoded in-process,
+  and decoding the `.raw` AMBE sidecar out-of-band
 - [`docs/gophertrunk.service`](docs/gophertrunk.service) — example
   systemd unit (DynamicUser, ProtectSystem, USB device-allow) for
   Linux operators standing the daemon up on a server
