@@ -138,12 +138,6 @@ var factories = map[trunking.Protocol]PipelineFactory{
 // bus when the supervisor's tuned frequency carries valid P25
 // traffic.
 func newP25Phase1Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
-	cc := p25phase1.New(p25phase1.Options{
-		Bus:         opts.Bus,
-		Log:         opts.Log,
-		SystemName:  opts.SystemName,
-		FrequencyHz: opts.FrequencyHz,
-	})
 	log := opts.Log
 	if log == nil {
 		log = slog.Default()
@@ -153,6 +147,24 @@ func newP25Phase1Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 		log.Warn("ccdecoder: unrecognised p25_phase1_demod_mode; falling back to c4fm",
 			"system", opts.SystemName, "value", opts.System.P25Phase1DemodMode)
 	}
+	// On a C4FM FM-discriminator stream only rotations 0 (identity)
+	// and 2 (discriminator polarity flip) are physical; rotations 1
+	// and 3 are non-physical on that path, so restricting the FSW +
+	// NID rotation search to {0, 2} stops the BCH decoder from
+	// miscorrecting misaligned dibits into a parity-valid pseudo-NID
+	// at a wrong rotation (issue #275). The CQPSK path has a genuine
+	// four-fold phase ambiguity and keeps the all-rotation default.
+	rotations := p25phase1.RotationsAll
+	if demodMode == p25phase1rx.DemodC4FM {
+		rotations = p25phase1.RotationsC4FM
+	}
+	cc := p25phase1.New(p25phase1.Options{
+		Bus:         opts.Bus,
+		Log:         opts.Log,
+		SystemName:  opts.SystemName,
+		FrequencyHz: opts.FrequencyHz,
+		Rotations:   rotations,
+	})
 	rx := p25phase1rx.New(p25phase1rx.Options{
 		SampleRateHz: opts.SampleRateHz,
 		// P25 Phase 1 nominal peak deviation per TIA-102.BAAA-A

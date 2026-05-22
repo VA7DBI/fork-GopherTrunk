@@ -52,6 +52,8 @@ func main() {
 		runTUI(os.Args[2:])
 	case "decode":
 		runDecode(os.Args[2:])
+	case "replay":
+		runReplay(os.Args[2:])
 	case "import-pdf":
 		runImport(os.Args[2:])
 	case "daemon", "run":
@@ -75,6 +77,7 @@ USAGE:
   gophertrunk audio list              list audio output devices
   gophertrunk tui [-server URL]       open the operator TUI against a remote daemon
   gophertrunk decode [flags]          decode a captured .raw frame stream into a WAV
+  gophertrunk replay [flags]          decode a raw IQ capture file offline through the P25 chain
   gophertrunk import-pdf [flags]      import a RadioReference PDF into config.yaml
   gophertrunk version                 print build version
   gophertrunk help                    show this message`)

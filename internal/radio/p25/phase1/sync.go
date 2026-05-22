@@ -40,24 +40,60 @@ func SymbolsToDibits(syms []int8) []uint8 {
 // FrameSyncBits returns the 48 bits of the FSW MSB-first.
 func FrameSyncBits() []byte { return framing.DibitsToBits(FrameSyncWord[:]) }
 
+// RotationSet enumerates the cyclic dibit rotations the FSW correlator
+// and the NID alignment search probe. The zero value (nil) means "use
+// the default all-rotation set" — every existing caller stays
+// unchanged. Callers that know the demod mode can pass a restricted
+// set: only rotation 0 (identity) and rotation 2 (FM-discriminator
+// polarity flip) are physically meaningful on a C4FM stream, so rot 1
+// and rot 3 wins there are structurally BCH miscorrections (issue
+// #275: post-#321 retests converged on rot=3 on a C4FM site).
+type RotationSet []uint8
+
+// RotationsAll covers every cyclic dibit-alphabet rotation; the
+// CQPSK / π/4-DQPSK path needs all four (the differential decode has
+// a genuine four-fold phase ambiguity) and it stays the default.
+var RotationsAll = RotationSet{0, 1, 2, 3}
+
+// RotationsC4FM restricts the search to the rotations a C4FM
+// FM-discriminator stream can physically present: 0 (identity) and 2
+// (discriminator polarity flip). Rot 1 and rot 3 are non-physical on
+// C4FM, so excluding them prevents the BCH decoder from miscorrecting
+// misaligned dibits into a parity-valid pseudo-NID at a wrong rotation.
+var RotationsC4FM = RotationSet{0, 2}
+
+// resolveRotations returns the rotation set to iterate, falling back
+// to RotationsAll when the caller passed nil.
+func resolveRotations(r RotationSet) RotationSet {
+	if len(r) == 0 {
+		return RotationsAll
+	}
+	return r
+}
+
 // SyncDetector slides a window over an incoming dibit stream and emits the
 // (zero-based) dibit index where the FSW best matches above tolerance.
 // Tolerance is the maximum allowed dibit-symbol mismatch; default 4.
 //
-// The detector tries all four cyclic rotations of the dibit alphabet
-// (k ∈ {0, 1, 2, 3}, applied as (dibit + k) mod 4 before comparing
-// against the canonical FrameSyncWord) and records the rotation that
-// matched. The rotation absorbs residual symbol-polarity / I-Q-swap
-// ambiguities the front-end may have introduced — without it the C4FM
-// path slipped to dibit 3↔0 / 1↔2 on conjugated IQ inputs, and the
-// CQPSK path on rare DQPSK quadrant slips. Rotation=0 wins on ties so
-// existing clean-fixture tests bind the same hit they always have.
+// The detector tries cyclic rotations of the dibit alphabet (applied as
+// (dibit + k) mod 4 before comparing against the canonical
+// FrameSyncWord) and records the rotation that matched. The default is
+// all four rotations — k ∈ {0, 1, 2, 3} — to absorb residual
+// symbol-polarity / I-Q-swap ambiguities the front-end may have
+// introduced; without it the C4FM path slipped to dibit 3↔0 / 1↔2 on
+// conjugated IQ inputs, and the CQPSK path on rare DQPSK quadrant
+// slips. Rotation=0 wins on ties so existing clean-fixture tests bind
+// the same hit they always have.
+//
+// Callers that know the demod mode can call SetRotations to restrict
+// the set — see RotationsC4FM for the C4FM-specific subset.
 //
 // Callers needing the rotation per hit use ProcessWithRotation; the
 // simpler Process API stays at the same signature for the rest of the
 // pipeline.
 type SyncDetector struct {
 	tolerance int
+	rotations RotationSet
 	hist      [24]uint8
 	primed    int
 	pos       int
@@ -67,7 +103,14 @@ func NewSyncDetector(tolerance int) *SyncDetector {
 	if tolerance < 0 {
 		tolerance = 4
 	}
-	return &SyncDetector{tolerance: tolerance}
+	return &SyncDetector{tolerance: tolerance, rotations: RotationsAll}
+}
+
+// SetRotations restricts (or restores) the rotations the FSW
+// correlator tries. Passing nil or an empty set restores the default
+// all-rotation behaviour.
+func (s *SyncDetector) SetRotations(r RotationSet) {
+	s.rotations = resolveRotations(r)
 }
 
 // Process appends to dst the indices (relative to baseIndex) where the FSW
@@ -88,6 +131,7 @@ func (s *SyncDetector) Process(dst []int, src []uint8, baseIndex int) ([]int, in
 // Pass nil for rots to let the detector allocate; the returned rots
 // slice is non-nil whenever dst is non-empty after this call.
 func (s *SyncDetector) ProcessWithRotation(dst []int, rots []uint8, src []uint8, baseIndex int) ([]int, []uint8, int) {
+	rotations := resolveRotations(s.rotations)
 	for i, d := range src {
 		s.hist[s.pos] = d
 		s.pos = (s.pos + 1) % 24
@@ -97,7 +141,7 @@ func (s *SyncDetector) ProcessWithRotation(dst []int, rots []uint8, src []uint8,
 		}
 		bestMis := s.tolerance + 1
 		var bestRot uint8
-		for k := uint8(0); k < 4; k++ {
+		for _, k := range rotations {
 			mismatch := 0
 			idx := s.pos
 			for kk := 0; kk < 24; kk++ {
