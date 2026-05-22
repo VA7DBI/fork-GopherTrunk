@@ -2,6 +2,7 @@ package phase1
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -156,9 +157,29 @@ const p25StatusStride = 36
 // FSW for a full frame to decode: the 32-dibit NID plus the 98-dibit
 // TSBK channel block — 130 data dibits — plus the 4 status symbols
 // interleaved into that span at the p25StatusStride cadence. Process
-// defers an FSW hit until this many dibits have accumulated, so frame
-// assembly no longer depends on the IQ chunking.
+// defers an FSW hit until this many dibits (plus nidSearchSpan, so the
+// +delta end of the alignment search stays in-buffer) have
+// accumulated, so frame assembly no longer depends on the IQ chunking.
 const frameLookahead = 130 + 4
+
+// nidSearchSpan bounds the parseFrame NID-alignment search: the NID is
+// probed at the FSW-derived start index plus a delta in
+// [-nidSearchSpan, +nidSearchSpan]. ±2 dibits absorbs a single
+// post-FSW symbol slip or an off-by-one in the NID framing — issue
+// #275, where the field symptom was a reliably-detected FSW followed
+// by an always-uncorrectable NID, i.e. NID dibits that were sound but
+// mis-aligned, which a fixed single-offset read cannot recover. It is
+// deliberately small: the BCH(63,16,11) + even-parity + DUID
+// acceptance gate is what rejects wrong alignments, and a wider span
+// only adds chances for a miscorrection to slip through it.
+const nidSearchSpan = 2
+
+// nidAcceptErrs is the highest BCH-corrected error count parseFrame
+// will treat as a genuine NID. The code corrects up to 11, but a
+// window that only resolves with 7+ corrections is far more likely a
+// miscorrection of a misaligned guess than a real noisy NID, so the
+// search stays well below the t=11 ceiling.
+const nidAcceptErrs = 6
 
 // Process consumes a window of dibits and runs detection/parsing.
 // baseIdx is the absolute dibit index of dibits[0]. Returns the
@@ -202,7 +223,7 @@ func (c *ControlChannel) Process(dibits []uint8, baseIdx int) int {
 		if nidStart < 0 {
 			continue // buffer already trimmed past this hit — drop it
 		}
-		if nidStart+frameLookahead > len(c.buf) {
+		if nidStart+frameLookahead+nidSearchSpan > len(c.buf) {
 			kept = append(kept, ph) // not enough buffered yet
 			continue
 		}
@@ -214,58 +235,59 @@ func (c *ControlChannel) Process(dibits []uint8, baseIdx int) int {
 }
 
 // parseFrame decodes the NID + TSBK of one FSW hit. buf[nidStart:]
-// must hold at least frameLookahead dibits — the caller guarantees it.
-// rot is the FSW-search rotation: the sync detector matched after
-// adding rot mod 4 to each input dibit, so the canonical dibit values
-// the BCH / trellis decoders expect are recovered by adding rot
-// (rotateDibits) before parsing.
+// must hold at least frameLookahead+nidSearchSpan dibits — the caller
+// guarantees it. fswRot is the FSW-search rotation: the sync detector
+// matched after adding fswRot mod 4 to each input dibit; it seeds the
+// search and breaks ties so a clean frame binds deterministically.
 //
-// P25 interleaves a status symbol into the on-air dibit stream every
-// p25StatusStride dibits; one lands inside the NID region and three
-// inside the TSBK, so the NID and TSBK dibits are gathered around them
-// with gatherDataDibits before decoding.
-func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, rot uint8) {
-	// The 24-dibit FSW ends at nidStart-1, so it begins at nidStart-24;
-	// the interleaved status symbols' phase is measured from there.
-	fswStart := nidStart - len(FrameSyncWord)
-	rawNID, tsbkStart := gatherDataDibits(buf, nidStart, 32, fswStart)
-	nid, errs, err := NIDFromDibits(rotateDibits(rawNID, rot))
-	if err != nil {
-		c.log.Debug("nid parse failed", "err", err, "errs", errs, "rot", rot)
-		c.logNIDRotationProbe(rawNID)
+// Issue #275: a reliably-detected FSW was followed by a NID that never
+// BCH-decoded — the NID dibits were individually sound (the FSW would
+// not correlate otherwise) but mis-aligned by the post-FSW framing.
+// parseFrame therefore does not trust a single fixed read: searchNID
+// probes a bounded grid of alignment hypotheses (NID start ±
+// nidSearchSpan, status symbols stripped or not, all four dibit
+// rotations) and accepts the one whose NID clears the BCH(63,16,11) +
+// even-parity gate with the fewest corrections. That gate is strong
+// enough that a wrong alignment cannot realistically be locked on, so
+// the search self-validates instead of guessing.
+func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
+	best, found, diag := c.searchNID(buf, nidStart, fswRot)
+	if !found {
+		c.log.Debug("nid parse failed", "system", c.systemName,
+			"freq_hz", c.freqHz, "diag", diag)
 		c.bus.Publish(events.Event{
 			Kind:    events.KindDecodeError,
 			Payload: events.DecodeError{Protocol: "p25", Stage: events.StageNIDBCH},
 		})
 		return
 	}
-	if errs > 0 {
-		c.log.Debug("nid corrected", "errs", errs, "nac", nid.NAC, "rot", rot)
+	if best.errs > 0 {
+		c.log.Debug("nid corrected", "errs", best.errs, "nac", best.nid.NAC,
+			"rot", best.rot, "delta", best.delta, "strip", best.strip)
 	}
-	if errs >= nidErrsProbeThreshold {
-		c.logNIDRotationProbe(rawNID)
-	}
-	if nid.DUID != DUIDTrunkingSignaling {
+	if best.nid.DUID != DUIDTrunkingSignaling {
 		// Some non-control DUID — record but don't lock.
-		c.log.Debug("non-control DUID", "duid", nid.DUID, "nac", nid.NAC)
+		c.log.Debug("non-control DUID", "duid", best.nid.DUID, "nac", best.nid.NAC)
 		return
 	}
-	if !c.locked || c.lastNAC != nid.NAC {
+	if !c.locked || c.lastNAC != best.nid.NAC {
 		c.locked = true
-		c.lastNAC = nid.NAC
+		c.lastNAC = best.nid.NAC
 		c.bus.Publish(events.Event{
 			Kind:    events.KindCCLocked,
-			Payload: LockState{FrequencyHz: c.freqHz, NAC: nid.NAC, DUID: nid.DUID},
+			Payload: LockState{FrequencyHz: c.freqHz, NAC: best.nid.NAC, DUID: best.nid.DUID},
 		})
-		c.log.Info("control channel locked", "nac", nid.NAC, "freq", c.freqHz, "rot", rot)
+		c.log.Info("control channel locked", "nac", best.nid.NAC, "freq", c.freqHz,
+			"rot", best.rot, "delta", best.delta)
 	}
 
 	// The channel TSBK occupies the 98 data dibits after the NID,
-	// starting where gatherDataDibits left off.
-	tsbkChannel, _ := gatherDataDibits(buf, tsbkStart, 98, fswStart)
-	tsbk, metric, err := DecodeTSBKChannel(rotateDibits(tsbkChannel, rot))
+	// gathered under the same alignment the NID search settled on.
+	fswStart := nidStart + best.delta - len(FrameSyncWord)
+	tsbkChannel, _ := gatherFrameDibits(buf, best.tsbkStart, 98, fswStart, best.strip)
+	tsbk, metric, err := DecodeTSBKChannel(rotateDibits(tsbkChannel, best.rot))
 	if err != nil {
-		c.log.Debug("tsbk decode failed", "err", err, "metric", metric, "nac", nid.NAC)
+		c.log.Debug("tsbk decode failed", "err", err, "metric", metric, "nac", best.nid.NAC)
 		stage := events.StageTSBKTrellis
 		if errors.Is(err, CRCError) {
 			stage = events.StageTSBKCRC
@@ -276,7 +298,119 @@ func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, rot uint8) {
 		})
 		return
 	}
-	c.dispatchTSBK(tsbk, nid.NAC, metric)
+	c.dispatchTSBK(tsbk, best.nid.NAC, metric)
+}
+
+// nidGuess is one evaluated NID-alignment hypothesis: the NID read from
+// buf starting at nidStart+delta, with interleaved status symbols
+// stripped (strip) or taken contiguously, and the dibit alphabet
+// rotated by rot. tsbkStart is the index the matching TSBK gather
+// begins at.
+type nidGuess struct {
+	delta     int
+	strip     bool
+	rot       uint8
+	nid       NID
+	errs      int
+	tsbkStart int
+}
+
+// searchNID evaluates the bounded grid of NID-alignment hypotheses for
+// one FSW hit and returns the one whose NID BCH-decodes with a valid
+// even-parity bit and the fewest corrected errors (errs ≤
+// nidAcceptErrs). found is false when no hypothesis clears that gate;
+// diag then summarises the closest miss for the failure log, turning a
+// silent reject into a measurement (e.g. a low closest-miss errs at a
+// non-zero delta points straight at a symbol slip).
+func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nidGuess, bool, string) {
+	var best nidGuess
+	found := false
+	closestMiss := -1 // lowest BCH errs of a parity-rejected near-miss
+	var missAt nidGuess
+	uncorrectable, tried := 0, 0
+
+	for delta := -nidSearchSpan; delta <= nidSearchSpan; delta++ {
+		start := nidStart + delta
+		if start < 0 || start+frameLookahead > len(buf) {
+			continue
+		}
+		fswStart := start - len(FrameSyncWord)
+		for _, strip := range [...]bool{true, false} {
+			rawNID, tsbkStart := gatherFrameDibits(buf, start, 32, fswStart, strip)
+			for rot := uint8(0); rot < 4; rot++ {
+				tried++
+				nid, errs, err := NIDFromDibits(rotateDibits(rawNID, rot))
+				if err != nil {
+					if errs < 0 {
+						uncorrectable++
+					} else if closestMiss < 0 || errs < closestMiss {
+						closestMiss = errs
+						missAt = nidGuess{delta: delta, strip: strip, rot: rot, errs: errs}
+					}
+					continue
+				}
+				if errs > nidAcceptErrs {
+					// A parity-valid codeword this far from the received
+					// word is a miscorrection of a bad alignment, not a
+					// real NID — treat it as a near-miss, not a decode.
+					if closestMiss < 0 || errs < closestMiss {
+						closestMiss = errs
+						missAt = nidGuess{delta: delta, strip: strip, rot: rot, errs: errs}
+					}
+					continue
+				}
+				cand := nidGuess{delta: delta, strip: strip, rot: rot,
+					nid: nid, errs: errs, tsbkStart: tsbkStart}
+				if !found || betterNID(cand, best, fswRot) {
+					best, found = cand, true
+				}
+			}
+		}
+	}
+	if found {
+		return best, true, ""
+	}
+	if closestMiss >= 0 {
+		return best, false, fmt.Sprintf(
+			"no NID within accept gate over %d guesses; closest errs=%d at delta=%d strip=%v rot=%d",
+			tried, missAt.errs, missAt.delta, missAt.strip, missAt.rot)
+	}
+	return best, false, fmt.Sprintf(
+		"no NID within accept gate over %d guesses; all %d BCH-uncorrectable", tried, uncorrectable)
+}
+
+// betterNID reports whether candidate a should replace the current
+// best b: fewer BCH corrections wins; ties break toward the most
+// canonical alignment (see nidRank) so a clean frame binds to delta=0,
+// status-stripped, rot=fswRot exactly as the pre-search code did.
+func betterNID(a, b nidGuess, fswRot uint8) bool {
+	if a.errs != b.errs {
+		return a.errs < b.errs
+	}
+	return nidRank(a, fswRot) < nidRank(b, fswRot)
+}
+
+// nidRank scores how canonical an alignment hypothesis is — lower is
+// more canonical. The FSW-reported rotation, a zero start delta and
+// status-stripped framing are the expected spec alignment; anything
+// else only wins on a strictly lower error count.
+func nidRank(g nidGuess, fswRot uint8) int {
+	r := 0
+	if g.rot != fswRot {
+		r += 32
+	}
+	d := g.delta
+	if d < 0 {
+		d = -d
+	}
+	r += 4 * d
+	if !g.strip {
+		r += 2
+	}
+	if g.delta < 0 {
+		r++
+	}
+	return r
 }
 
 // trimBuffer drops dibits no pending hit needs any more. With no
@@ -333,6 +467,23 @@ func gatherDataDibits(buf []uint8, start, count, fswStart int) ([]uint8, int) {
 	return out, i
 }
 
+// gatherFrameDibits copies count data dibits out of buf starting at
+// index start. When strip is true the status symbols interleaved at
+// the p25StatusStride cadence (phase measured from fswStart) are
+// skipped via gatherDataDibits; when false the dibits are taken
+// contiguously — the parseFrame alignment search tries both, since a
+// status-phase error and a missing status symbol are among issue
+// #275's candidate framing faults. It returns the gathered dibits and
+// the index one past the last dibit consumed.
+func gatherFrameDibits(buf []uint8, start, count, fswStart int, strip bool) ([]uint8, int) {
+	if strip {
+		return gatherDataDibits(buf, start, count, fswStart)
+	}
+	out := make([]uint8, count)
+	copy(out, buf[start:start+count])
+	return out, start + count
+}
+
 // InjectControlStatusSymbols interleaves P25 status symbols into a
 // contiguous control-channel dibit stream (FSW + NID + TSBK …),
 // producing the on-air dibit stream a real transmitter emits: one
@@ -355,35 +506,6 @@ func InjectControlStatusSymbols(stream []uint8) []uint8 {
 		}
 	}
 	return out
-}
-
-// nidErrsProbeThreshold is the BCH-corrected error count at or above
-// which parseFrame dumps the per-rotation NID diagnostic. The NID's
-// BCH(63,16,11) corrects at most 11 errors, so a frame landing this
-// close to that ceiling means the dibits reaching the decoder are
-// systematically wrong rather than lightly noisy.
-const nidErrsProbeThreshold = 8
-
-// logNIDRotationProbe re-decodes the raw (un-rotated) NID dibits under
-// all four cyclic dibit rotations and logs the BCH error count each
-// produces (-1 = uncorrectable). It runs only on the diagnostic path —
-// a frame whose FSW matched but whose NID will not cleanly decode — and
-// exists to tell two failure modes apart for issue #275:
-//
-//   - one rotation scores low while the others score high → the
-//     FSW-search picked the wrong rotation (a sync / front-end
-//     polarity bug);
-//   - all four rotations score high → the demodulated dibits are
-//     genuinely corrupt (a demod-quality bug — residual frequency
-//     offset, matched filter, symbol timing) that no rotation repairs.
-func (c *ControlChannel) logNIDRotationProbe(rawNID []uint8) {
-	var probe [4]int
-	for k := uint8(0); k < 4; k++ {
-		_, errs, _ := NIDFromDibits(rotateDibits(rawNID, k))
-		probe[k] = errs
-	}
-	c.log.Debug("nid rotation probe",
-		"rot0", probe[0], "rot1", probe[1], "rot2", probe[2], "rot3", probe[3])
 }
 
 // dispatchTSBK routes a successfully-CRC'd TSBK to the right opcode
