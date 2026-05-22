@@ -32,6 +32,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/radio/ysf"
 	ysfrx "github.com/MattCheramie/GopherTrunk/internal/radio/ysf/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
+	"github.com/MattCheramie/GopherTrunk/internal/version"
 )
 
 // ProtocolPipeline is the contract every per-protocol receiver
@@ -169,9 +170,13 @@ func newP25Phase1Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 			cc.Process(dibits, baseIdx)
 		},
 	})
+	// build is the link-time version stamp. Decoder log excerpts are
+	// what issue reporters paste, and a git-describe string there is
+	// the only reliable way to tell which fixes a build contains —
+	// issue #275 saw a retest invalidated by a silently stale build.
 	log.Info("ccdecoder: p25/phase1 pipeline configured",
 		"system", opts.SystemName, "freq_hz", opts.FrequencyHz,
-		"demod", demodModeLabel(demodMode))
+		"demod", demodModeLabel(demodMode), "build", version.String())
 	return &p25Phase1Pipeline{rx: rx, cc: cc}, nil
 }
 
