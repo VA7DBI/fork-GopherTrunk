@@ -22,11 +22,15 @@ import (
 //     in the buffer, count the best Hamming distance to the 24-dibit
 //     FrameSyncWord under each of the 4 cyclic rotations. The shape
 //     tells whether the demod produces canonical dibits at all:
-//     - tight low-mismatch peak under rot=0 ≈ clean C4FM
-//     - peak under rot=2 only ≈ inverted discriminator polarity
-//     - peak under rot=1 or rot=3 ≈ I/Q swap or 90° clock-recovery slip
-//       (non-physical on a C4FM stream — strong evidence of a bug)
-//     - no peak under any rotation ≈ SNR / demod-quality limited
+//
+//   - tight low-mismatch peak under rot=0 ≈ clean C4FM
+//
+//   - peak under rot=2 only ≈ inverted discriminator polarity
+//
+//   - peak under rot=1 or rot=3 ≈ I/Q swap or 90° clock-recovery slip
+//     (non-physical on a C4FM stream — strong evidence of a bug)
+//
+//   - no peak under any rotation ≈ SNR / demod-quality limited
 //
 //   - hit count per rotation: how many positions had a best-mismatch ≤
 //     tolerance under each rotation. Asymmetry across rotations is the
@@ -222,7 +226,7 @@ func (d *iqDiag) printReport(w io.Writer) {
 		for pos := 0; pos+fswLen <= len(d.dibits); pos++ {
 			mismatch := 0
 			for kk := 0; kk < fswLen; kk++ {
-				if ((d.dibits[pos+kk]+uint8(winner))&3) != p25phase1.FrameSyncWord[kk] {
+				if ((d.dibits[pos+kk] + uint8(winner)) & 3) != p25phase1.FrameSyncWord[kk] {
 					mismatch++
 				}
 			}
@@ -266,7 +270,7 @@ func (d *iqDiag) printReport(w io.Writer) {
 			}
 			mismatch := 0
 			for kk := 0; kk < fswLen; kk++ {
-				if ((d.dibits[pos+kk]+uint8(winner))&3) != p25phase1.FrameSyncWord[kk] {
+				if ((d.dibits[pos+kk] + uint8(winner)) & 3) != p25phase1.FrameSyncWord[kk] {
 					mismatch++
 				}
 			}
@@ -326,4 +330,3 @@ func modalInt(sorted []int) int {
 	}
 	return bestVal
 }
-
