@@ -7,6 +7,24 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Added
+
+- **HackRF One and Airspy R2 / Mini pure-Go drivers.** New
+  `internal/sdr/hackrf` and `internal/sdr/airspy` packages implement
+  the `sdr.Driver` / `sdr.Device` interfaces on top of the same
+  pure-Go USB transport (USBDEVFS / WinUSB / IOKit) the RTL-SDR
+  driver uses — no `libhackrf` or `libairspy` at build or runtime,
+  so the zero-CGO single-binary guarantee holds. The drivers speak
+  the documented libhackrf and libairspy USB vendor protocols
+  (transceiver / receiver mode, frequency, sample rate, LNA / VGA /
+  mixer / amp / bias-tee gains, bulk-IN sample reaper with real-time
+  decode of HackRF int8 IQ and Airspy INT16_IQ into complex64). Both
+  register themselves with the SDR driver registry on init, so a
+  blank import from `cmd/gophertrunk` is the only wiring needed. The
+  wire protocols are unit-tested against `usb.MockTransport`; on-air
+  validation against attached HackRF / Airspy hardware is the
+  documented follow-up.
+
 ### Fixed
 
 - **RTL-SDR dongles now open even with the DVB kernel driver still

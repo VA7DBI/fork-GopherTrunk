@@ -16,9 +16,11 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/config"
 	gtlog "github.com/MattCheramie/GopherTrunk/internal/log"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
-	// Pure-Go RTL-SDR driver. Registers under the canonical name
-	// "rtlsdr"; PR-09 removed the legacy CGO librtlsdr backend that
-	// previously coexisted under "rtlsdr-cgo".
+	// Pure-Go SDR drivers. Each registers itself under its canonical
+	// name on init; the blank import is what actually links the
+	// package into the binary.
+	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/airspy"
+	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/hackrf"
 	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/purego"
 	"github.com/MattCheramie/GopherTrunk/internal/version"
 
