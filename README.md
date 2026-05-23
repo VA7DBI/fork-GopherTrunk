@@ -5,7 +5,7 @@
 <h1 align="center">GopherTrunk</h1>
 
 <p align="center">
-  <strong>Pure-Go digital-trunking radio scanner engine for RTL-SDR.</strong><br>
+  <strong>Pure-Go digital-trunking radio scanner engine for RTL-SDR · HackRF · Airspy.</strong><br>
   P25 · DMR · TETRA · NXDN · Motorola Type II · EDACS · LTR · MPT 1327 · dPMR · D-STAR · YSF.<br>
   Zero CGO, single static binary, headless daemon + Bubbletea TUI cockpit + browser web console.
 </p>
@@ -23,7 +23,7 @@
 
 ## What is this?
 
-GopherTrunk is a software-defined-radio scanner that follows digital trunked-radio voice calls and decodes them to audio. It runs on a pool of cheap RTL-SDR dongles, has no C dependencies (no `librtlsdr` / `libusb` at build or runtime), and ships as a single ~10 MB static binary for Linux, macOS, and Windows.
+GopherTrunk is a software-defined-radio scanner that follows digital trunked-radio voice calls and decodes them to audio. It runs on a pool of RTL-SDR, HackRF One and Airspy R2 / Mini dongles, has no C dependencies (no `librtlsdr` / `libhackrf` / `libairspy` / `libusb` at build or runtime), and ships as a single ~10 MB static binary for Linux, macOS, and Windows. Completed calls stream to Broadcastify Calls, RdioScanner, OpenMHz, and live Icecast / ShoutCast — out of the box, no `libmp3lame`.
 
 Why does this exist? Read **[The Story of GopherTrunk](https://gophertrunk.org/story.html)** — the personal backstory behind the project, from a kid listening to an analog scanner to a pure-Go digital trunking scanner built with the help of modern AI tooling.
 
@@ -54,7 +54,7 @@ Full per-OS install (Windows installer / macOS Apple Silicon / Linux aarch64): *
 
 **Amateur-radio digital modes** — D-STAR (JARL DV-mode K=5 R=½ Viterbi + PN15 scrambler + 22×30 interleaver) and Yaesu System Fusion (C4FM + FICH trellis).
 
-**Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25 Phase 2 / DMR / NXDN) vocoders implemented in Go, no DVSI / mbelib dependency. Per-call WAV + raw-frame sidecars; live PCM playback via direct ALSA / WASAPI / CoreAudio (no `libasound2` at runtime).
+**Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25 Phase 2 / DMR) vocoders implemented in Go, no DVSI / mbelib dependency. Analog trunking (Motorola Type II / SmartZone, EDACS, LTR, MPT 1327) decodes voice through the composer's FM chain; EDACS ProVoice stays on the `.raw` sidecar path. Per-call WAV + raw-frame sidecars; live PCM playback via direct ALSA / WASAPI / CoreAudio (no `libasound2` at runtime).
 
 **SDR layer** — Pure-Go drivers for **RTL-SDR**, **HackRF One** and **Airspy R2 / Mini**, all sharing the same pure-Go USB transport (USBDEVFS on Linux, WinUSB on Windows, IOKit on macOS) — no `librtlsdr` / `libhackrf` / `libairspy` at build or runtime. The RTL-SDR backend includes wire-level ports of every osmocom tuner (R820T / R820T2 / R828D / E4000 / FC0012 / FC0013 / FC2580) with librtlsdr-parity init burst chunking, EPIPE warmup + reset on Open, balanced LNA+Mixer gain, and the same `rtlsdr_open` probe order + GPIO 4/5/6 dances for non-R820T detection. The HackRF and Airspy drivers speak the documented libhackrf / libairspy USB vendor protocols (set freq / sample rate / gains / bias-tee, bulk-IN sample reaper, real-time sample decode to complex64); on-air validation against attached HackRF / Airspy hardware is the documented follow-up, but the wire protocols are exercised under unit tests against `usb.MockTransport`. Multi-device pool with role assignment, per-device gain / PPM / bias-tee.
 
@@ -62,13 +62,19 @@ Full per-OS install (Windows installer / macOS Apple Silicon / Linux aarch64): *
 
 **API + observability** — gRPC + HTTP/SSE + WebSocket surfaces, optional TLS + bearer-token auth on mutations, Prometheus `/metrics`, pure-Go SQLite call log, in-process pub/sub event bus with typed payloads.
 
-**Outbound streaming + call distribution** — completed calls are encoded to MP3 (pure-Go, no `libmp3lame`) and streamed to **Broadcastify Calls**, **RdioScanner**, **OpenMHz**, and live **Icecast / ShoutCast** mountpoints, with bounded exponential-backoff retry and per-feed system filtering (`internal/broadcast`, `GET /api/v1/broadcast`).
+**Outbound call streaming** — completed calls are encoded to MP3 with a pure-Go encoder (no `libmp3lame`) and streamed to **Broadcastify Calls**, **RdioScanner**, **OpenMHz**, and live **Icecast / ShoutCast** mountpoints. The Icecast backend keeps the source connection alive with pre-encoded silence so listeners never see a starved mountpoint between calls; every backend uses bounded exponential-backoff retry, per-feed system filtering, and a per-talkgroup opt-out. Live counters at `GET /api/v1/broadcast` (`internal/broadcast`).
 
-**Baseband recording + offline replay** — wideband IQ recording to a two-channel 16-bit WAV (the SDRtrunk layout), and a replay driver that mounts those recordings (and SDRtrunk's) back into the SDR pool as virtual tuners so a capture decodes with no radio attached (`internal/sdr/baseband`).
+**Baseband recording + offline replay** — wideband IQ recording to a two-channel 16-bit WAV (the SDRtrunk layout: in-phase in channel 1, quadrature in channel 2), and a replay driver that mounts those recordings (or SDRtrunk's) back into the SDR pool as virtual tuners so a capture decodes with no radio attached. Looping replay simulates a continuous source (`internal/sdr/baseband`).
 
-**Location + affiliation** — over-the-air geographic fixes decode through a strict NMEA-0183 parser into a `KindLocation` event, a `location_log` SQLite table and `GET /api/v1/locations`; a protocol-agnostic affiliation tracker maintains the live "which unit is on which talkgroup" table at `GET /api/v1/affiliations`. A decoded-message log writes a rotating, human-readable text log of every trunking event.
+**Location subsystem (GPS / NMEA)** — over-the-air geographic fixes decode through a strict NMEA-0183 GGA/RMC parser with checksum verification (the format Tait CCDI and many MOTOTRBO GPS profiles transport verbatim) into a `KindLocation` event, a `location_log` SQLite table, and `GET /api/v1/locations` for map display (`internal/radio/location`).
 
-**Per-talkgroup policy** — priority, lockout, scan-list membership, **stream** (broadcast opt-out), **record** (recorder opt-out), **mute** (live-audio opt-out) and an **icon** name — all settable per talkgroup via CSV / JSON and `PATCH /api/v1/talkgroups/{id}`.
+**Affiliation tracker** — a protocol-agnostic in-memory table of which radio unit is currently on which talkgroup, fed by `KindGrant` (a grant's source/group is ground truth), explicit `KindAffiliation` events, and `KindUnitRegistration`. Works uniformly across P25, DMR (all tiers and vendors), NXDN and the rest with no per-protocol decoding; idle units expire after a TTL. Served at `GET /api/v1/affiliations`.
+
+**Decoded-message log** — a rotating, human-readable text log of every trunking event the bus carries — grants, control-channel lock/loss, affiliations, registrations, patches, talker aliases, locations, tone alerts, decode errors. Enabled via the `log.message_log` config block (`internal/log`).
+
+**Vendor-aware DMR Tier III** — the control-channel decoder dispatches every CSBK on its feature-set ID (FID) before opcode, so vendor CSBKs are routed to a vendor handler instead of being misdecoded as standard ETSI grants. Motorola Capacity Plus / Capacity Max voice grants (FID 0x10) decode to real grants and the Capacity Plus rest channel is tracked from the vendor system-info CSBK. Connect Plus and Hytera XPT CSBKs are recognised; bit-exact decoding of their proprietary payloads is the documented follow-up.
+
+**Per-talkgroup policy** — priority, lockout, scan-list membership, **stream** (broadcast opt-out), **record** (recorder opt-out), **mute** (live-audio opt-out) and an **icon** name — all settable per talkgroup via CSV / JSON and `PATCH /api/v1/talkgroups/{id}`, all surfaced in the talkgroup API DTO. Mute is wired through the player sink: a muted talkgroup's PCM is dropped before the speakers without affecting recording or streaming.
 
 **Operator surfaces** — first-class Bubbletea TUI cockpit with 12 panels (including a live Import panel and inline-editable Settings) and a sibling **web console** (a pure-browser React/Tailwind SPA, either embedded into the daemon binary at build time or shipped pre-built as `gophertrunk-web/` next to the binary — see [`web/README.md`](web/README.md) and the [§Web console](#web-console) section); the daemon binary doubles as its own UI launcher (`gophertrunk -tui` / `-web` / `-headless` — see [`docs/launcher.md`](docs/launcher.md)); conventional FM scanner with CTCSS / DCS squelch, two-tone QC-II paging detector, runtime channel lockout, manual VFO tune. Live `PATCH /api/v1/settings` writes operator edits straight to `config.yaml` (comments preserved) and hot-reloads what it safely can; `POST /api/v1/import` accepts PDF / CSV uploads, parses + previews, then merges into the running daemon.
 
