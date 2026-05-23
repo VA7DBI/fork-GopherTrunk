@@ -94,7 +94,19 @@ func TestDaemonCCDecodesDPMR(t *testing.T) {
 	base := "http://" + cfg.API.HTTPAddr
 	waitReachable(t, base+"/api/v1/health", 3*time.Second)
 
-	deadline := time.After(5 * time.Second)
+	// 30s deadline — six times the value the P25 / DMR / NXDN
+	// integration tests use, but well over the empirically observed
+	// worst-case under -race (about 10 s on 1-in-30 runs locally; the
+	// other 29 finish in 0.4 s). dPMR runs at half the symbol rate
+	// (2400 vs 4800 sym/s) so the same mock-SDR IQ chunk carries half
+	// the dibits per second, and the daemon goroutine occasionally
+	// gets scheduled out under the race detector long enough that the
+	// 5 s deadline the sibling tests use is borderline. The 30 s ceiling
+	// keeps the CI cycle bounded while removing the flake (the proper
+	// fix — making the test deterministic on event ordering rather
+	// than wall time — is a larger refactor across all the
+	// integration-cc tests).
+	deadline := time.After(30 * time.Second)
 	var locked bool
 WaitLoop:
 	for !locked {
@@ -117,7 +129,7 @@ WaitLoop:
 			locked = true
 			break WaitLoop
 		case <-deadline:
-			t.Fatalf("no cc.locked event arrived within 5s")
+			t.Fatalf("no cc.locked event arrived within 30s")
 		}
 	}
 
