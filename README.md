@@ -440,6 +440,34 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **P25 Phase 1 NID BCH(63,16,11) generator polynomial
+  corrected — control channel now locks on real on-air
+  captures (issue #275).** The constant in
+  `internal/radio/framing/bch.go` was off by 10 exponents
+  from the TIA-102.BAAA Annex A generator polynomial: the
+  encoder + decoder used the same wrong polynomial so the
+  synthetic-modulator round-trip tests passed, but every
+  on-air NID failed BCH decoding because the spec polynomial
+  is what the over-the-air signal is actually encoded with.
+  Replay against the Mt Anakie capture
+  (`mt-anakie-420087500-960k-g49.iq`) failed 197/197 NID
+  decodes pre-fix, 195/197 of which were "all 28 BCH-uncorrectable"
+  and the rest pegged at the `±NIDSearchSpan` boundary at
+  `errs=11`. Post-fix the same capture locks the control
+  channel on the very first frame (NAC=0x164, DUID=TSDU,
+  `errs=0` clean decode on 195 of 197 frames). Companion
+  bug also fixed: the 64th NID bit is a fixed per-DUID flag
+  (0 for HDU/TDU/TSDU/PDU/TDULC, 1 for LDU1/LDU2 per the
+  spec and cross-checked against OP25) rather than an
+  overall parity over the 63-bit BCH codeword as the
+  pre-fix code assumed. A regression test
+  (`TestEncodeNIDBitsMtAnakieVector`) pins the exact 32-dibit
+  Mt Anakie NID so the polynomial and the per-DUID parity
+  table together can never regress without the test naming
+  the byte that changed. The remaining 2 NID-BCH errors on
+  the Mt Anakie capture and the 195 TSBK-CRC failures are
+  separate demod-quality / TSBK trellis issues investigated
+  next.
 - **P25 Phase 1 C4FM symbol-timing recovery verified
   correct; #275 reproduction harness made faithful.**
   Following the Mueller-Müller chunk-boundary fix, the

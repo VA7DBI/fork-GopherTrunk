@@ -3,21 +3,32 @@ package framing
 // BCH(63,16,11) is the binary BCH code that protects the P25 Phase 1
 // Network ID (NID) field on every transmitted frame. The code carries 16
 // information bits in a 63-bit codeword (47 parity bits) and corrects up
-// to 11 bit errors per codeword. P25 then appends a single even-parity
-// bit to form the 64-bit NID actually transmitted on-air.
+// to 11 bit errors per codeword. P25 then appends a single bit (a fixed
+// per-DUID value, NOT an overall parity — see internal/radio/p25/phase1
+// nid.go for that lookup) to form the 64-bit NID actually transmitted
+// on-air.
 //
-// Generator polynomial (TIA-102.BAAA-A §6.2):
+// Generator polynomial g(x), TIA-102.BAAA Annex A.4 — the product of
+// the binary minimal polynomials of α, α^3, α^5, …, α^21 over
+// GF(2^6) (primitive polynomial p(x) = x^6 + x + 1):
 //
-//	g(x) = x^47 + x^46 + x^45 + x^44 + x^41 + x^40 + x^39 + x^36 + x^32
-//	     + x^31 + x^30 + x^29 + x^25 + x^23 + x^22 + x^21 + x^20 + x^17
-//	     + x^16 + x^14 + x^11 + x^9  + x^8  + x^7  + x^4  + x^3  + 1
+//	g(x) = x^47 + x^46 + x^43 + x^42 + x^40 + x^39 + x^36 + x^33
+//	     + x^32 + x^27 + x^25 + x^24 + x^23 + x^22 + x^20 + x^19
+//	     + x^18 + x^16 + x^13 + x^12 + x^11 + x^9  + x^8  + x^5
+//	     + x^3  + x    + 1
 //
 // Codewords are stored systematically with the 16 information bits in
 // positions 62..47 (bit 62 = MSB of info, bit 47 = LSB) and the 47
 // parity bits in positions 46..0. We pack the 63-bit codeword into the
 // low bits of a uint64 with bit 0 = lowest-order x^0 coefficient.
+//
+// Issue #275 / PR-after: the original constant here was wrong (off by
+// 10 exponents — see bch_test.go), so encoded codewords had non-zero
+// syndromes under the spec α^i evaluation and real on-air NIDs never
+// decoded. Our synthetic-modulator tests passed only because the
+// encoder and decoder both used the same wrong polynomial.
 
-const bch6316Generator uint64 = 0xF391E2F34B99
+const bch6316Generator uint64 = 0xCD930BDD3B2B
 
 // BCHEncode63_16 encodes 16 information bits into a 63-bit BCH codeword.
 // Only the low 16 bits of data are used. The result occupies the low 63

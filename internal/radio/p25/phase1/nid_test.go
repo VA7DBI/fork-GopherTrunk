@@ -105,3 +105,31 @@ func TestEncodeNIDBitsRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestEncodeNIDBitsMtAnakieVector locks down the spec BCH(63,16,11)
+// generator polynomial and the per-DUID parity-bit convention against
+// the only ground-truth NID we have: the 32-dibit pattern observed at
+// every FSW on the Mt Anakie capture (issue #275).
+//
+// The site transmits NAC=0x164, DUID=7 (TSDU). After stripping the
+// status symbol at on-air position 35 (NID dibit position 11), the
+// on-air NID is 32 dibits long. If the encoder produces ANY other
+// byte sequence here, either the BCH polynomial is wrong (pre-fix this
+// disagreed in 26 of the 47 parity bits) or the per-DUID parity-bit
+// table is wrong (pre-fix this set the wrong final bit). Both bugs
+// silently passed the round-trip tests because the encoder and decoder
+// shared the same wrong assumption.
+func TestEncodeNIDBitsMtAnakieVector(t *testing.T) {
+	want := []uint8{0, 1, 1, 2, 1, 0, 1, 3, 2, 1, 2, 1, 3, 0, 1, 0, 1, 1, 1, 0, 3, 2, 2, 0, 3, 3, 1, 1, 3, 0, 3, 0}
+	bits := EncodeNIDBits(0x164, DUIDTrunkingSignaling)
+	got := make([]uint8, 32)
+	for i := 0; i < 32; i++ {
+		got[i] = (bits[2*i] << 1) | bits[2*i+1]
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("dibit[%d] = %d, want %d (full got=%v, want=%v)", i, got[i], w, got, want)
+			return
+		}
+	}
+}
