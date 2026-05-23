@@ -92,15 +92,70 @@ func ParseNID(bits []byte) (NID, int, error) {
 
 // NIDFromDibits is a convenience wrapper that takes 32 dibits (= 64 bits).
 func NIDFromDibits(dibits []uint8) (NID, int, error) {
+	nid, errs, _, err := NIDFromDibitsWithErrors(dibits)
+	return nid, errs, err
+}
+
+// NIDFromDibitsWithErrors is identical to NIDFromDibits but additionally
+// returns a 32-entry per-dibit bit-error count of the received NID
+// against the BCH-corrected codeword (with the corrected parity bit
+// folded into dibit 31). Each entry is 0, 1, or 2. The pattern is
+// always returned; on an uncorrectable codeword it is the zero array
+// (no comparison was possible). On ErrNIDParity the pattern reflects
+// the parity bit's contribution to dibit 31.
+//
+// The searchNID closest-miss diag uses this to surface *where* in the
+// NID the residual bit errors cluster — distinguishing post-FSW timing
+// slip (errors at one end of the NID), a status-symbol-phase fault
+// (errors clustered around the tail dibits), and SNR-limited demod
+// corruption (errors distributed across all 32 dibits). Issue #275.
+func NIDFromDibitsWithErrors(dibits []uint8) (NID, int, [32]uint8, error) {
+	var pattern [32]uint8
 	if len(dibits) < 32 {
-		return NID{}, -1, fmt.Errorf("p25/phase1: NID requires 32 dibits, got %d", len(dibits))
+		return NID{}, -1, pattern, fmt.Errorf("p25/phase1: NID requires 32 dibits, got %d", len(dibits))
 	}
 	bits := make([]byte, 64)
 	for i := 0; i < 32; i++ {
 		bits[2*i] = (dibits[i] >> 1) & 1
 		bits[2*i+1] = dibits[i] & 1
 	}
-	return ParseNID(bits)
+	var cw uint64
+	for i := 0; i < 63; i++ {
+		if bits[i]&1 != 0 {
+			cw |= uint64(1) << uint(62-i)
+		}
+	}
+	rxParity := bits[63] & 1
+
+	data, errs := framing.BCHDecode63_16(cw)
+	if errs < 0 {
+		return NID{}, -1, pattern, ErrNIDUncorrectable
+	}
+	corrected := framing.BCHEncode63_16(data)
+	correctedParity := framing.BCH6316ParityBit(corrected)
+
+	// Per-dibit error count: bit i of the received codeword vs bit i of
+	// the BCH-corrected codeword, with the parity bit (bit 63) folded
+	// into dibit 31.
+	for i := 0; i < 63; i++ {
+		var corBit byte
+		if corrected&(uint64(1)<<uint(62-i)) != 0 {
+			corBit = 1
+		}
+		if bits[i] != corBit {
+			pattern[i/2]++
+		}
+	}
+	if rxParity != correctedParity {
+		pattern[31]++
+	}
+
+	if correctedParity != rxParity {
+		return NID{}, errs, pattern, ErrNIDParity
+	}
+	nac := uint16((data >> 4) & 0xFFF)
+	duid := DUID(data & 0xF)
+	return NID{NAC: nac, DUID: duid}, errs, pattern, nil
 }
 
 // EncodeNIDBits builds the 64 transmitted NID bits (MSB-first) for a

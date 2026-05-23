@@ -318,7 +318,8 @@ func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 		c.log.Debug("nid corrected", "errs", best.errs, "nac", best.nid.NAC,
 			"rot", best.rot, "delta", best.delta, "strip", best.strip,
 			"corroborated", best.errs > NIDAcceptErrs,
-			"at_boundary", atSearchBoundary(best.delta))
+			"at_boundary", atSearchBoundary(best.delta),
+			"err_pattern", formatErrPattern(best.errPattern))
 	}
 	if best.nid.DUID != DUIDTrunkingSignaling {
 		// Some non-control DUID — record but don't lock.
@@ -360,14 +361,18 @@ func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 // buf starting at nidStart+delta, with interleaved status symbols
 // stripped (strip) or taken contiguously, and the dibit alphabet
 // rotated by rot. tsbkStart is the index the matching TSBK gather
-// begins at.
+// begins at. errPattern is a 32-entry per-dibit bit-error count of the
+// received NID vs the BCH-corrected codeword (issue #275 diag —
+// surfaces error clustering on the closest-miss path so timing slip,
+// status-phase fault, and SNR-limited corruption are distinguishable).
 type nidGuess struct {
-	delta     int
-	strip     bool
-	rot       uint8
-	nid       NID
-	errs      int
-	tsbkStart int
+	delta      int
+	strip      bool
+	rot        uint8
+	nid        NID
+	errs       int
+	tsbkStart  int
+	errPattern [32]uint8
 }
 
 // searchNID evaluates the bounded grid of NID-alignment hypotheses for
@@ -387,6 +392,11 @@ type nidGuess struct {
 // summarises the closest miss for the failure log, turning a silent
 // reject into a measurement (a low marginal errs that fails only TSBK
 // corroboration points at demod-quality corruption, not misalignment).
+// The diag includes an err_pattern=<32-char> field — the per-dibit
+// bit-error count of the closest hypothesis vs its BCH-corrected
+// codeword — so a reporter can see where errors cluster (one end =
+// timing slip, near dibit 31 = status-phase fault, uniform = SNR
+// limited) without re-running the decode.
 func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nidGuess, bool, string) {
 	var best nidGuess
 	found := false
@@ -405,18 +415,18 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 			rawNID, tsbkStart := gatherFrameDibits(buf, start, 32, fswStart, strip)
 			for _, rot := range c.rotations {
 				tried++
-				nid, errs, err := NIDFromDibits(rotateDibits(rawNID, rot))
+				nid, errs, pattern, err := NIDFromDibitsWithErrors(rotateDibits(rawNID, rot))
 				if err != nil {
 					if errs < 0 {
 						uncorrectable++
 					} else if closestMiss < 0 || errs < closestMiss {
 						closestMiss = errs
-						missAt = nidGuess{delta: delta, strip: strip, rot: rot, errs: errs}
+						missAt = nidGuess{delta: delta, strip: strip, rot: rot, errs: errs, errPattern: pattern}
 					}
 					continue
 				}
 				cand := nidGuess{delta: delta, strip: strip, rot: rot,
-					nid: nid, errs: errs, tsbkStart: tsbkStart}
+					nid: nid, errs: errs, tsbkStart: tsbkStart, errPattern: pattern}
 				if errs > NIDAcceptErrs {
 					// Parity-valid but too far from the received word for
 					// BCH+parity to tell a noisy real NID from a bad
@@ -453,13 +463,13 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 		}
 		m := marginal[0]
 		return best, false, fmt.Sprintf(
-			"no NID corroborated over %d guesses; closest marginal errs=%d at delta=%d strip=%v rot=%d, TSBK uncorroborated%s",
-			tried, m.errs, m.delta, m.strip, m.rot, boundaryNote(m.delta))
+			"no NID corroborated over %d guesses; closest marginal errs=%d at delta=%d strip=%v rot=%d, TSBK uncorroborated%s; err_pattern=%s",
+			tried, m.errs, m.delta, m.strip, m.rot, boundaryNote(m.delta), formatErrPattern(m.errPattern))
 	}
 	if closestMiss >= 0 {
 		return best, false, fmt.Sprintf(
-			"no NID within accept gate over %d guesses; closest errs=%d at delta=%d strip=%v rot=%d%s",
-			tried, missAt.errs, missAt.delta, missAt.strip, missAt.rot, boundaryNote(missAt.delta))
+			"no NID within accept gate over %d guesses; closest errs=%d at delta=%d strip=%v rot=%d%s; err_pattern=%s",
+			tried, missAt.errs, missAt.delta, missAt.strip, missAt.rot, boundaryNote(missAt.delta), formatErrPattern(missAt.errPattern))
 	}
 	return best, false, fmt.Sprintf(
 		"no NID within accept gate over %d guesses; all %d BCH-uncorrectable", tried, uncorrectable)
@@ -484,6 +494,28 @@ func boundaryNote(delta int) string {
 		return fmt.Sprintf(" — best alignment at search boundary (±%d); true offset may exceed span", NIDSearchSpan)
 	}
 	return ""
+}
+
+// formatErrPattern renders a 32-entry per-dibit bit-error count as a
+// 32-character ASCII string of '0'/'1'/'2' digits, dibit 0 leftmost.
+//
+// Reading the string traces the NID from the first dibit after the FSW
+// (left) to the last dibit before the TSBK (right). Issue #275: errors
+// clustered at one end signal a post-FSW symbol-timing slip; errors
+// clustered around dibits 25–31 signal a status-symbol-phase fault;
+// errors uniformly distributed across all 32 dibits signal SNR-limited
+// demod corruption. Values above 2 are pathological (a dibit has only
+// two bits), but the formatter caps at '9' rather than panic so a
+// future change to the upstream counter cannot break log parsing.
+func formatErrPattern(p [32]uint8) string {
+	out := make([]byte, 32)
+	for i, c := range p {
+		if c > 9 {
+			c = 9
+		}
+		out[i] = '0' + c
+	}
+	return string(out)
 }
 
 // tsbkCorroborates reports whether the 98-dibit TSBK channel block that
