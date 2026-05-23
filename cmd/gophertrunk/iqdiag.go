@@ -301,6 +301,23 @@ func (d *iqDiag) printReport(w io.Writer) {
 			n1, e1, _, err1 := p25phase1.NIDFromDibitsWithErrors(stripped)
 			fmt.Fprintf(w, "diag:   strip=false: errs=%d nac=%#x duid=%d err=%v\n", e0, n0.NAC, n0.DUID, err0)
 			fmt.Fprintf(w, "diag:   strip=true:  errs=%d nac=%#x duid=%d err=%v\n", e1, n1.NAC, n1.DUID, err1)
+			// TSBK[0..23] dump — if this is a real control channel the
+			// TSBK content varies across frames; a fixed pattern at this
+			// 360-dibit cadence is a periodic broadcast (probably not a
+			// TSDU at all). Comparing TSBKs across the first few FSWs
+			// distinguishes the two without running the trellis decoder.
+			tsbkLen := 24
+			if pos+fswLen+32+tsbkLen <= len(d.dibits) {
+				fmt.Fprint(w, "diag:   tsbk[0..23] ")
+				for j := 0; j < tsbkLen; j++ {
+					tb := (d.dibits[pos+fswLen+32+j] + uint8(winner)) & 3
+					fmt.Fprintf(w, "%d", tb)
+					if (j+1)%4 == 0 {
+						fmt.Fprint(w, " ")
+					}
+				}
+				fmt.Fprintln(w)
+			}
 		}
 	}
 }
