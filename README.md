@@ -440,6 +440,27 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **Bare `go build` now auto-stamps the version line from
+  git VCS info (issue #275 retest hygiene).** A user running
+  `go build -o ./bin/gophertrunk ./cmd/gophertrunk` (the
+  intuitive Go-toolchain command, vs the `make build` the
+  README recommends) used to get a binary whose
+  `gophertrunk version` reported just `dev` and whose
+  `ccdecoder: p25/phase1 pipeline configured` log line
+  printed `build=dev`. That defeated the stale-build
+  detection commit `eb543eb` added specifically for issue
+  #275 retest cycles, where pasted decoder log excerpts are
+  often the only signal of which fixes are actually loaded.
+  `internal/version` now falls back to
+  `runtime/debug.ReadBuildInfo()`'s `vcs.revision` /
+  `vcs.modified` / `vcs.time` settings (which Go 1.18+
+  auto-injects on any git-checkout build) when `Commit` /
+  `BuildTime` aren't set by `-ldflags`. Explicit `-ldflags`
+  injection (Makefile, release workflow) still wins — the
+  fallback fires per-field on the empty defaults only. A
+  `-dirty` suffix on the commit sha surfaces an uncommitted
+  working tree at build time so a partially-applied retest
+  is visible at a glance.
 - **P25 Phase 1 TSBK CRC convention corrected — TSDU
   trunking blocks now decode on real on-air captures
   (issue #275).** The TSBK trailer in `internal/radio/p25/phase1/tsbk.go`
@@ -2366,7 +2387,7 @@ and DVB-driver blacklisting on Linux.
 ### Build, test, run
 
 ```sh
-make build                    # produces ./bin/gophertrunk
+make build                    # produces ./bin/gophertrunk (preferred — injects -ldflags version stamp)
 make test                     # go test -race ./...
 make web-test                 # Vitest + React Testing Library against the SPA panels
 make integration              # boots the wired daemon end-to-end (no SDR needed)
@@ -2409,6 +2430,14 @@ make integration-cc-ysf       # YSF "lights up" — 4800-baud C4FM 480-dibit fra
 ./bin/gophertrunk import-pdf -wizard
 ./bin/gophertrunk import-pdf -wizard -pdf maricopa.pdf
 ```
+
+A bare `go build -o ./bin/gophertrunk ./cmd/gophertrunk` works too —
+the binary auto-stamps its version line from Go's built-in VCS info
+(e.g. `dev (sha=abc1234, built=…)`), which matches what `make build`
+produces minus the explicit `git describe` Version prefix. Useful when
+attaching a log to an issue and you want the commit hash in the
+`ccdecoder: p25/phase1 pipeline configured` line without remembering
+the `-ldflags` incantation.
 
 A starter [`config.example.yaml`](config.example.yaml) is in the
 repo root — copy it, set the `serial` of your dongle from
