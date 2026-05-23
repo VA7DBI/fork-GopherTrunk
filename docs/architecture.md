@@ -34,7 +34,9 @@ daemon behaves like a high-end digital-trunking police scanner end-to-end.
 
 ┌──────────────────────────────────────────────────────────────┐
 │  internal/sdr                                                │
-│    Driver registry → rtlsdr (pure-Go), mock (file replay)    │
+│    Driver registry → rtlsdr · hackrf · airspy (all pure-Go,  │
+│    shared USB transport at rtlsdr/usb); baseband (WAV IQ     │
+│    replay as virtual tuners); mock (raw u8/f32 file replay)  │
 │    Pool: enumerates, opens, role-assigns, supervises;        │
 │    publishes sdr.attached/sdr.detached events with per-      │
 │    device SDRStatus payloads                                 │
@@ -126,10 +128,22 @@ constructed only when its config section is present:
 ## Driver registry
 
 `internal/sdr` maintains a process-global registry. Each backend
-(pure-Go RTL-SDR under `internal/sdr/rtlsdr/purego`, file-replay
-mock, future HackRF/Airspy) calls `sdr.Register` from its `init()`
-so the binary's import set chooses what hardware it can talk to.
-`cmd/gophertrunk` blank-imports the drivers it ships with.
+calls `sdr.Register` from its `init()` so the binary's import set
+chooses what hardware it can talk to:
+
+- `internal/sdr/rtlsdr/purego` (`rtlsdr`) — pure-Go RTL2832U +
+  every osmocom tuner.
+- `internal/sdr/hackrf` (`hackrf`) — pure-Go libhackrf protocol
+  port over the shared `rtlsdr/usb` transport.
+- `internal/sdr/airspy` (`airspy`) — pure-Go libairspy protocol
+  port over the shared transport.
+- `internal/sdr/baseband` (`baseband-replay`) — mounts recorded
+  IQ WAVs as virtual tuners. Registered dynamically by the daemon
+  when `baseband.replay` is configured.
+
+`cmd/gophertrunk` blank-imports the three real-hardware drivers
+unconditionally; the baseband-replay driver registers at runtime
+when the operator points at a recording.
 
 ## Build tags
 
