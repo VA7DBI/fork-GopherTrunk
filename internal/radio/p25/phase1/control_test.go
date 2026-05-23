@@ -592,6 +592,63 @@ func TestControlChannelLocksThroughPostFSWSlipSmallChunks(t *testing.T) {
 	}
 }
 
+// TestControlChannelLocksThroughWiderPostFSWSlip confirms the
+// per-instance Options.NIDSearchSpan override actually widens the
+// search beyond the package-level constant. A 10-dibit post-FSW slip
+// is unreachable for a default ControlChannel (NIDSearchSpan=6) but
+// must lock for one constructed with Options{NIDSearchSpan: 12} — the
+// bisect knob the replay subcommand exposes for issue #275 retests
+// where the closest miss keeps pegging at the ±6 boundary.
+func TestControlChannelLocksThroughWiderPostFSWSlip(t *testing.T) {
+	const slip = 10
+	base := buildLockedStream(10, 0x293, DUIDTrunkingSignaling, OpRFSSStatusBroadcast)
+	slipped := make([]uint8, 0, len(base)+slip)
+	slipped = append(slipped, base[:34]...)
+	for i := 0; i < slip; i++ {
+		slipped = append(slipped, 0)
+	}
+	slipped = append(slipped, base[34:]...)
+
+	// Default span must NOT lock — guards that the test fixture's
+	// slip really does exceed the production grid (and so the wider
+	// span below is the cause of the recovery, not noise).
+	{
+		bus := events.NewBus(8)
+		sub := bus.Subscribe()
+		cc := New(Options{Bus: bus, FrequencyHz: 851_000_000})
+		cc.Process(slipped, 0)
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindCCLocked {
+				t.Fatalf("default span locked at slip=%d — fixture no longer exercises >±%d offsets", slip, NIDSearchSpan)
+			}
+		case <-time.After(100 * time.Millisecond):
+			// no lock expected — pass
+		}
+		sub.Close()
+		bus.Close()
+	}
+
+	// Wider span MUST lock — proves the per-instance override drives
+	// the grid bounds in searchNID.
+	bus := events.NewBus(8)
+	sub := bus.Subscribe()
+	cc := New(Options{Bus: bus, FrequencyHz: 851_000_000, NIDSearchSpan: 12})
+	cc.Process(slipped, 0)
+	select {
+	case ev := <-sub.C:
+		if ev.Kind != events.KindCCLocked {
+			t.Errorf("kind = %s, want cc.locked", ev.Kind)
+		} else if ls := ev.Payload.(LockState); ls.NAC != 0x293 {
+			t.Errorf("NAC = %#x, want 0x293", ls.NAC)
+		}
+	case <-time.After(time.Second):
+		t.Errorf("no lock at slip=%d under NIDSearchSpan=12 — per-instance span did not widen the grid", slip)
+	}
+	sub.Close()
+	bus.Close()
+}
+
 // TestSearchBoundaryHelpers locks down the boundary-pegged diag the
 // next #275 field retest will hinge on. The two helpers — atSearchBoundary
 // and boundaryNote — together turn the failure diag (and the success
@@ -614,11 +671,11 @@ func TestSearchBoundaryHelpers(t *testing.T) {
 		{NIDSearchSpan + 1, false}, // outside the grid; not "at" boundary
 	}
 	for _, tc := range cases {
-		got := atSearchBoundary(tc.delta)
+		got := atSearchBoundary(tc.delta, NIDSearchSpan)
 		if got != tc.atBoundary {
 			t.Errorf("atSearchBoundary(%d) = %v, want %v", tc.delta, got, tc.atBoundary)
 		}
-		note := boundaryNote(tc.delta)
+		note := boundaryNote(tc.delta, NIDSearchSpan)
 		if tc.atBoundary {
 			if !strings.Contains(note, "search boundary") {
 				t.Errorf("boundaryNote(%d) = %q, want contains \"search boundary\"", tc.delta, note)
@@ -626,6 +683,27 @@ func TestSearchBoundaryHelpers(t *testing.T) {
 		} else if note != "" {
 			t.Errorf("boundaryNote(%d) = %q, want empty", tc.delta, note)
 		}
+	}
+}
+
+// TestSearchBoundaryHelpersHonorPerInstanceSpan exercises the bisect
+// knob #275's diagnostic-widening commit added: a ControlChannel
+// constructed with Options.NIDSearchSpan=12 must report delta=±12 (not
+// ±6) as the boundary, and emit the matching note. Without this guard a
+// refactor could silently revert the helpers to the package constant
+// and quietly invalidate every wider-span replay run.
+func TestSearchBoundaryHelpersHonorPerInstanceSpan(t *testing.T) {
+	const wider = 12
+	if atSearchBoundary(NIDSearchSpan, wider) {
+		t.Errorf("atSearchBoundary(%d, %d) = true, want false (only ±%d is boundary)",
+			NIDSearchSpan, wider, wider)
+	}
+	if !atSearchBoundary(wider, wider) {
+		t.Errorf("atSearchBoundary(%d, %d) = false, want true", wider, wider)
+	}
+	note := boundaryNote(wider, wider)
+	if !strings.Contains(note, "±12") {
+		t.Errorf("boundaryNote(%d, %d) = %q, want contains \"±12\"", wider, wider, note)
 	}
 }
 
