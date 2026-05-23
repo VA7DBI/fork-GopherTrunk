@@ -1,8 +1,9 @@
-package airspy
+package airspyhf
 
 import (
 	"context"
 	"encoding/binary"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,38 +17,40 @@ func withDevice(t *testing.T) (*Device, *usb.MockTransport) {
 	return &Device{t: mt, info: sdr.Info{Driver: driverName, Serial: "test"}}, mt
 }
 
-func TestDriverEnumerateOpenSetsSampleType(t *testing.T) {
-	// On Open the driver pins INT16_IQ and reads the samplerate table
-	// (count first, then list). Provide both calls in the OpenFunc'd
-	// transport.
+func TestDriverEnumerateOpenReadsVersionAndRates(t *testing.T) {
+	// On Open the driver reads the firmware version string and the
+	// sample-rate table (count then list).
 	openCalled := false
 	enum := &usb.MockEnumerator{
 		Devices: []usb.Descriptor{
-			{Bus: 1, Address: 4, VID: vidAirspy, PID: pidAirspy, Serial: "AS1", Product: "Airspy R2", Path: "mock/1"},
+			{Bus: 1, Address: 4, VID: vidAirspyHF, PID: pidAirspyHF,
+				Serial: "HF1", Product: "Airspy HF+ Discovery", Path: "mock/1"},
 		},
 		OpenFunc: func(d usb.Descriptor) (*usb.MockTransport, error) {
 			openCalled = true
 			mt := usb.NewMockTransport()
 			count := make([]byte, 4)
-			binary.LittleEndian.PutUint32(count, 2)
-			list := make([]byte, 8)
-			binary.LittleEndian.PutUint32(list[0:4], 10_000_000)
-			binary.LittleEndian.PutUint32(list[4:8], 2_500_000)
+			binary.LittleEndian.PutUint32(count, 4)
+			list := make([]byte, 16)
+			binary.LittleEndian.PutUint32(list[0:4], 768_000)
+			binary.LittleEndian.PutUint32(list[4:8], 384_000)
+			binary.LittleEndian.PutUint32(list[8:12], 256_000)
+			binary.LittleEndian.PutUint32(list[12:16], 192_000)
 			mt.Script = []usb.CtrlExchange{
-				{BRequest: reqSetSampleType, WValue: sampleTypeInt16IQ},
+				{In: true, BRequest: reqGetVersionString, Reply: []byte("R3.0.7\x00"), N: 255},
 				{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 0, Reply: count, N: 4},
-				{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 2, Reply: list, N: 8},
+				{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 4, Reply: list, N: 16},
 			}
 			return mt, nil
 		},
 	}
 	drv := New(enum)
 	infos, err := drv.Enumerate()
-	if err != nil || len(infos) != 1 || infos[0].Serial != "AS1" {
+	if err != nil || len(infos) != 1 || infos[0].Serial != "HF1" {
 		t.Fatalf("Enumerate = %+v, err=%v", infos, err)
 	}
-	if infos[0].TunerName != "R820T (Airspy R2)" {
-		t.Errorf("Enumerate TunerName = %q, want R820T (Airspy R2)", infos[0].TunerName)
+	if infos[0].Product != "Airspy HF+ Discovery" {
+		t.Errorf("Enumerate Product = %q, want Airspy HF+ Discovery", infos[0].Product)
 	}
 	dev, err := drv.Open(0)
 	if err != nil {
@@ -57,57 +60,44 @@ func TestDriverEnumerateOpenSetsSampleType(t *testing.T) {
 		t.Fatal("OpenFunc not invoked")
 	}
 	asDev := dev.(*Device)
-	if len(asDev.rates) != 2 || asDev.rates[0] != 10_000_000 {
+	if len(asDev.rates) != 4 || asDev.rates[0] != 768_000 {
 		t.Fatalf("samplerate table = %v", asDev.rates)
+	}
+	if !strings.Contains(asDev.info.TunerName, "R3.0.7") {
+		t.Errorf("TunerName = %q, want firmware suffix", asDev.info.TunerName)
 	}
 	if err := dev.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 }
 
-func TestTunerNameDetectsMini(t *testing.T) {
+func TestVariantNameDiscoveryDualLegacy(t *testing.T) {
 	cases := []struct {
 		product string
 		want    string
 	}{
-		{"Airspy R2", "R820T (Airspy R2)"},
-		{"Airspy Mini", "R820T (Airspy Mini)"},
-		{"AIRSPY MINI", "R820T (Airspy Mini)"},
-		{"airspy mini", "R820T (Airspy Mini)"},
-		{"", "R820T (Airspy R2)"},
-		{"Generic Airspy", "R820T (Airspy R2)"},
+		{"Airspy HF+ Discovery", "Airspy HF+ Discovery"},
+		{"AIRSPY HF+ DUAL PORT", "Airspy HF+ Dual Port"},
+		{"airspy hf+ dual-port revB", "Airspy HF+ Dual Port"},
+		{"Airspy HF+", "Airspy HF+"},
+		{"", "Airspy HF+"},
+		{"random-product", "Airspy HF+"},
 	}
 	for _, c := range cases {
-		if got := tunerNameFor(c.product); got != c.want {
-			t.Errorf("tunerNameFor(%q) = %q, want %q", c.product, got, c.want)
+		if got := variantName(c.product); got != c.want {
+			t.Errorf("variantName(%q) = %q, want %q", c.product, got, c.want)
 		}
-	}
-}
-
-func TestEnumerateTagsMini(t *testing.T) {
-	enum := &usb.MockEnumerator{
-		Devices: []usb.Descriptor{
-			{Bus: 1, Address: 9, VID: vidAirspy, PID: pidAirspy, Serial: "MINI1", Product: "Airspy Mini"},
-		},
-	}
-	drv := New(enum)
-	infos, err := drv.Enumerate()
-	if err != nil {
-		t.Fatalf("Enumerate: %v", err)
-	}
-	if len(infos) != 1 || infos[0].TunerName != "R820T (Airspy Mini)" {
-		t.Fatalf("Enumerate = %+v", infos)
 	}
 }
 
 func TestSetCenterFreqEncoding(t *testing.T) {
 	dev, mt := withDevice(t)
 	payload := make([]byte, 4)
-	binary.LittleEndian.PutUint32(payload, 162_550_000)
+	binary.LittleEndian.PutUint32(payload, 14_070_000)
 	mt.Script = []usb.CtrlExchange{
 		{BRequest: reqSetFreq, Data: payload},
 	}
-	if err := dev.SetCenterFreq(162_550_000); err != nil {
+	if err := dev.SetCenterFreq(14_070_000); err != nil {
 		t.Fatalf("SetCenterFreq: %v", err)
 	}
 	if mt.Err != nil {
@@ -116,35 +106,39 @@ func TestSetCenterFreqEncoding(t *testing.T) {
 }
 
 func TestClosestRateIndex(t *testing.T) {
-	dev := &Device{rates: []uint32{10_000_000, 2_500_000}}
+	dev := &Device{rates: []uint32{768_000, 384_000, 256_000, 192_000}}
 	cases := []struct {
 		hz   uint32
 		want int
 	}{
-		{10_000_000, 0},
-		{9_000_000, 0},
-		{4_000_000, 1},
-		{2_500_000, 1},
+		{768_000, 0},
+		{700_000, 0},
+		{500_000, 1}, // closer to 384k (116k) than 768k (268k)
+		{384_000, 1},
+		{300_000, 2}, // closer to 256k (44k) than 384k (84k)
+		{256_000, 2},
+		{192_000, 3},
+		{100_000, 3},
 	}
 	for _, c := range cases {
 		if got := dev.closestRateIndex(c.hz); got != c.want {
 			t.Errorf("closestRateIndex(%d) = %d, want %d", c.hz, got, c.want)
 		}
 	}
-	// No table → falls back to index 0.
+	// Empty table → falls back to index 0.
 	if (&Device{}).closestRateIndex(123) != 0 {
 		t.Error("empty table should default to index 0")
 	}
 }
 
 func TestSetSampleRateSelectsClosest(t *testing.T) {
-	dev := &Device{rates: []uint32{10_000_000, 2_500_000}}
+	dev := &Device{rates: []uint32{768_000, 384_000}}
 	mt := usb.NewMockTransport()
 	dev.t = mt
 	mt.Script = []usb.CtrlExchange{
-		{BRequest: reqSetSamplerate, WValue: 1}, // 4M is closer to 2.5M than 10M
+		{BRequest: reqSetSamplerate, WValue: 1}, // 300k is closer to 384k than 768k
 	}
-	if err := dev.SetSampleRate(4_000_000); err != nil {
+	if err := dev.SetSampleRate(300_000); err != nil {
 		t.Fatalf("SetSampleRate: %v", err)
 	}
 	if mt.Err != nil {
@@ -152,32 +146,12 @@ func TestSetSampleRateSelectsClosest(t *testing.T) {
 	}
 }
 
-func TestSplitAirspyGain(t *testing.T) {
-	cases := []struct {
-		tenthDB                   int
-		wantLNA, wantMix, wantVGA int
-	}{
-		{0, 0, 0, 0},
-		{30, 1, 0, 0},
-		{90, 3, 0, 0},
-		{600, 15, 5, 0},    // saturates LNA; remainder rolls to mixer
-		{1500, 15, 15, 15}, // fully saturated
-	}
-	for _, c := range cases {
-		l, m, v := splitAirspyGain(c.tenthDB)
-		if l != c.wantLNA || m != c.wantMix || v != c.wantVGA {
-			t.Errorf("splitAirspyGain(%d) = (%d,%d,%d), want (%d,%d,%d)",
-				c.tenthDB, l, m, v, c.wantLNA, c.wantMix, c.wantVGA)
-		}
-	}
-}
-
-func TestSetGainAutoEnablesAGC(t *testing.T) {
+func TestSetGainAutoEnablesHFAGC(t *testing.T) {
 	dev, mt := withDevice(t)
 	mt.Script = []usb.CtrlExchange{
-		{In: true, BRequest: reqSetLNAAGC, WIndex: 1, Reply: []byte{0}, N: 1},
-		{In: true, BRequest: reqSetMixerAGC, WIndex: 1, Reply: []byte{0}, N: 1},
-		{In: true, BRequest: reqSetVGAGain, WIndex: defaultVGAGain, Reply: []byte{0}, N: 1},
+		{BRequest: reqSetHFAGC, WValue: 1},
+		{BRequest: reqSetHFLNA, WValue: 0},
+		{BRequest: reqSetHFATT, WValue: 0},
 	}
 	if err := dev.SetGain(-1); err != nil {
 		t.Fatalf("SetGain(-1): %v", err)
@@ -187,17 +161,33 @@ func TestSetGainAutoEnablesAGC(t *testing.T) {
 	}
 }
 
-func TestSetGainManualDisablesAGC(t *testing.T) {
+func TestSetGainManualSplitsATTLNA(t *testing.T) {
+	// 420 tenth-dB → 42 dB → ATT step 7 (42 dB), remainder 0 → LNA off.
 	dev, mt := withDevice(t)
 	mt.Script = []usb.CtrlExchange{
-		{In: true, BRequest: reqSetLNAAGC, WIndex: 0, Reply: []byte{0}, N: 1},
-		{In: true, BRequest: reqSetMixerAGC, WIndex: 0, Reply: []byte{0}, N: 1},
-		{In: true, BRequest: reqSetLNAGain, WIndex: 3, Reply: []byte{0}, N: 1},
-		{In: true, BRequest: reqSetMixerGain, WIndex: 0, Reply: []byte{0}, N: 1},
-		{In: true, BRequest: reqSetVGAGain, WIndex: 0, Reply: []byte{0}, N: 1},
+		{BRequest: reqSetHFAGC, WValue: 0},
+		{BRequest: reqSetHFATT, WValue: 7},
+		{BRequest: reqSetHFLNA, WValue: 0},
 	}
-	if err := dev.SetGain(90); err != nil { // 9 dB target → LNA=3, others 0
-		t.Fatalf("SetGain(90): %v", err)
+	if err := dev.SetGain(420); err != nil {
+		t.Fatalf("SetGain(420): %v", err)
+	}
+	if mt.Err != nil {
+		t.Fatalf("transport: %v", mt.Err)
+	}
+}
+
+func TestSetGainManualLNAOnAboveMaxATT(t *testing.T) {
+	// 540 tenth-dB → 54 dB → ATT step 9 → clamped to 8 (48 dB),
+	// remainder 60 → LNA on (+6 dB preamp).
+	dev, mt := withDevice(t)
+	mt.Script = []usb.CtrlExchange{
+		{BRequest: reqSetHFAGC, WValue: 0},
+		{BRequest: reqSetHFATT, WValue: 8},
+		{BRequest: reqSetHFLNA, WValue: 1},
+	}
+	if err := dev.SetGain(540); err != nil {
+		t.Fatalf("SetGain(540): %v", err)
 	}
 	if mt.Err != nil {
 		t.Fatalf("transport: %v", mt.Err)
@@ -207,8 +197,8 @@ func TestSetGainManualDisablesAGC(t *testing.T) {
 func TestSetBiasTeeRoundTrips(t *testing.T) {
 	dev, mt := withDevice(t)
 	mt.Script = []usb.CtrlExchange{
-		{BRequest: reqSetRFBiasCmd, WValue: 1},
-		{BRequest: reqSetRFBiasCmd, WValue: 0},
+		{BRequest: reqSetBiasTee, WValue: 1},
+		{BRequest: reqSetBiasTee, WValue: 0},
 	}
 	if err := dev.SetBiasTee(true); err != nil {
 		t.Fatalf("SetBiasTee(on): %v", err)
@@ -222,7 +212,7 @@ func TestSetBiasTeeRoundTrips(t *testing.T) {
 }
 
 func TestDecodeInt16IQ(t *testing.T) {
-	// Two samples: (+32767, -32768) → ~(1,-1); (0,0) → (0,0).
+	// Two samples: (+32767, -32768) → ~(1, -1); (0, 0) → (0, 0).
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint16(buf[0:2], uint16(int16(32767)))
 	var minI16 int16 = -32768
@@ -261,5 +251,12 @@ func TestStreamIQFlipsReceiverAndStops(t *testing.T) {
 	}
 	if mt.Err != nil {
 		t.Fatalf("transport: %v", mt.Err)
+	}
+}
+
+func TestCleanVersionStringStripsPadding(t *testing.T) {
+	got := cleanVersionString([]byte("R3.0.7\x00garbage"))
+	if got != "R3.0.7" {
+		t.Errorf("cleanVersionString = %q, want R3.0.7", got)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
@@ -42,12 +43,34 @@ const (
 	reqSampleRateSet       uint8 = 6
 	reqBasebandFilterBwSet uint8 = 7
 	reqBoardIDRead         uint8 = 14
+	reqVersionStringRead   uint8 = 15
 	reqSetFreq             uint8 = 16
 	reqAmpEnable           uint8 = 17
 	reqSetLNAGain          uint8 = 19
 	reqSetVGAGain          uint8 = 20
 	reqAntennaEnable       uint8 = 23
 )
+
+// pidProductNames maps each known HackRF USB PID to the canonical
+// product label we surface in sdr.Info. USB descriptor strings vary
+// across vendors and firmware builds; the PID is the stable identity.
+var pidProductNames = map[uint16]string{
+	pidHackRFOne:    "HackRF One",
+	pidHackRFJawbrk: "HackRF Jawbreaker",
+	pidHackRFRad1o:  "Rad1o",
+}
+
+// boardIDNames mirrors libhackrf's enum hackrf_board_id values. Read
+// from the firmware via reqBoardIDRead at open-time; takes precedence
+// over the PID-based lookup so a flashed-with-the-wrong-firmware unit
+// still reports what's actually running on the board.
+var boardIDNames = map[uint8]string{
+	0:   "Jellybean",
+	1:   "HackRF Jawbreaker",
+	2:   "HackRF One",
+	3:   "Rad1o",
+	255: "Invalid",
+}
 
 const (
 	transceiverModeOff     uint16 = 0
@@ -109,7 +132,7 @@ func (d *Driver) Enumerate() ([]sdr.Info, error) {
 			Index:        i,
 			Serial:       serial,
 			Manufacturer: desc.Manufacturer,
-			Product:      desc.Product,
+			Product:      productForPID(desc.PID, desc.Product),
 			TunerName:    "MAX2839+MAX5864",
 			// Tenth-dB presets the operator can pick from in the UI;
 			// the driver also accepts a free-form value via SetGain.
@@ -117,6 +140,20 @@ func (d *Driver) Enumerate() ([]sdr.Info, error) {
 		}
 	}
 	return out, nil
+}
+
+// productForPID returns the canonical HackRF product label for pid,
+// falling back to the USB descriptor's Product string when the PID
+// isn't in our table (defensive against future firmware revisions
+// that ship under a new PID).
+func productForPID(pid uint16, fallback string) string {
+	if name, ok := pidProductNames[pid]; ok {
+		return name
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return "HackRF"
 }
 
 // Open claims the device at idx and returns an sdr.Device. The caller
@@ -149,6 +186,23 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 	if serial == "" {
 		serial = fmt.Sprintf("hackrf-%02d", idx)
 	}
+	// Best-effort: ask the firmware which board it actually is and
+	// what version it's running. Either readback may fail on older
+	// firmware — fall through to the PID-derived product name and a
+	// plain TunerName when that happens.
+	product := productForPID(desc.PID, desc.Product)
+	if bid, err := readBoardID(t); err == nil {
+		if name, ok := boardIDNames[bid]; ok && name != "" {
+			product = name
+		}
+	}
+	tuner := "MAX2839+MAX5864"
+	if version, err := readVersionString(t); err == nil && version != "" {
+		if isPortaPack(version) {
+			product += " + PortaPack"
+		}
+		tuner = fmt.Sprintf("MAX2839+MAX5864 (fw %s)", version)
+	}
 	return &Device{
 		t: t,
 		info: sdr.Info{
@@ -156,10 +210,62 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 			Index:        idx,
 			Serial:       serial,
 			Manufacturer: desc.Manufacturer,
-			Product:      desc.Product,
-			TunerName:    "MAX2839+MAX5864",
+			Product:      product,
+			TunerName:    tuner,
 		},
 	}, nil
+}
+
+// readBoardID issues a BOARD_ID_READ vendor request and returns the
+// firmware's self-reported board enum value. A single byte is enough
+// — we tolerate longer replies for forward compatibility.
+func readBoardID(t usb.Transport) (uint8, error) {
+	reply, err := t.ControlIn(reqBoardIDRead, 0, 0, 1, controlTimeoutMs)
+	if err != nil {
+		return 0, err
+	}
+	if len(reply) == 0 {
+		return 0, fmt.Errorf("hackrf: empty board-id reply")
+	}
+	return reply[0], nil
+}
+
+// readVersionString fetches the firmware's printable version string
+// (typically a git describe like "git-2024.02.1" or, on Mayhem builds,
+// something containing "portapack"/"mayhem"). Trailing NUL padding
+// and non-printable bytes are stripped.
+func readVersionString(t usb.Transport) (string, error) {
+	reply, err := t.ControlIn(reqVersionStringRead, 0, 0, 255, controlTimeoutMs)
+	if err != nil {
+		return "", err
+	}
+	return cleanVersionString(reply), nil
+}
+
+func cleanVersionString(buf []byte) string {
+	end := len(buf)
+	for i, b := range buf {
+		if b == 0 {
+			end = i
+			break
+		}
+	}
+	out := make([]byte, 0, end)
+	for _, b := range buf[:end] {
+		if b >= 0x20 && b < 0x7f {
+			out = append(out, b)
+		}
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// isPortaPack reports whether v looks like a PortaPack/Mayhem firmware
+// string. Both spellings appear in the wild — official PortaPack
+// builds tag themselves, and the community Mayhem fork keeps its own
+// name. We match either.
+func isPortaPack(v string) bool {
+	lv := strings.ToLower(v)
+	return strings.Contains(lv, "portapack") || strings.Contains(lv, "mayhem")
 }
 
 // Device is one opened HackRF.

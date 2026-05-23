@@ -9,6 +9,45 @@ for tagged releases.
 
 ### Added
 
+- **Airspy HF+ Discovery / Dual Port / legacy HF+ pure-Go driver.**
+  New `internal/sdr/airspyhf` package implements the `sdr.Driver` /
+  `sdr.Device` interfaces on top of the same pure-Go USB transport
+  (USBDEVFS / WinUSB / IOKit) the RTL-SDR / HackRF / Airspy drivers
+  use — no `libairspyhf` at build or runtime, the zero-CGO
+  single-binary guarantee still holds. The driver speaks the
+  documented libairspyhf USB vendor protocol (RECEIVER_MODE,
+  SET_FREQ, GET_SAMPLERATES, SET_HF_AGC, SET_HF_ATT, SET_HF_LNA,
+  SET_BIAS_TEE, GET_VERSION_STRING) and decodes the HF+'s
+  interleaved int16 IQ payload into complex64. All three known
+  variants (Discovery, Dual Port, legacy) enumerate on VID:PID
+  `0x03eb:0x800c`; the USB descriptor's Product string drives the
+  `TunerName` distinction. Coverage: 9 kHz – 31 MHz HF + 60 –
+  260 MHz VHF; HF AGC plus a 0–48 dB attenuator (6 dB steps) and
+  +6 dB LNA preamp. Registered on init so a blank import from
+  `cmd/gophertrunk` is the only wiring needed. The wire protocol
+  is unit-tested against `usb.MockTransport`; on-air validation
+  against attached HF+ hardware is the documented follow-up.
+
+- **HackRF firmware-aware identification.** The HackRF driver now
+  reads `BOARD_ID_READ` and `VERSION_STRING_READ` at Open time and
+  uses the firmware's self-reported identity (rather than the USB
+  descriptor's Product string) to populate `sdr.Info.Product` as
+  `HackRF One` / `HackRF Jawbreaker` / `Rad1o`. The running
+  firmware version is appended to `TunerName` (`MAX2839+MAX5864
+  (fw git-2024.02.1)`), and PortaPack / Mayhem builds are
+  auto-detected and tagged with `+ PortaPack` so the operator can
+  see at a glance which board is on which USB port. `Enumerate`
+  also normalises Product based on the PID, so listings are
+  consistent even before Open.
+
+- **Airspy R2 vs Mini distinction in `TunerName`.** The Airspy
+  driver now detects the `MINI` substring in the USB Product
+  string at enumeration time and emits `R820T (Airspy R2)` or
+  `R820T (Airspy Mini)` accordingly. Both variants share the same
+  VID:PID, same R820T tuner, and same wire protocol — the split
+  surfaces purely through the operator-visible label so multi-
+  dongle pools can pick the right unit by name.
+
 - **HackRF One and Airspy R2 / Mini pure-Go drivers.** New
   `internal/sdr/hackrf` and `internal/sdr/airspy` packages implement
   the `sdr.Driver` / `sdr.Device` interfaces on top of the same

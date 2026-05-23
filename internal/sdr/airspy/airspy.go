@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
@@ -104,13 +105,26 @@ func (d *Driver) Enumerate() ([]sdr.Info, error) {
 			Serial:       serial,
 			Manufacturer: desc.Manufacturer,
 			Product:      desc.Product,
-			TunerName:    "R820T",
+			TunerName:    tunerNameFor(desc.Product),
 			// Indicative tenth-dB presets; the driver also accepts
 			// a free-form SetGain value.
 			Gains: []int{0, 100, 200, 300, 400, 500},
 		}
 	}
 	return out, nil
+}
+
+// tunerNameFor distinguishes Airspy R2 from Airspy Mini for the
+// TunerName surface. Both share VID:PID 0x1d50:0x60a1 and the same
+// R820T tuner — the USB descriptor's Product string is the only
+// observable difference at enumeration time. A missing Product
+// falls back to the R2 label since R2 is the older, more common
+// variant.
+func tunerNameFor(product string) string {
+	if strings.Contains(strings.ToUpper(product), "MINI") {
+		return "R820T (Airspy Mini)"
+	}
+	return "R820T (Airspy R2)"
 }
 
 // Open claims the device at idx and returns an sdr.Device. The
@@ -148,7 +162,7 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 			Serial:       fallbackSerial(desc.Serial, idx),
 			Manufacturer: desc.Manufacturer,
 			Product:      desc.Product,
-			TunerName:    "R820T",
+			TunerName:    tunerNameFor(desc.Product),
 		},
 	}
 	// Pin the device to INT16_IQ — the format the StreamIQ decoder
