@@ -37,6 +37,27 @@ func TestTSBKDetectsCRCError(t *testing.T) {
 	}
 }
 
+// TestTSBKAcceptsMtAnakieOnAirVector pins the augmented-CRC convention
+// the P25 TSBK trailer actually uses against three ground-truth on-air
+// frames recovered from the Mt Anakie capture (issue #275). Each is a
+// metric=0 clean-trellis decode; under the prior CRC-CCITT/FALSE +
+// inverted-trailer implementation all three were rejected as CRC
+// errors, and 195 of 197 TSBKs on the capture met the same fate. A
+// regression on the CRC algorithm would un-decode them again.
+func TestTSBKAcceptsMtAnakieOnAirVector(t *testing.T) {
+	vectors := [][12]byte{
+		{0x16, 0x00, 0x00, 0x40, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x01, 0x5F, 0xCB},
+		{0x34, 0x00, 0xE5, 0x05, 0xC0, 0x64, 0x01, 0xEE, 0x89, 0x90, 0x7F, 0xA6},
+		{0x3C, 0x00, 0x00, 0x31, 0x64, 0x04, 0x2E, 0xF0, 0x65, 0x70, 0x78, 0x47},
+	}
+	for i, v := range vectors {
+		_, err := ParseTSBK(v[:])
+		if err != nil {
+			t.Errorf("vector %d (% 02X): ParseTSBK returned %v, want nil", i, v[:], err)
+		}
+	}
+}
+
 func TestParseGroupVoiceChannelGrant(t *testing.T) {
 	p := [8]byte{0x80, 0x40, 0x05, 0x12, 0x34, 0xAB, 0xCD, 0xEF}
 	g := ParseGroupVoiceChannelGrant(p)
