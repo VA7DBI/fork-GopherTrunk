@@ -54,6 +54,12 @@ func runReplay(args []string) {
 	// tiers (BCH+parity + TSBK CRC) reject wrong alignments at any
 	// span, so widening cannot manufacture a false lock.
 	nidSearchSpan := fs.Int("nid-search-span", p25phase1.NIDSearchSpan, "NID-alignment search radius in dibits (default matches the production ccdecoder; widen to bisect a stubborn capture per issue #275)")
+	// Issue #275 Phase B knob — after Phase A's widening ruled out
+	// alignment, this surfaces what the NID-failure diag cannot: the
+	// dibit-value histogram and the per-rotation FSW-correlation
+	// landscape across the whole capture. Off by default since it
+	// allocates an O(numDibits) buffer.
+	diag := fs.Bool("diag", false, "print a demod-quality diagnostic report (dibit histogram + per-rotation FSW correlation landscape) at EOF")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `gophertrunk replay — decode a raw IQ capture file offline.
 
@@ -137,15 +143,26 @@ FLAGS:`)
 		*demod, rotations, *nidSearchSpan, p25phase1.NIDAcceptErrs, p25phase1.NIDMarginalMaxErrs)
 
 	var dibitCount int64
-	rx := p25phase1rx.New(p25phase1rx.Options{
+	var diagAcc *iqDiag
+	if *diag {
+		diagAcc = &iqDiag{}
+	}
+	rxOpts := p25phase1rx.Options{
 		SampleRateHz: *sampleRate,
 		DeviationHz:  1800.0,
 		DemodMode:    demodMode,
 		DibitSink: func(dibits []uint8, baseIdx int) {
 			dibitCount += int64(len(dibits))
+			if diagAcc != nil {
+				diagAcc.observe(dibits)
+			}
 			cc.Process(dibits, baseIdx)
 		},
-	})
+	}
+	if diagAcc != nil {
+		rxOpts.SoftSink = diagAcc.observeSoft
+	}
+	rx := p25phase1rx.New(rxOpts)
 
 	// Drain bus events to stdout in the background so they print
 	// interleaved with the decoder log going to stderr.
@@ -192,6 +209,9 @@ FLAGS:`)
 	<-doneEvents
 
 	printSummary(filepath.Base(*in), totalSamples, *sampleRate, dibitCount, stats)
+	if diagAcc != nil {
+		diagAcc.printReport(os.Stdout)
+	}
 }
 
 // replayStats accumulates bus events seen during the replay so the
