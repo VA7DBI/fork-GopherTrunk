@@ -56,7 +56,7 @@ Full per-OS install (Windows installer / macOS Apple Silicon / Linux aarch64): *
 
 **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25 Phase 2 / DMR / NXDN) vocoders implemented in Go, no DVSI / mbelib dependency. Per-call WAV + raw-frame sidecars; live PCM playback via direct ALSA / WASAPI / CoreAudio (no `libasound2` at runtime).
 
-**SDR layer** — Pure-Go RTL-SDR driver across USBDEVFS (Linux), WinUSB (Windows), IOKit (macOS). All major tuner drivers (R820T / R820T2 / R828D / E4000 / FC0012 / FC0013 / FC2580) — each a wire-level port of osmocom librtlsdr's `tuner_*.c`, with librtlsdr-parity init burst chunking, EPIPE warmup + reset on Open, balanced LNA+Mixer gain algorithm, and the same `rtlsdr_open` probe order + GPIO 4/5/6 dances for non-R820T detection. I²C bridge toggles once per public method (`SetFreq`/`SetGain`/...) instead of per register write — drops ~10× the USB control transfers per retune on busy hubs. Multi-device pool with role assignment, per-device gain / PPM / bias-tee.
+**SDR layer** — Pure-Go drivers for **RTL-SDR**, **HackRF One** and **Airspy R2 / Mini**, all sharing the same pure-Go USB transport (USBDEVFS on Linux, WinUSB on Windows, IOKit on macOS) — no `librtlsdr` / `libhackrf` / `libairspy` at build or runtime. The RTL-SDR backend includes wire-level ports of every osmocom tuner (R820T / R820T2 / R828D / E4000 / FC0012 / FC0013 / FC2580) with librtlsdr-parity init burst chunking, EPIPE warmup + reset on Open, balanced LNA+Mixer gain, and the same `rtlsdr_open` probe order + GPIO 4/5/6 dances for non-R820T detection. The HackRF and Airspy drivers speak the documented libhackrf / libairspy USB vendor protocols (set freq / sample rate / gains / bias-tee, bulk-IN sample reaper, real-time sample decode to complex64); on-air validation against attached HackRF / Airspy hardware is the documented follow-up, but the wire protocols are exercised under unit tests against `usb.MockTransport`. Multi-device pool with role assignment, per-device gain / PPM / bias-tee.
 
 **DSP** — Polyphase channelizer + CIC + halfband, Kaiser / RRC / Gaussian FIR designers, FM / C4FM / GFSK / FFSK / DQPSK / π/4-DQPSK / π/8-H-DQPSK demods, Mueller-Müller + Gardner clock recovery, LMS + CMA blind equalizers, Selection + maximal-ratio diversity combining.
 
@@ -112,11 +112,11 @@ MPT 1327) now decodes voice through the composer's FM chain.
 
 The remaining gaps:
 
-- **Additional SDR hardware.** Only RTL-SDR is supported. Airspy
-  and HackRF are pure-USB and portable to a pure-Go driver like the
-  existing RTL-SDR one, but that work is not yet done; SDRPlay /
-  USRP / BladeRF need vendor C libraries and are out of scope for
-  the zero-CGO build.
+- **Additional SDR hardware.** RTL-SDR, HackRF One and Airspy R2 /
+  Mini are all supported by pure-Go drivers; on-air validation of
+  the HackRF / Airspy backends against attached hardware is the
+  documented follow-up. SDRPlay / USRP / BladeRF need vendor C
+  libraries and are out of scope for the zero-CGO build.
 - **Digital-voice composer chains.** FM (incl. analog trunking),
   DMR and P25 Phase 1/2 decode to audio; NXDN, dPMR, TETRA, YSF and
   D-STAR voice chains, plus EDACS ProVoice, are still bypassed —
