@@ -221,3 +221,46 @@ that produces interleaved unsigned-8-bit samples. Drop `.cfile`
 files under `testdata/iq/` to use them through the mock driver. The
 baseband replay path above is the preferred option for new work;
 the cfile mock stays around for the existing integration tests.
+
+**P25 Phase 1 offline decoder** — `gophertrunk replay` runs a raw
+IQ capture through the production receiver + control-channel chain
+and prints every lock / grant / decode-error event the daemon would
+emit, plus the per-frame NID-decoder diagnostics. Reuses the real
+`internal/radio/p25/phase1/receiver` and `phase1.ControlChannel`,
+so what it decodes is what the daemon decodes — a replay-lock
+implies an on-air lock, and a replay-fail makes the capture a
+reproducible test fixture for the protocol path. Built for
+[issue #275](https://github.com/MattCheramie/GopherTrunk/issues/275)
+investigations where on-site retests round-trip too slowly.
+
+```
+gophertrunk replay -in capture.iq -sample-rate 960000 -demod c4fm
+gophertrunk replay -in cbd.cfile -format f32 -sample-rate 960000 -demod cqpsk
+```
+
+Flags:
+
+- `-format u8|f32` — `u8` is the rtl_sdr default (interleaved 8-bit
+  unsigned IQ); `f32` is GNU Radio's interleaved-float32 cfile.
+- `-sample-rate Hz` — the capture's sample rate. The decoder prints
+  the effective baud at EOF; if it deviates >2% from 4800 the
+  capture's true sample rate doesn't match this flag.
+- `-demod c4fm|cqpsk` — modulation. C4FM restricts the FSW + NID
+  rotation search to physically-meaningful {0,2} rotations; CQPSK
+  / π/4-DQPSK keeps the all-rotation default.
+- `-freq Hz` — informational; reported alongside the events.
+- `-nid-search-span N` — NID-alignment grid radius in dibits
+  (default 6, matching the production ccdecoder). Widen to 12 / 18
+  / 36 on a stubborn capture to bisect a span-bounded failure (errs
+  drop at the new optimum) from a demod-quality-bounded one (errs
+  stay at the BCH(63,16,11) correction ceiling regardless of
+  alignment).
+- `-diag` — after EOF, dump the dibit-value histogram, the
+  pre-slicer soft-sample magnitude distribution, the FSW
+  correlation landscape per rotation (Hamming-distance histogram +
+  hit count), the FSW positions and inter-hit deltas, and the
+  raw NID + first 24 TSBK dibits at the first 5 perfect-distance
+  FSWs. The off-path diagnostic that pinpoints which stage of the
+  C4FM demod chain produces wrong dibits — see the
+  `cmd/gophertrunk/iqdiag.go` package comment for the failure-mode
+  interpretation table.
