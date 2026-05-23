@@ -851,6 +851,57 @@ func TestControlChannelLocksOnMarginalNIDCorroboratedByTSBK(t *testing.T) {
 	}
 }
 
+// TestSearchNIDClosestMissReportsErrPattern locks down the per-dibit
+// error fingerprint searchNID now appends to the closest-miss diag
+// (issue #275 — the field reporter needs to distinguish post-FSW
+// timing slip from SNR-limited demod corruption on the next retest).
+//
+// Eight known NID dibits get their MSB flipped (= one bit error per
+// dibit, eight bit errors total — inside BCH(63,16,11)'s t=11 radius
+// but past the trusted gate of NIDAcceptErrs=6). The TSBK is corrupted
+// so the marginal tier cannot corroborate, forcing the
+// "no NID corroborated" diag branch — which is where err_pattern is
+// emitted. Asserting on the exact 32-char pattern verifies both that
+// the formatter renders it correctly AND that the canonical-alignment
+// hypothesis (delta=0, strip=true, rot=fswRot) wins marginal[0]
+// (lowest errs of the parity-valid candidates).
+func TestSearchNIDClosestMissReportsErrPattern(t *testing.T) {
+	cap := &diagCapture{}
+	bus := events.NewBus(16)
+	defer bus.Close()
+
+	frame := buildControlFrame(0x293, DUIDTrunkingSignaling,
+		TSBK{LB: true, Opcode: OpRFSSStatusBroadcast})
+	injected := []int{1, 4, 8, 12, 16, 20, 25, 30}
+	for _, i := range injected {
+		frame[24+i] ^= 0b10
+	}
+	for i := 24 + 32; i < 24+32+98; i++ {
+		frame[i] = (^frame[i]) & 0x3
+	}
+	onAir := InjectControlStatusSymbols(frame)
+	stream := make([]uint8, 10+len(onAir)+16)
+	copy(stream[10:], onAir)
+
+	cc := New(Options{Bus: bus, Log: slog.New(cap), FrequencyHz: 851_000_000})
+	cc.Process(stream, 0)
+
+	want := make([]byte, 32)
+	for i := range want {
+		want[i] = '0'
+	}
+	for _, i := range injected {
+		want[i] = '1'
+	}
+	needle := "err_pattern=" + string(want)
+	if !cap.containsDiag(needle) {
+		cap.mu.Lock()
+		seen := append([]string(nil), cap.diags...)
+		cap.mu.Unlock()
+		t.Fatalf("no diag contained %q\nseen diags: %v", needle, seen)
+	}
+}
+
 // TestControlChannelRejectsMarginalNIDWithoutTSBK is the false-lock
 // guard for the marginal tier: the same 8-bit-error NID, but with the
 // TSBK channel block corrupted too. With no clean TSBK to corroborate
