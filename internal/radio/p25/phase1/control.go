@@ -181,14 +181,14 @@ const p25StatusStride = 36
 // FSW for a full frame to decode: the 32-dibit NID plus the 98-dibit
 // TSBK channel block — 130 data dibits — plus the 4 status symbols
 // interleaved into that span at the p25StatusStride cadence. Process
-// defers an FSW hit until this many dibits (plus nidSearchSpan, so the
+// defers an FSW hit until this many dibits (plus NIDSearchSpan, so the
 // +delta end of the alignment search stays in-buffer) have
 // accumulated, so frame assembly no longer depends on the IQ chunking.
 const frameLookahead = 130 + 4
 
-// nidSearchSpan bounds the parseFrame NID-alignment search: the NID is
+// NIDSearchSpan bounds the parseFrame NID-alignment search: the NID is
 // probed at the FSW-derived start index plus a delta in
-// [-nidSearchSpan, +nidSearchSpan]. ±6 dibits absorbs a compounded
+// [-NIDSearchSpan, +NIDSearchSpan]. ±6 dibits absorbs a compounded
 // post-FSW symbol slip and status-phase fault — issue #275, where the
 // field symptom was a reliably-detected FSW followed by an
 // always-uncorrectable NID, and the post-#321 retest converged on the
@@ -198,9 +198,9 @@ const frameLookahead = 130 + 4
 // of the marginal tier are what reject wrong alignments, so widening
 // the span cannot manufacture a false lock — only let the search
 // reach a true alignment that lies past the old edge.
-const nidSearchSpan = 6
+const NIDSearchSpan = 6
 
-// nidAcceptErrs is the highest BCH-corrected error count searchNID
+// NIDAcceptErrs is the highest BCH-corrected error count searchNID
 // treats as a genuine NID on the strength of the BCH + even-parity
 // gate alone — the "trusted tier". BCH(63,16,11) corrects up to 11,
 // but a parity-valid codeword 7+ corrections from the received word is
@@ -213,14 +213,25 @@ const nidSearchSpan = 6
 // which admits it only if the frame's TSBK also decodes (CRC) under the
 // same alignment. The TSBK CRC is a far stronger validator than the
 // NID's single parity bit, so a wrong alignment cannot fake it.
-const nidAcceptErrs = 6
+const NIDAcceptErrs = 6
 
-// nidCorroborateBudget caps how many marginal-tier NID hypotheses
-// (errs in (nidAcceptErrs, 11]) searchNID will TSBK-corroborate per FSW
-// hit. The grid yields at most 5×2×4 hypotheses; only the lowest-errs
-// few are worth a TSBK Viterbi decode, and the cap bounds the cost on
-// a noisy channel that never produces a trusted NID.
-const nidCorroborateBudget = 8
+// NIDCorroborateBudget caps how many marginal-tier NID hypotheses
+// (errs in (NIDAcceptErrs, NIDMarginalMaxErrs]) searchNID will
+// TSBK-corroborate per FSW hit. The grid yields at most 5×2×4
+// hypotheses; only the lowest-errs few are worth a TSBK Viterbi decode,
+// and the cap bounds the cost on a noisy channel that never produces a
+// trusted NID.
+const NIDCorroborateBudget = 8
+
+// NIDMarginalMaxErrs is the upper bound on the marginal tier's BCH
+// error count — the hard correction ceiling of BCH(63,16,11), the code
+// that protects the NID. Any hypothesis that decodes successfully comes
+// back with errs ≤ NIDMarginalMaxErrs; anything beyond is reported
+// uncorrectable. Exposed alongside NIDSearchSpan / NIDAcceptErrs so the
+// ccdecoder startup log can advertise the full accept envelope and a
+// field reporter can confirm at a glance which build is running (issue
+// #275: a retest cycle was already invalidated once by a stale build).
+const NIDMarginalMaxErrs = 11
 
 // Process consumes a window of dibits and runs detection/parsing.
 // baseIdx is the absolute dibit index of dibits[0]. Returns the
@@ -264,7 +275,7 @@ func (c *ControlChannel) Process(dibits []uint8, baseIdx int) int {
 		if nidStart < 0 {
 			continue // buffer already trimmed past this hit — drop it
 		}
-		if nidStart+frameLookahead+nidSearchSpan > len(c.buf) {
+		if nidStart+frameLookahead+NIDSearchSpan > len(c.buf) {
 			kept = append(kept, ph) // not enough buffered yet
 			continue
 		}
@@ -276,7 +287,7 @@ func (c *ControlChannel) Process(dibits []uint8, baseIdx int) int {
 }
 
 // parseFrame decodes the NID + TSBK of one FSW hit. buf[nidStart:]
-// must hold at least frameLookahead+nidSearchSpan dibits — the caller
+// must hold at least frameLookahead+NIDSearchSpan dibits — the caller
 // guarantees it. fswRot is the FSW-search rotation: the sync detector
 // matched after adding fswRot mod 4 to each input dibit; it seeds the
 // search and breaks ties so a clean frame binds deterministically.
@@ -286,7 +297,7 @@ func (c *ControlChannel) Process(dibits []uint8, baseIdx int) int {
 // not correlate otherwise) but mis-aligned by the post-FSW framing.
 // parseFrame therefore does not trust a single fixed read: searchNID
 // probes a bounded grid of alignment hypotheses (NID start ±
-// nidSearchSpan, status symbols stripped or not, all four dibit
+// NIDSearchSpan, status symbols stripped or not, all four dibit
 // rotations) and accepts the one whose NID clears the BCH(63,16,11) +
 // even-parity gate with the fewest corrections — or, when no NID
 // clears that gate cleanly, a marginal NID whose frame TSBK also
@@ -306,7 +317,7 @@ func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 	if best.errs > 0 {
 		c.log.Debug("nid corrected", "errs", best.errs, "nac", best.nid.NAC,
 			"rot", best.rot, "delta", best.delta, "strip", best.strip,
-			"corroborated", best.errs > nidAcceptErrs,
+			"corroborated", best.errs > NIDAcceptErrs,
 			"at_boundary", atSearchBoundary(best.delta))
 	}
 	if best.nid.DUID != DUIDTrunkingSignaling {
@@ -364,10 +375,10 @@ type nidGuess struct {
 // tiers:
 //
 //   - Trusted: a NID that BCH-decodes with a valid even-parity bit and
-//     errs ≤ nidAcceptErrs. If any exists, the fewest-corrections one
+//     errs ≤ NIDAcceptErrs. If any exists, the fewest-corrections one
 //     wins (betterNID) — the original, fast path, unchanged.
 //   - Marginal: only when no trusted NID exists, a NID with errs in
-//     (nidAcceptErrs, 11] is admitted if the frame's 98-dibit TSBK also
+//     (NIDAcceptErrs, 11] is admitted if the frame's 98-dibit TSBK also
 //     decodes (Viterbi + CRC) under the same alignment. The TSBK CRC is
 //     the second validator a wrong alignment cannot fake — issue #275,
 //     where a strong-site NID sat permanently at 9/10/11 BCH errors.
@@ -382,9 +393,9 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 	closestMiss := -1 // lowest BCH errs of a parity-rejected near-miss
 	var missAt nidGuess
 	uncorrectable, tried := 0, 0
-	var marginal []nidGuess // parity-valid NIDs with errs > nidAcceptErrs
+	var marginal []nidGuess // parity-valid NIDs with errs > NIDAcceptErrs
 
-	for delta := -nidSearchSpan; delta <= nidSearchSpan; delta++ {
+	for delta := -NIDSearchSpan; delta <= NIDSearchSpan; delta++ {
 		start := nidStart + delta
 		if start < 0 || start+frameLookahead > len(buf) {
 			continue
@@ -406,7 +417,7 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 				}
 				cand := nidGuess{delta: delta, strip: strip, rot: rot,
 					nid: nid, errs: errs, tsbkStart: tsbkStart}
-				if errs > nidAcceptErrs {
+				if errs > NIDAcceptErrs {
 					// Parity-valid but too far from the received word for
 					// BCH+parity to tell a noisy real NID from a bad
 					// alignment's miscorrection. Defer to the marginal
@@ -432,8 +443,8 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 			return betterNID(marginal[i], marginal[j], fswRot)
 		})
 		budget := len(marginal)
-		if budget > nidCorroborateBudget {
-			budget = nidCorroborateBudget
+		if budget > NIDCorroborateBudget {
+			budget = NIDCorroborateBudget
 		}
 		for _, g := range marginal[:budget] {
 			if tsbkCorroborates(buf, g, nidStart) {
@@ -455,7 +466,7 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 }
 
 // atSearchBoundary reports whether an alignment hypothesis sits at the
-// edge of the nidSearchSpan grid. A "best" or closest-miss at the
+// edge of the NIDSearchSpan grid. A "best" or closest-miss at the
 // boundary is the textbook signature of a bounded search pegged at its
 // limit — issue #275, where the post-#321 retest converged on delta=2
 // (the ±2 grid's positive edge) every frame. Flagging it in the logs
@@ -463,14 +474,14 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 // edge → the true offset exceeds the span; interior with low errs →
 // the framing was the cause and the fix worked.
 func atSearchBoundary(delta int) bool {
-	return delta == nidSearchSpan || delta == -nidSearchSpan
+	return delta == NIDSearchSpan || delta == -NIDSearchSpan
 }
 
 // boundaryNote returns a diag-string suffix to append when a closest /
 // best hypothesis sits at the search boundary; empty otherwise.
 func boundaryNote(delta int) string {
 	if atSearchBoundary(delta) {
-		return fmt.Sprintf(" — best alignment at search boundary (±%d); true offset may exceed span", nidSearchSpan)
+		return fmt.Sprintf(" — best alignment at search boundary (±%d); true offset may exceed span", NIDSearchSpan)
 	}
 	return ""
 }

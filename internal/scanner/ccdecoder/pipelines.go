@@ -186,9 +186,20 @@ func newP25Phase1Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 	// what issue reporters paste, and a git-describe string there is
 	// the only reliable way to tell which fixes a build contains —
 	// issue #275 saw a retest invalidated by a silently stale build.
+	//
+	// rotations / nid_search_span / nid_accept_errs / nid_marginal_max
+	// pin the same retest-verification surface to the decode parameters
+	// themselves: a stale build that still uses RotationsAll on a C4FM
+	// site or the old ±2 search will show its signature in this line
+	// without anyone having to read source.
 	log.Info("ccdecoder: p25/phase1 pipeline configured",
 		"system", opts.SystemName, "freq_hz", opts.FrequencyHz,
-		"demod", demodModeLabel(demodMode), "build", version.String())
+		"demod", demodModeLabel(demodMode),
+		"rotations", rotations,
+		"nid_search_span", p25phase1.NIDSearchSpan,
+		"nid_accept_errs", p25phase1.NIDAcceptErrs,
+		"nid_marginal_max", p25phase1.NIDMarginalMaxErrs,
+		"build", version.String())
 	return &p25Phase1Pipeline{rx: rx, cc: cc}, nil
 }
 

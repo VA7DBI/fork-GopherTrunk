@@ -512,7 +512,7 @@ func TestControlChannelPublishesDecodeErrorOnCorruptTSBK(t *testing.T) {
 // reporter observed, where the FSW detects reliably but the NID, shifted
 // by a dibit or two, never BCH-decodes under a fixed single-offset read.
 // parseFrame's bounded alignment search must recover the lock across the
-// full nidSearchSpan range — slips 1..6 after the span was widened from
+// full NIDSearchSpan range — slips 1..6 after the span was widened from
 // the original ±2 (which left field retests pegged at the +2 edge every
 // frame; #275 post-#321).
 func TestControlChannelLocksThroughPostFSWSlip(t *testing.T) {
@@ -553,7 +553,7 @@ func TestControlChannelLocksThroughPostFSWSlip(t *testing.T) {
 // Process call carries only ~19 dibits, so the slipped frame straddles
 // many calls and parseFrame runs under whatever buffer state
 // trimBuffer leaves it in. The widened search must still recover the
-// lock — i.e. the buffer math at the new nidSearchSpan stays
+// lock — i.e. the buffer math at the new NIDSearchSpan stays
 // consistent with cross-call frame assembly (#275 post-#321).
 func TestControlChannelLocksThroughPostFSWSlipSmallChunks(t *testing.T) {
 	for _, slip := range []int{1, 3, 6} {
@@ -607,11 +607,11 @@ func TestSearchBoundaryHelpers(t *testing.T) {
 	}{
 		{0, false},
 		{1, false},
-		{nidSearchSpan - 1, false},
-		{nidSearchSpan, true},
-		{-nidSearchSpan, true},
-		{-(nidSearchSpan - 1), false},
-		{nidSearchSpan + 1, false}, // outside the grid; not "at" boundary
+		{NIDSearchSpan - 1, false},
+		{NIDSearchSpan, true},
+		{-NIDSearchSpan, true},
+		{-(NIDSearchSpan - 1), false},
+		{NIDSearchSpan + 1, false}, // outside the grid; not "at" boundary
 	}
 	for _, tc := range cases {
 		got := atSearchBoundary(tc.delta)
@@ -630,7 +630,7 @@ func TestSearchBoundaryHelpers(t *testing.T) {
 }
 
 // TestSearchNIDFailureDiagFlagsBoundary exercises the wiring of
-// boundaryNote into searchNID's failure diag. A slip past nidSearchSpan
+// boundaryNote into searchNID's failure diag. A slip past NIDSearchSpan
 // can never be recovered; we feed several deliberately-corrupt streams
 // and assert that at least one of the failure diags surfaces the
 // "search boundary" suffix. This guards the format-string call to
@@ -811,7 +811,7 @@ func TestControlChannelNoFalseLockOnNoise(t *testing.T) {
 
 // TestControlChannelLocksOnMarginalNIDCorroboratedByTSBK injects 8 bit
 // errors into the NID — inside BCH(63,16,11)'s t=11 radius but past the
-// nidAcceptErrs=6 trusted threshold — while leaving the TSBK intact.
+// NIDAcceptErrs=6 trusted threshold — while leaving the TSBK intact.
 // searchNID's marginal tier must still lock, because the frame's TSBK
 // decodes cleanly under the same alignment and corroborates the NID.
 // This is issue #275's strong-site symptom: a NID that BCH-decodes but
