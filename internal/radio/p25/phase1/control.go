@@ -72,6 +72,17 @@ type ControlChannel struct {
 	// #275, where the post-#321 retest converged on rot=3 on a C4FM
 	// site.
 	rotations RotationSet
+
+	// nidSearchSpan is the per-instance grid radius used by searchNID
+	// in place of the package-level NIDSearchSpan constant — a
+	// bisect knob for issue #275 retests where the closest-miss
+	// keeps pegging at the boundary even after the ±6 default. The
+	// replay subcommand exposes it via -nid-search-span so an
+	// operator can re-run an IQ capture at ±12 or ±36 to rule out
+	// alignment-distance as the dominant failure mode. Zero in
+	// Options falls back to NIDSearchSpan, so production wiring is
+	// unaffected.
+	nidSearchSpan int
 }
 
 // NetworkSnapshot returns the system topology accumulated from the
@@ -105,6 +116,19 @@ type Options struct {
 	// only lets the BCH decoder miscorrect misaligned dibits into a
 	// parity-valid pseudo-NID at a wrong rotation (issue #275).
 	Rotations RotationSet
+
+	// NIDSearchSpan overrides the per-instance NID-alignment grid
+	// radius. Zero falls back to the package-level NIDSearchSpan
+	// constant — the default the ccdecoder pipeline uses in
+	// production. The replay subcommand exposes this as a bisect knob
+	// (-nid-search-span) so issue #275 retests can widen the search
+	// to ±12 / ±18 / ±36 without rebuilding, to tell a span-bounded
+	// failure from a demod-quality-bounded one. The two acceptance
+	// tiers (BCH+parity + TSBK CRC) reject wrong alignments regardless
+	// of span, so widening cannot manufacture a false lock — only let
+	// the search reach a true alignment that lies past the default
+	// edge.
+	NIDSearchSpan int
 }
 
 // New constructs a ControlChannel from Options. SystemName ends up on
@@ -127,16 +151,21 @@ func New(opts Options) *ControlChannel {
 	if len(opts.Rotations) > 0 {
 		det.SetRotations(opts.Rotations)
 	}
+	span := opts.NIDSearchSpan
+	if span <= 0 {
+		span = NIDSearchSpan
+	}
 	return &ControlChannel{
-		bus:        opts.Bus,
-		log:        log,
-		det:        det,
-		systemName: opts.SystemName,
-		freqHz:     opts.FrequencyHz,
-		bandPlan:   bp,
-		now:        now,
-		aliasAsm:   NewTalkerAliasAssembler(now),
-		rotations:  resolveRotations(opts.Rotations),
+		bus:           opts.Bus,
+		log:           log,
+		det:           det,
+		systemName:    opts.SystemName,
+		freqHz:        opts.FrequencyHz,
+		bandPlan:      bp,
+		now:           now,
+		aliasAsm:      NewTalkerAliasAssembler(now),
+		rotations:     resolveRotations(opts.Rotations),
+		nidSearchSpan: span,
 	}
 }
 
@@ -275,7 +304,7 @@ func (c *ControlChannel) Process(dibits []uint8, baseIdx int) int {
 		if nidStart < 0 {
 			continue // buffer already trimmed past this hit — drop it
 		}
-		if nidStart+frameLookahead+NIDSearchSpan > len(c.buf) {
+		if nidStart+frameLookahead+c.nidSearchSpan > len(c.buf) {
 			kept = append(kept, ph) // not enough buffered yet
 			continue
 		}
@@ -318,7 +347,7 @@ func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 		c.log.Debug("nid corrected", "errs", best.errs, "nac", best.nid.NAC,
 			"rot", best.rot, "delta", best.delta, "strip", best.strip,
 			"corroborated", best.errs > NIDAcceptErrs,
-			"at_boundary", atSearchBoundary(best.delta),
+			"at_boundary", atSearchBoundary(best.delta, c.nidSearchSpan),
 			"err_pattern", formatErrPattern(best.errPattern))
 	}
 	if best.nid.DUID != DUIDTrunkingSignaling {
@@ -405,7 +434,7 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 	uncorrectable, tried := 0, 0
 	var marginal []nidGuess // parity-valid NIDs with errs > NIDAcceptErrs
 
-	for delta := -NIDSearchSpan; delta <= NIDSearchSpan; delta++ {
+	for delta := -c.nidSearchSpan; delta <= c.nidSearchSpan; delta++ {
 		start := nidStart + delta
 		if start < 0 || start+frameLookahead > len(buf) {
 			continue
@@ -464,34 +493,37 @@ func (c *ControlChannel) searchNID(buf []uint8, nidStart int, fswRot uint8) (nid
 		m := marginal[0]
 		return best, false, fmt.Sprintf(
 			"no NID corroborated over %d guesses; closest marginal errs=%d at delta=%d strip=%v rot=%d, TSBK uncorroborated%s; err_pattern=%s",
-			tried, m.errs, m.delta, m.strip, m.rot, boundaryNote(m.delta), formatErrPattern(m.errPattern))
+			tried, m.errs, m.delta, m.strip, m.rot, boundaryNote(m.delta, c.nidSearchSpan), formatErrPattern(m.errPattern))
 	}
 	if closestMiss >= 0 {
 		return best, false, fmt.Sprintf(
 			"no NID within accept gate over %d guesses; closest errs=%d at delta=%d strip=%v rot=%d%s; err_pattern=%s",
-			tried, missAt.errs, missAt.delta, missAt.strip, missAt.rot, boundaryNote(missAt.delta), formatErrPattern(missAt.errPattern))
+			tried, missAt.errs, missAt.delta, missAt.strip, missAt.rot, boundaryNote(missAt.delta, c.nidSearchSpan), formatErrPattern(missAt.errPattern))
 	}
 	return best, false, fmt.Sprintf(
 		"no NID within accept gate over %d guesses; all %d BCH-uncorrectable", tried, uncorrectable)
 }
 
 // atSearchBoundary reports whether an alignment hypothesis sits at the
-// edge of the NIDSearchSpan grid. A "best" or closest-miss at the
+// edge of the NID-alignment grid. A "best" or closest-miss at the
 // boundary is the textbook signature of a bounded search pegged at its
 // limit — issue #275, where the post-#321 retest converged on delta=2
 // (the ±2 grid's positive edge) every frame. Flagging it in the logs
 // turns the next retest into a measurement: still pegged at the new
 // edge → the true offset exceeds the span; interior with low errs →
-// the framing was the cause and the fix worked.
-func atSearchBoundary(delta int) bool {
-	return delta == NIDSearchSpan || delta == -NIDSearchSpan
+// the framing was the cause and the fix worked. span is the
+// per-instance grid radius (see ControlChannel.nidSearchSpan); when
+// callers pass the package constant the behaviour is unchanged.
+func atSearchBoundary(delta, span int) bool {
+	return delta == span || delta == -span
 }
 
 // boundaryNote returns a diag-string suffix to append when a closest /
-// best hypothesis sits at the search boundary; empty otherwise.
-func boundaryNote(delta int) string {
-	if atSearchBoundary(delta) {
-		return fmt.Sprintf(" — best alignment at search boundary (±%d); true offset may exceed span", NIDSearchSpan)
+// best hypothesis sits at the search boundary; empty otherwise. span
+// is the same per-instance grid radius searchNID is iterating over.
+func boundaryNote(delta, span int) string {
+	if atSearchBoundary(delta, span) {
+		return fmt.Sprintf(" — best alignment at search boundary (±%d); true offset may exceed span", span)
 	}
 	return ""
 }

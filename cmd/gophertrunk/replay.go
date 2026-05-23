@@ -46,6 +46,14 @@ func runReplay(args []string) {
 	sampleRate := fs.Float64("sample-rate", 2_400_000, "IQ sample rate in Hz")
 	demod := fs.String("demod", "c4fm", "P25 Phase 1 demod mode: c4fm | cqpsk")
 	freq := fs.Uint64("freq", 0, "informational only: the capture's nominal centre frequency in Hz")
+	// Issue #275 bisect knob. The default ±6 grid is the production
+	// value; widening to ±12/±18/±36 on a stubborn capture tells a
+	// span-bounded failure (errs drop at the new optimum) from a
+	// demod-quality-bounded one (errs stay at the BCH(63,16,11)
+	// correction ceiling regardless of alignment). Both acceptance
+	// tiers (BCH+parity + TSBK CRC) reject wrong alignments at any
+	// span, so widening cannot manufacture a false lock.
+	nidSearchSpan := fs.Int("nid-search-span", p25phase1.NIDSearchSpan, "NID-alignment search radius in dibits (default matches the production ccdecoder; widen to bisect a stubborn capture per issue #275)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `gophertrunk replay — decode a raw IQ capture file offline.
 
@@ -76,6 +84,10 @@ FLAGS:`)
 	demodMode, ok := p25phase1rx.ParseDemodMode(*demod)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "replay: unknown -demod %q (want c4fm or cqpsk)\n", *demod)
+		os.Exit(2)
+	}
+	if *nidSearchSpan <= 0 {
+		fmt.Fprintln(os.Stderr, "replay: -nid-search-span must be > 0")
 		os.Exit(2)
 	}
 
@@ -110,12 +122,19 @@ FLAGS:`)
 		rotations = p25phase1.RotationsC4FM
 	}
 	cc := p25phase1.New(p25phase1.Options{
-		Bus:         bus,
-		Log:         logger,
-		SystemName:  "replay",
-		FrequencyHz: uint32(*freq),
-		Rotations:   rotations,
+		Bus:           bus,
+		Log:           logger,
+		SystemName:    "replay",
+		FrequencyHz:   uint32(*freq),
+		Rotations:     rotations,
+		NIDSearchSpan: *nidSearchSpan,
 	})
+	// Surface the active configuration the same way the ccdecoder
+	// pipeline does, so the replay log line is directly comparable
+	// to a daemon's startup line — and a non-default span (the
+	// bisect knob) is visible without re-reading the command.
+	fmt.Fprintf(os.Stderr, "replay: p25/phase1 configured  demod=%s  rotations=%v  nid_search_span=%d  nid_accept_errs=%d  nid_marginal_max=%d\n",
+		*demod, rotations, *nidSearchSpan, p25phase1.NIDAcceptErrs, p25phase1.NIDMarginalMaxErrs)
 
 	var dibitCount int64
 	rx := p25phase1rx.New(p25phase1rx.Options{
