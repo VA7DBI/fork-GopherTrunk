@@ -7,6 +7,29 @@ for tagged releases.
 
 ## [Unreleased]
 
+## [v0.2.0] — 2026-05-23
+
+SDR-fleet + DMR-voice + P25-lock release. The pure-Go SDR
+backend grows from RTL-SDR-only into a full fleet — HackRF One
+/ Jawbreaker / Rad1o, Airspy R2 / Mini, and the entire Airspy
+HF+ family all gain native drivers with no `libhackrf` /
+`libairspy` / `libairspyhf` at build or runtime, so the
+single-static-binary guarantee holds across every supported
+front-end. DMR gains its missing voice path: an AMBE+2 3600 ×
+2450 vocoder decodes Tier II / Tier III voice superframes to
+WAV. P25 Phase 1 control-channel lock on live air gets the
+final attention pass it needed — NID-alignment search after
+FSW, TSBK-CRC corroboration for marginal NIDs, restricted C4FM
+rotation set, and a per-dibit error-pattern diagnostic that
+makes lock failures debuggable from the log. A new
+`gophertrunk replay` subcommand decodes captured wideband IQ
+offline so issue triage doesn't need a radio on the bench.
+RTL-SDR's classic "device busy" failure mode is gone — the USB
+layer now auto-detaches the bound `dvb_usb_rtl28xxu` kernel
+driver the way `libusb` does for `librtlsdr`, so the daemon
+opens dongles out of the box without first blacklisting the
+DVB module.
+
 ### Added
 
 - **Airspy HF+ Discovery / Dual Port / legacy HF+ pure-Go driver.**
@@ -63,6 +86,54 @@ for tagged releases.
   wire protocols are unit-tested against `usb.MockTransport`; on-air
   validation against attached HackRF / Airspy hardware is the
   documented follow-up.
+
+- **DMR voice decodes to playable WAV (issue #276).** The DMR
+  voice path is now end-to-end: a Tier II / Tier III voice
+  superframe decoder slices the AMBE+2 burst layout into the
+  three 49-bit voice frames per burst, and a clean-room pure-Go
+  AMBE+2 3600 × 2450 vocoder takes the on-air FEC-protected
+  frames through soft-decision deinterleave → Golay(23,12,7) +
+  Hamming(15,11,3) FEC → b₀…b₈ parameter extraction → MBE
+  synthesis → 8 kHz PCM. The composer wires the chain into the
+  recorder so a DMR voice grant now produces a WAV instead of an
+  empty `.raw` sidecar. Encrypted DMR voice calls are detected
+  (PI header keyword + signalling-flag check), tagged on the
+  call record, and logged so an operator can tell at a glance
+  why a recording is silent.
+
+- **`gophertrunk replay` subcommand for offline IQ decoding.**
+  A new top-level subcommand mounts a wideband IQ recording (the
+  two-channel 16-bit WAV layout the daemon writes, or
+  SDRtrunk's) into the SDR pool as a virtual tuner and runs the
+  full decode pipeline against it with no radio attached. Issue
+  triage (especially for #275) can now reproduce a control-
+  channel-lock failure off a customer-supplied capture instead
+  of needing the original site on the bench.
+
+- **P25 Phase 1 control-channel lock on live air (issue #275).**
+  Four targeted fixes to the NID acquisition path: (1) the
+  alignment search now sweeps across symbols after the FSW
+  rather than assuming bit-exact synchrony, fixing a class of
+  marginal sites that previously never locked; (2) NID
+  candidates with one or two residual bit errors are
+  corroborated against the next TSBK's CRC before being accepted
+  or rejected, so a single noisy NID dibit no longer drops the
+  whole superframe; (3) the C4FM rotation set is restricted to
+  the four physically realisable dibit phases, eliminating false
+  locks on rotated noise; (4) on NID failure the decoder logs
+  the per-dibit error pattern so a capture-driven debugger can
+  see which specific symbols disagreed with the expected NID.
+  At startup the `ccdecoder` now logs its NID-search parameters
+  so the parameters used on a given run are visible in the log
+  without having to read source.
+
+- **DMR encryption guide.** A new
+  [`docs/dmr-encryption.md`](docs/dmr-encryption.md) page
+  documents the DMR encryption landscape (basic + enhanced
+  privacy, ARC4 vs AES, key-management), what GopherTrunk does
+  detect (the PI header, the signalling-flag bit, vendor key
+  IDs) and what it deliberately does not do (decrypt without an
+  operator-supplied key), with worked log examples.
 
 ### Fixed
 
