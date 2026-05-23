@@ -34,9 +34,10 @@ daemon behaves like a high-end digital-trunking police scanner end-to-end.
 
 ┌──────────────────────────────────────────────────────────────┐
 │  internal/sdr                                                │
-│    Driver registry → rtlsdr · hackrf · airspy (all pure-Go,  │
-│    shared USB transport at rtlsdr/usb); baseband (WAV IQ     │
-│    replay as virtual tuners); mock (raw u8/f32 file replay)  │
+│    Driver registry → rtlsdr · hackrf · airspy · airspyhf     │
+│    (all pure-Go, shared USB transport at rtlsdr/usb);        │
+│    baseband (WAV IQ replay as virtual tuners); mock          │
+│    (raw u8/f32 file replay)                                  │
 │    Pool: enumerates, opens, role-assigns, supervises;        │
 │    publishes sdr.attached/sdr.detached events with per-      │
 │    device SDRStatus payloads                                 │
@@ -134,14 +135,22 @@ chooses what hardware it can talk to:
 - `internal/sdr/rtlsdr/purego` (`rtlsdr`) — pure-Go RTL2832U +
   every osmocom tuner.
 - `internal/sdr/hackrf` (`hackrf`) — pure-Go libhackrf protocol
-  port over the shared `rtlsdr/usb` transport.
+  port covering HackRF One / Jawbreaker / Rad1o, with BOARD_ID and
+  VERSION_STRING readback at open so the operator-visible model
+  name and firmware version (including PortaPack / Mayhem
+  detection) come from the device itself.
 - `internal/sdr/airspy` (`airspy`) — pure-Go libairspy protocol
-  port over the shared transport.
+  port covering Airspy R2 and Airspy Mini, with the R2-vs-Mini
+  split surfaced through the `TunerName` field.
+- `internal/sdr/airspyhf` (`airspyhf`) — pure-Go libairspyhf
+  protocol port covering the Airspy HF+ family (Discovery, Dual
+  Port, legacy HF+). HF (9 kHz – 31 MHz) + VHF (60 – 260 MHz);
+  HF AGC plus a 0–48 dB attenuator and +6 dB LNA preamp.
 - `internal/sdr/baseband` (`baseband-replay`) — mounts recorded
   IQ WAVs as virtual tuners. Registered dynamically by the daemon
   when `baseband.replay` is configured.
 
-`cmd/gophertrunk` blank-imports the three real-hardware drivers
+`cmd/gophertrunk` blank-imports the four real-hardware drivers
 unconditionally; the baseband-replay driver registers at runtime
 when the operator points at a recording.
 

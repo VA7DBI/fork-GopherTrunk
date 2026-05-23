@@ -20,6 +20,7 @@ import (
 	// name on init; the blank import is what actually links the
 	// package into the binary.
 	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/airspy"
+	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/airspyhf"
 	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/hackrf"
 	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/purego"
 	"github.com/MattCheramie/GopherTrunk/internal/version"

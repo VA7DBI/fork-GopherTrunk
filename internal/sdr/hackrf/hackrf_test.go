@@ -3,6 +3,7 @@ package hackrf
 import (
 	"context"
 	"encoding/binary"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,9 +20,20 @@ func withDevice(t *testing.T) (*Device, *usb.MockTransport) {
 }
 
 func TestDriverEnumerateAndOpen(t *testing.T) {
+	// Open now issues BOARD_ID_READ + VERSION_STRING_READ control
+	// transfers, so the mock needs a scripted transport (not the
+	// default blank one) — script both readbacks here.
 	enum := &usb.MockEnumerator{
 		Devices: []usb.Descriptor{
 			{Bus: 1, Address: 7, VID: vidHackRF, PID: pidHackRFOne, Serial: "ABC", Product: "HackRF One", Path: "mock/1"},
+		},
+		OpenFunc: func(usb.Descriptor) (*usb.MockTransport, error) {
+			mt := usb.NewMockTransport()
+			mt.Script = []usb.CtrlExchange{
+				{In: true, BRequest: reqBoardIDRead, Reply: []byte{2}, N: 1},
+				{In: true, BRequest: reqVersionStringRead, Reply: []byte("git-2024.02.1\x00"), N: 255},
+			}
+			return mt, nil
 		},
 	}
 	drv := New(enum)
@@ -32,6 +44,9 @@ func TestDriverEnumerateAndOpen(t *testing.T) {
 	if len(infos) != 1 || infos[0].Serial != "ABC" || infos[0].Driver != driverName {
 		t.Fatalf("Enumerate = %+v", infos)
 	}
+	if infos[0].Product != "HackRF One" {
+		t.Errorf("Enumerate Product = %q, want %q", infos[0].Product, "HackRF One")
+	}
 	dev, err := drv.Open(0)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -39,8 +54,180 @@ func TestDriverEnumerateAndOpen(t *testing.T) {
 	if dev.Info().Serial != "ABC" {
 		t.Fatalf("Info.Serial = %q, want ABC", dev.Info().Serial)
 	}
+	if dev.Info().Product != "HackRF One" {
+		t.Errorf("Info.Product = %q, want %q", dev.Info().Product, "HackRF One")
+	}
+	if !strings.Contains(dev.Info().TunerName, "git-2024.02.1") {
+		t.Errorf("Info.TunerName = %q, want firmware suffix", dev.Info().TunerName)
+	}
 	if err := dev.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestEnumerateRenamesByPID(t *testing.T) {
+	// Even when the USB descriptor Product is garbage, the canonical
+	// name comes from the PID.
+	enum := &usb.MockEnumerator{
+		Devices: []usb.Descriptor{
+			{Bus: 1, Address: 1, VID: vidHackRF, PID: pidHackRFOne, Serial: "S1", Product: "weird-descriptor"},
+			{Bus: 1, Address: 2, VID: vidHackRF, PID: pidHackRFJawbrk, Serial: "S2", Product: ""},
+			{Bus: 1, Address: 3, VID: vidHackRF, PID: pidHackRFRad1o, Serial: "S3", Product: "Rad1o badge"},
+		},
+	}
+	drv := New(enum)
+	infos, err := drv.Enumerate()
+	if err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+	want := []string{"HackRF One", "HackRF Jawbreaker", "Rad1o"}
+	if len(infos) != len(want) {
+		t.Fatalf("got %d infos, want %d", len(infos), len(want))
+	}
+	for i, w := range want {
+		if infos[i].Product != w {
+			t.Errorf("infos[%d].Product = %q, want %q", i, infos[i].Product, w)
+		}
+	}
+}
+
+func TestProductForPIDFallback(t *testing.T) {
+	cases := []struct {
+		pid      uint16
+		fallback string
+		want     string
+	}{
+		{pidHackRFOne, "ignored", "HackRF One"},
+		{0xbeef, "USB descriptor name", "USB descriptor name"},
+		{0xbeef, "", "HackRF"},
+	}
+	for _, c := range cases {
+		if got := productForPID(c.pid, c.fallback); got != c.want {
+			t.Errorf("productForPID(%#x, %q) = %q, want %q", c.pid, c.fallback, got, c.want)
+		}
+	}
+}
+
+func TestOpenAppendsPortaPackTag(t *testing.T) {
+	enum := &usb.MockEnumerator{
+		Devices: []usb.Descriptor{
+			{Bus: 1, Address: 7, VID: vidHackRF, PID: pidHackRFOne, Serial: "PP1", Product: "HackRF One"},
+		},
+		OpenFunc: func(usb.Descriptor) (*usb.MockTransport, error) {
+			mt := usb.NewMockTransport()
+			mt.Script = []usb.CtrlExchange{
+				{In: true, BRequest: reqBoardIDRead, Reply: []byte{2}, N: 1},
+				{In: true, BRequest: reqVersionStringRead,
+					Reply: []byte("git-portapack-mayhem-v1.7.4\x00"), N: 255},
+			}
+			return mt, nil
+		},
+	}
+	drv := New(enum)
+	if _, err := drv.Enumerate(); err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+	dev, err := drv.Open(0)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer dev.Close()
+	if !strings.Contains(dev.Info().Product, "PortaPack") {
+		t.Errorf("Info.Product = %q, want PortaPack suffix", dev.Info().Product)
+	}
+}
+
+func TestReadBoardIDUnknownFallsBackToPID(t *testing.T) {
+	// Board-ID 99 isn't in boardIDNames — Product must fall back to
+	// the PID-derived name.
+	enum := &usb.MockEnumerator{
+		Devices: []usb.Descriptor{
+			{Bus: 1, Address: 7, VID: vidHackRF, PID: pidHackRFRad1o, Serial: "R1", Product: "Rad1o"},
+		},
+		OpenFunc: func(usb.Descriptor) (*usb.MockTransport, error) {
+			mt := usb.NewMockTransport()
+			mt.Script = []usb.CtrlExchange{
+				{In: true, BRequest: reqBoardIDRead, Reply: []byte{99}, N: 1},
+				{In: true, BRequest: reqVersionStringRead, Reply: []byte("custom-fw\x00"), N: 255},
+			}
+			return mt, nil
+		},
+	}
+	drv := New(enum)
+	if _, err := drv.Enumerate(); err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+	dev, err := drv.Open(0)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer dev.Close()
+	if dev.Info().Product != "Rad1o" {
+		t.Errorf("Info.Product = %q, want Rad1o (PID fallback)", dev.Info().Product)
+	}
+}
+
+func TestReadVersionStringIgnoredOnError(t *testing.T) {
+	// Older firmware that doesn't implement VERSION_STRING_READ
+	// returns an error; Open must still succeed with a plain
+	// TunerName.
+	enum := &usb.MockEnumerator{
+		Devices: []usb.Descriptor{
+			{Bus: 1, Address: 7, VID: vidHackRF, PID: pidHackRFOne, Serial: "OLD", Product: "HackRF One"},
+		},
+		OpenFunc: func(usb.Descriptor) (*usb.MockTransport, error) {
+			mt := usb.NewMockTransport()
+			// Only the board-ID read is scripted — version-string
+			// read has no matching entry, so MockTransport.recordErr
+			// returns an error which our Open is supposed to ignore.
+			mt.Script = []usb.CtrlExchange{
+				{In: true, BRequest: reqBoardIDRead, Reply: []byte{2}, N: 1},
+			}
+			return mt, nil
+		},
+	}
+	drv := New(enum)
+	if _, err := drv.Enumerate(); err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+	dev, err := drv.Open(0)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer dev.Close()
+	if dev.Info().TunerName != "MAX2839+MAX5864" {
+		t.Errorf("Info.TunerName = %q, want plain (no fw suffix)", dev.Info().TunerName)
+	}
+}
+
+func TestCleanVersionStringStripsPaddingAndNonPrintable(t *testing.T) {
+	// Padding NUL, embedded NUL, control char, trailing whitespace.
+	got := cleanVersionString([]byte("git-2024.02.1\x00garbage-after-nul"))
+	if got != "git-2024.02.1" {
+		t.Errorf("cleanVersionString = %q, want %q", got, "git-2024.02.1")
+	}
+	got = cleanVersionString([]byte(" git-foo\x07\x01 \x00"))
+	if got != "git-foo" {
+		t.Errorf("cleanVersionString (control chars) = %q, want %q", got, "git-foo")
+	}
+}
+
+func TestIsPortaPack(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"git-2024.02.1", false},
+		{"git-portapack-v1.7.4", true},
+		{"git-PORTAPACK", true},
+		{"mayhem-v1.7.4", true},
+		{"Mayhem build", true},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isPortaPack(c.in); got != c.want {
+			t.Errorf("isPortaPack(%q) = %v, want %v", c.in, got, c.want)
+		}
 	}
 }
 

@@ -16,18 +16,31 @@ transport (USBDEVFS on Linux, IOKit on macOS, WinUSB on Windows).
 
 | Family | Driver | USB IDs | Status |
 | --- | --- | --- | --- |
-| **RTL-SDR** (RTL2832U + R820T / R820T2 / R828D / E4000 / FC0012 / FC0013 / FC2580) | `rtlsdr` | `0x0bda:0x2838` | Production — on-air-validated across Linux / macOS / Windows. |
-| **HackRF One** (also Jawbreaker / Rad1o) | `hackrf` | `0x1d50:0x6089` · `0x1d50:0x604b` · `0x1d50:0xcc15` | Wire-protocol-complete; on-air validation against attached hardware is the documented follow-up. |
+| **RTL-SDR** (RTL2832U + R820T / R820T2 / R828D / E4000 / FC0012 / FC0013 / FC2580) | `rtlsdr` | `0x0bda:0x2832` · `0x0bda:0x2838` | Production — on-air-validated across Linux / macOS / Windows. |
+| **HackRF One / Jawbreaker / Rad1o** | `hackrf` | `0x1d50:0x6089` · `0x1d50:0x604b` · `0x1d50:0xcc15` | Wire-protocol-complete; on-air validation against attached hardware is the documented follow-up. |
 | **Airspy R2 / Airspy Mini** | `airspy` | `0x1d50:0x60a1` | Wire-protocol-complete; on-air validation against attached hardware is the documented follow-up. |
+| **Airspy HF+ Discovery / HF+ Dual Port / legacy HF+** | `airspyhf` | `0x03eb:0x800c` | Wire-protocol-complete; HF (9 kHz – 31 MHz) + VHF (60 – 260 MHz). On-air validation against attached hardware is the documented follow-up. |
 
-The HackRF and Airspy drivers speak the documented libhackrf /
-libairspy USB vendor protocols directly (transceiver / receiver
-mode, frequency, sample rate, LNA / VGA / mixer / amp / bias-tee
-gains, bulk-IN sample reaper with real-time decode of HackRF int8 IQ
-and Airspy INT16_IQ into `complex64`). Their wire protocols are
-exercised by unit tests against `usb.MockTransport`. SDRPlay, USRP
-and BladeRF require vendor C libraries and are out of scope for the
-zero-CGO build.
+The HackRF and Airspy / Airspy HF+ drivers speak the documented
+libhackrf, libairspy, and libairspyhf USB vendor protocols directly
+(transceiver / receiver mode, frequency, sample rate, LNA / VGA /
+mixer / amp / attenuator / bias-tee, bulk-IN sample reaper with
+real-time decode of HackRF int8 IQ and Airspy / HF+ INT16_IQ into
+`complex64`). Their wire protocols are exercised by unit tests
+against `usb.MockTransport`. SDRPlay, USRP and BladeRF require
+vendor C libraries and are out of scope for the zero-CGO build.
+
+At enumeration time each driver reports the canonical model name
+rather than echoing whatever the USB descriptor happens to carry:
+HackRF maps the PID to `HackRF One` / `HackRF Jawbreaker` / `Rad1o`,
+Airspy R2/Mini detects the `MINI` substring in the descriptor to
+emit `R820T (Airspy R2)` or `R820T (Airspy Mini)`, and the HF+
+driver distinguishes Discovery / Dual Port / legacy units the same
+way. On Open, the HackRF driver also reads the firmware's
+BOARD_ID_READ + VERSION_STRING_READ control transfers, so the
+operator-visible `TunerName` field carries the running firmware
+version and a `+ PortaPack` tag when a PortaPack / Mayhem build is
+detected. The HF+ driver appends its firmware version the same way.
 
 ### RTL-SDR tested combinations
 
@@ -51,6 +64,59 @@ sdr:
       bias_tee: true           # 5V on the SMA — only enable if you want it
 ```
 
+### HackRF tested combinations
+
+| Device | PID | Coverage | Gain chain | Bias-tee | Notes |
+| --- | --- | --- | --- | --- | --- |
+| **HackRF One** | `0x6089` | 1 MHz – 6 GHz, half-duplex 8/10/20 MSPS | RF amp (on/off, +14 dB) + LNA (0–40 dB / 8 dB steps) + VGA (0–62 dB / 2 dB steps) | +3.3 V on `ANT` (HW rev 6+) | Single SMA antenna port. PortaPack add-on (Mayhem firmware) is auto-detected via the VERSION_STRING_READ control transfer — `gophertrunk sdr list` then shows `HackRF One + PortaPack`. |
+| HackRF Jawbreaker | `0x604b` | 30 MHz – 6 GHz prototype | Same as One (MAX2837 + MAX5864) | None | Pre-production batch; functional but rarely seen in the field. |
+| Rad1o | `0xcc15` | 50 MHz – 4 GHz | Same as One | None | Chaos Communication Camp 2015 badge; same firmware family as HackRF One, identical wire protocol. |
+
+The HackRF has no hardware AGC. Passing `gain: "auto"` selects a
+safe fixed split (LNA = 16 dB, VGA = 20 dB, RF amp off); positive
+tenth-dB values are distributed across the three stages. The
+firmware-reported board ID (BOARD_ID_READ) is the canonical model
+identifier and takes precedence over the USB descriptor when the
+two disagree.
+
+```yaml
+sdr:
+  sample_rate: 8_000_000          # HackRF baseband; filter follows automatically
+  devices:
+    - serial: "0000000000000000a06064c8333819cf"
+      role: control
+      gain: "400"                  # 40 dB target distributed across LNA + VGA
+      bias_tee: false              # set true to power an external LNA
+```
+
+### Airspy tested combinations
+
+| Device | PID | Coverage | Max sample rate | Gain chain | Bias-tee | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Airspy R2** | `0x60a1` (`airspy`) | 24 – 1700 MHz | 10 MSPS | R820T LNA + Mixer + VGA (each 0–15) with per-stage AGC | +4.5 V on SMA | Most common variant. Identified by the USB Product string `Airspy R2`. |
+| **Airspy Mini** | `0x60a1` (`airspy`) | 24 – 1700 MHz | 6 MSPS | Same as R2 | +4.5 V on SMA | Identified by the `MINI` substring in the USB Product string. Same R820T tuner; smaller form factor and lower max rate. |
+| **Airspy HF+ Discovery** | `0x800c` (`airspyhf`) | 9 kHz – 31 MHz HF + 60 – 260 MHz VHF | 768 kSPS | HF AGC (firmware-managed) + HF attenuator 0–48 dB (6 dB steps) + +6 dB LNA preamp | +4.5 V on HF SMA | Most popular HF receiver. `gain: "auto"` enables firmware HF AGC; numeric values map to attenuator step + LNA preamp. |
+| Airspy HF+ Dual Port | `0x800c` (`airspyhf`) | Same as Discovery | 768 kSPS | Same as Discovery | +4.5 V on the HF SMA only | Identified by the `DUAL` substring. The VHF SMA does not carry bias voltage. |
+| Legacy Airspy HF+ | `0x800c` (`airspyhf`) | Same as Discovery | 768 kSPS | Same as Discovery | Hardware-revision dependent | Pre-Discovery hardware; uncommon. |
+
+The R2 / Mini driver pins the device to `INT16_IQ` sample mode at
+open-time and reads the firmware's advertised sample-rate table —
+`SetSampleRate` then picks the closest available rate, so a `gain:
+"auto"` + `sample_rate: 10_000_000` config picks the 10 MSPS slot on
+R2 and the 6 MSPS slot on Mini without per-device overrides. The
+HF+ driver does the same; it also reads VERSION_STRING_READ to
+expose the firmware version in `TunerName`.
+
+```yaml
+sdr:
+  sample_rate: 768_000             # HF+ Discovery max
+  devices:
+    - serial: "3652b46d6e6f8867"
+      role: control
+      gain: "auto"                 # firmware HF AGC handles the HF band well
+      bias_tee: false              # set true to power an active HF antenna
+```
+
 ## Linux
 
 No package install is needed for the build itself; the driver only
@@ -61,6 +127,7 @@ file per family is fine:
 
 ```
 # /etc/udev/rules.d/20-rtlsdr.rules
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0666"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0666"
 
 # /etc/udev/rules.d/21-hackrf.rules
@@ -70,6 +137,9 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="cc15", MODE="0666"
 
 # /etc/udev/rules.d/22-airspy.rules
 SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="60a1", MODE="0666"
+
+# /etc/udev/rules.d/23-airspyhf.rules
+SUBSYSTEM=="usb", ATTRS{idVendor}=="03eb", ATTRS{idProduct}=="800c", MODE="0666"
 ```
 
 Reload udev (`sudo udevadm control --reload && sudo udevadm trigger`) and
@@ -100,8 +170,9 @@ service setup.
 Bind each dongle to **WinUSB** with Zadig (bundled in the Windows
 installer — Start Menu → GopherTrunk → "Install RTL-SDR driver
 (Zadig)") once per device. The same Zadig walkthrough also works
-for HackRF and Airspy — pick the device in the dropdown, choose
-the WinUSB driver, click Replace. See [`install-windows.md`]({{ '/install-windows.html' | relative_url }})
+for HackRF, Airspy and Airspy HF+ — pick the device in the
+dropdown, choose the WinUSB driver, click Replace. See
+[`install-windows.md`]({{ '/install-windows.html' | relative_url }})
 for the click-by-click walkthrough.
 
 ## Verifying the build
@@ -112,9 +183,25 @@ make build
 ```
 
 You should see one row per attached dongle with index, serial,
-tuner type (e.g. `R820T2` / `R828D` for RTL-SDR, `MAX2839+MAX5864`
-for HackRF, `R820T` for Airspy), and the supported gain values. The
-`Driver` column reads `rtlsdr`, `hackrf`, or `airspy` for each row.
+tuner type, and the supported gain values:
+
+- **RTL-SDR** dongles report a `R820T2` / `R828D` / `E4000` / `FC0012` /
+  `FC0013` / `FC2580` `TunerName` depending on what the driver detects
+  on the RTL2832U.
+- **HackRF** dongles report `MAX2839+MAX5864 (fw <version>)` —
+  `<version>` is what the firmware returns via `VERSION_STRING_READ`,
+  e.g. `git-2024.02.1`. A `+ PortaPack` suffix appears in `Product`
+  when a Mayhem build is detected.
+- **Airspy R2 / Mini** report `R820T (Airspy R2)` or
+  `R820T (Airspy Mini)`; the variant is inferred from the USB
+  descriptor's Product string.
+- **Airspy HF+** reports `Airspy HF+ Discovery` /
+  `Airspy HF+ Dual Port` / `Airspy HF+` (with a firmware suffix when
+  available) for both `Product` and `TunerName` — there's no
+  conventional tuner chip to name.
+
+The `Driver` column reads `rtlsdr`, `hackrf`, `airspy`, or
+`airspyhf` for each row.
 
 ## Capturing IQ for replay
 

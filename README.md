@@ -5,7 +5,7 @@
 <h1 align="center">GopherTrunk</h1>
 
 <p align="center">
-  <strong>Pure-Go digital-trunking radio scanner engine for RTL-SDR · HackRF · Airspy.</strong><br>
+  <strong>Pure-Go digital-trunking radio scanner engine for RTL-SDR · HackRF · Airspy · Airspy HF+.</strong><br>
   P25 · DMR · TETRA · NXDN · Motorola Type II · EDACS · LTR · MPT 1327 · dPMR · D-STAR · YSF.<br>
   Zero CGO, single static binary, headless daemon + Bubbletea TUI cockpit + browser web console.
 </p>
@@ -23,7 +23,7 @@
 
 ## What is this?
 
-GopherTrunk is a software-defined-radio scanner that follows digital trunked-radio voice calls and decodes them to audio. It runs on a pool of RTL-SDR, HackRF One and Airspy R2 / Mini dongles, has no C dependencies (no `librtlsdr` / `libhackrf` / `libairspy` / `libusb` at build or runtime), and ships as a single ~10 MB static binary for Linux, macOS, and Windows. Completed calls stream to Broadcastify Calls, RdioScanner, OpenMHz, and live Icecast / ShoutCast — out of the box, no `libmp3lame`.
+GopherTrunk is a software-defined-radio scanner that follows digital trunked-radio voice calls and decodes them to audio. It runs on a pool of RTL-SDR (every osmocom tuner — R820T / R820T2 / R828D / E4000 / FC0012 / FC0013 / FC2580), HackRF (One / Jawbreaker / Rad1o, with PortaPack / Mayhem firmware auto-detected), Airspy R2 / Mini, and Airspy HF+ (Discovery / Dual Port / legacy) dongles, has no C dependencies (no `librtlsdr` / `libhackrf` / `libairspy` / `libairspyhf` / `libusb` at build or runtime), and ships as a single ~10 MB static binary for Linux, macOS, and Windows. Completed calls stream to Broadcastify Calls, RdioScanner, OpenMHz, and live Icecast / ShoutCast — out of the box, no `libmp3lame`.
 
 Why does this exist? Read **[The Story of GopherTrunk](https://gophertrunk.org/story.html)** — the personal backstory behind the project, from a kid listening to an analog scanner to a pure-Go digital trunking scanner built with the help of modern AI tooling.
 
@@ -56,7 +56,7 @@ Full per-OS install (Windows installer / macOS Apple Silicon / Linux aarch64): *
 
 **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25 Phase 2 / DMR) vocoders implemented in Go, no DVSI / mbelib dependency. Analog trunking (Motorola Type II / SmartZone, EDACS, LTR, MPT 1327) decodes voice through the composer's FM chain; EDACS ProVoice stays on the `.raw` sidecar path. Per-call WAV + raw-frame sidecars; live PCM playback via direct ALSA / WASAPI / CoreAudio (no `libasound2` at runtime).
 
-**SDR layer** — Pure-Go drivers for **RTL-SDR**, **HackRF One** and **Airspy R2 / Mini**, all sharing the same pure-Go USB transport (USBDEVFS on Linux, WinUSB on Windows, IOKit on macOS) — no `librtlsdr` / `libhackrf` / `libairspy` at build or runtime. The RTL-SDR backend includes wire-level ports of every osmocom tuner (R820T / R820T2 / R828D / E4000 / FC0012 / FC0013 / FC2580) with librtlsdr-parity init burst chunking, EPIPE warmup + reset on Open, balanced LNA+Mixer gain, and the same `rtlsdr_open` probe order + GPIO 4/5/6 dances for non-R820T detection. The HackRF and Airspy drivers speak the documented libhackrf / libairspy USB vendor protocols (set freq / sample rate / gains / bias-tee, bulk-IN sample reaper, real-time sample decode to complex64); on-air validation against attached HackRF / Airspy hardware is the documented follow-up, but the wire protocols are exercised under unit tests against `usb.MockTransport`. Multi-device pool with role assignment, per-device gain / PPM / bias-tee.
+**SDR layer** — Pure-Go drivers for **RTL-SDR**, **HackRF One / Jawbreaker / Rad1o**, **Airspy R2 / Mini**, and the **Airspy HF+ family (Discovery, Dual Port, legacy HF+)**, all sharing the same pure-Go USB transport (USBDEVFS on Linux, WinUSB on Windows, IOKit on macOS) — no `librtlsdr` / `libhackrf` / `libairspy` / `libairspyhf` at build or runtime. The RTL-SDR backend includes wire-level ports of every osmocom tuner (R820T / R820T2 / R828D / E4000 / FC0012 / FC0013 / FC2580) with librtlsdr-parity init burst chunking, EPIPE warmup + reset on Open, balanced LNA+Mixer gain, and the same `rtlsdr_open` probe order + GPIO 4/5/6 dances for non-R820T detection. The HackRF, Airspy, and HF+ drivers speak the documented libhackrf / libairspy / libairspyhf USB vendor protocols (transceiver / receiver mode, set freq / sample rate / per-stage gains / attenuator / bias-tee, bulk-IN sample reaper, real-time sample decode of HackRF int8 IQ and Airspy / HF+ INT16_IQ to complex64); the HackRF driver also reads BOARD_ID + VERSION_STRING at open so `sdr list` surfaces the canonical model name and firmware version (including PortaPack / Mayhem detection), and the Airspy R2 / Mini split is exposed through the `TunerName` field. On-air validation against attached HackRF / Airspy / HF+ hardware is the documented follow-up, but the wire protocols are exercised under unit tests against `usb.MockTransport`. Multi-device pool with role assignment, per-device gain / PPM / bias-tee.
 
 **DSP** — Polyphase channelizer + CIC + halfband, Kaiser / RRC / Gaussian FIR designers, FM / C4FM / GFSK / FFSK / DQPSK / π/4-DQPSK / π/8-H-DQPSK demods, Mueller-Müller + Gardner clock recovery, LMS + CMA blind equalizers, Selection + maximal-ratio diversity combining.
 
@@ -118,11 +118,12 @@ MPT 1327) now decodes voice through the composer's FM chain.
 
 The remaining gaps:
 
-- **Additional SDR hardware.** RTL-SDR, HackRF One and Airspy R2 /
-  Mini are all supported by pure-Go drivers; on-air validation of
-  the HackRF / Airspy backends against attached hardware is the
-  documented follow-up. SDRPlay / USRP / BladeRF need vendor C
-  libraries and are out of scope for the zero-CGO build.
+- **Additional SDR hardware.** RTL-SDR, HackRF (One / Jawbreaker /
+  Rad1o), Airspy R2 / Mini, and Airspy HF+ (Discovery / Dual Port /
+  legacy) are all supported by pure-Go drivers; on-air validation
+  of the HackRF / Airspy / HF+ backends against attached hardware
+  is the documented follow-up. SDRPlay / USRP / BladeRF need
+  vendor C libraries and are out of scope for the zero-CGO build.
 - **Digital-voice composer chains.** FM (incl. analog trunking),
   DMR and P25 Phase 1/2 decode to audio; NXDN, dPMR, TETRA, YSF and
   D-STAR voice chains, plus EDACS ProVoice, are still bypassed —
