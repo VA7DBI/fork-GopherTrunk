@@ -440,6 +440,30 @@ to its own package and lands independently.
 
 ### Recently shipped
 
+- **P25 Phase 1 TSBK CRC convention corrected — TSDU
+  trunking blocks now decode on real on-air captures
+  (issue #275).** The TSBK trailer in `internal/radio/p25/phase1/tsbk.go`
+  was verified against the CRC-CCITT/FALSE algorithm
+  (`init=0xFFFF`, no final XOR, stored inverted), but the
+  on-air convention per TIA-102.AABF (cross-checked against
+  OP25's `op25/gr-op25_repeater/lib/p25p1_fdma.cc::crc16`)
+  is the "augmented codeword" variant of the same polynomial
+  (init=0, shift-in MSB-first, final XOR 0xFFFF, evaluated
+  over all 12 bytes — expect 0 on a clean codeword). On the
+  Mt Anakie capture the prior code reported `tsbk-crc=195`
+  failures even with the trellis decoder reporting
+  metric=0 (clean Viterbi path); post-fix the same capture
+  decodes 92 TSBKs across the 15-second window and emits 2
+  grants. The fix swaps in a new
+  `framing.CRCCCITTAugmented` helper and leaves the existing
+  `framing.CRCCCITT` (CCITT/FALSE) and
+  `framing.CRCCCITTWithInit` (XMODEM/YSF variants) untouched
+  — NXDN / YSF / DMR call sites are unaffected and keep
+  their established conventions pending their own on-air
+  validation. A regression test
+  (`TestTSBKAcceptsMtAnakieOnAirVector`) pins three
+  ground-truth Mt Anakie TSBKs so the CRC algorithm can't
+  silently regress without naming a byte that changed.
 - **P25 Phase 1 NID BCH(63,16,11) generator polynomial
   corrected — control channel now locks on real on-air
   captures (issue #275).** The constant in

@@ -258,9 +258,11 @@ Flags:
 - `-diag` — after EOF, dump the dibit-value histogram, the
   pre-slicer soft-sample magnitude distribution, the FSW
   correlation landscape per rotation (Hamming-distance histogram +
-  hit count), the FSW positions and inter-hit deltas, and the
-  raw NID + first 24 TSBK dibits at the first 5 perfect-distance
-  FSWs. The off-path diagnostic that pinpoints which stage of the
-  C4FM demod chain produces wrong dibits — see the
+  hit count), the FSW positions and inter-hit deltas, the raw
+  NID + first 24 TSBK dibits at the first 5 perfect-distance
+  FSWs, and the trellis-decoded 12-byte TSBK info block with its
+  augmented-CRC check (a clean TSBK shows `crc=0x0000`). The
+  off-path diagnostic that pinpoints which stage of the C4FM
+  demod chain produces wrong dibits — see the
   `cmd/gophertrunk/iqdiag.go` package comment for the failure-mode
   interpretation table.

@@ -5,6 +5,7 @@ import (
 	"io"
 	"sort"
 
+	"github.com/MattCheramie/GopherTrunk/internal/radio/framing"
 	p25phase1 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
 )
 
@@ -317,6 +318,42 @@ func (d *iqDiag) printReport(w io.Writer) {
 					}
 				}
 				fmt.Fprintln(w)
+			}
+			// Trellis-decode the 98 channel dibits after the NID under
+			// the on-air status-symbol layout (status at frame pos 35,
+			// 71, 107, 143 — NID positions 11, 47, 83, 119) and dump
+			// the resulting 12-byte info block plus the augmented-CRC
+			// check that validates the trailer. A successful TSBK
+			// decode produces metric=0 (clean Viterbi path) and
+			// crc=0x0000 (trailer matches under TIA-102.AABF augmented
+			// CRC). Issue #275 Phase B part 3 surfaced the wrong CRC
+			// convention in the production code; this dump confirmed
+			// on-air trailers verify cleanly under the augmented
+			// variant.
+			needed := fswLen + 32 + 98 + 4 // pad for status symbols
+			if pos+needed <= len(d.dibits) {
+				channel := make([]uint8, 0, 98)
+				fswStart := pos
+				// First TSBK data dibit follows FSW(24) + NID(32 data + 1
+				// status at frame_pos 35) = 57 on-air positions in.
+				start := pos + fswLen + 33
+				i := start
+				for len(channel) < 98 && i < len(d.dibits) {
+					if (i-fswStart)%36 != 35 {
+						channel = append(channel, (d.dibits[i]+uint8(winner))&3)
+					}
+					i++
+				}
+				if len(channel) == 98 {
+					decoded := p25phase1.DeinterleaveTSBK(channel)
+					info, metric := p25phase1.DecodeTrellis(decoded)
+					bytes := make([]byte, 12)
+					for k := 0; k < 12; k++ {
+						bytes[k] = (info[4*k+0] << 6) | (info[4*k+1] << 4) | (info[4*k+2] << 2) | info[4*k+3]
+					}
+					fmt.Fprintf(w, "diag:   tsbk info (metric=%d): % 02X  crc=0x%04X (0 means valid)\n",
+						metric, bytes, framing.CRCCCITTAugmented(bytes))
+				}
 			}
 		}
 	}

@@ -33,3 +33,41 @@ func CRCCCITTWithInit(msg []byte, init uint16) uint16 {
 func CRCCCITTBits(bits []byte) uint16 {
 	return CRCCCITT(PackBitsMSB(bits))
 }
+
+// CRCCCITTAugmented is the "augmented codeword" variant of CRC-CCITT
+// the P25 TSBK trailer uses (TIA-102.AABF, cross-checked against
+// OP25's op25/gr-op25_repeater/lib/p25p1_fdma.cc::crc16):
+//
+//   - Polynomial 0x1021 (same as CRC-CCITT/FALSE).
+//   - Init register at 0 (NOT 0xFFFF — that's the CCITT/FALSE variant).
+//   - Each message bit is shifted INTO the register MSB-first; when the
+//     register overflows beyond 16 bits, the low 16 bits XOR the
+//     polynomial.
+//   - Final XOR with 0xFFFF.
+//
+// Encode: trailer = CRCCCITTAugmented(info ‖ 16 zero bits). Append to
+// the message; receiver checks CRCCCITTAugmented(info ‖ trailer) == 0.
+//
+// This is NOT the same algorithm as CRCCCITT (which is the
+// "CRC-CCITT/FALSE" variant — init 0xFFFF, byte-shift-out direction,
+// no final XOR). Both share the polynomial but produce different
+// values on the same input. Issue #275: the original P25 TSBK code
+// used CRCCCITT, which caused every on-air TSBK to fail verification
+// on the Mt Anakie capture even when the trellis decoder reported
+// metric=0 (clean path); on-air trailers verify cleanly under
+// CRCCCITTAugmented.
+func CRCCCITTAugmented(msg []byte) uint16 {
+	const poly uint32 = 0x1021
+	var crc uint32
+	for _, b := range msg {
+		for j := 0; j < 8; j++ {
+			bit := uint32((b >> (7 - j)) & 1)
+			crc = ((crc << 1) | bit) & 0x1FFFF
+			if crc&0x10000 != 0 {
+				crc = (crc & 0xFFFF) ^ poly
+			}
+		}
+	}
+	crc ^= 0xFFFF
+	return uint16(crc & 0xFFFF)
+}

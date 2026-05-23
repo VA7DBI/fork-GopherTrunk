@@ -27,9 +27,22 @@ var CRCError = fmt.Errorf("p25/phase1: TSBK CRC check failed")
 var ErrTSBKInfoLength = errors.New("p25/phase1: TSBK info must be 12 bytes")
 
 // ParseTSBK consumes 96 info bits (12 bytes) and returns a parsed block.
-// The trailer CRC is verified; CRCError is returned on mismatch (the
-// partially-parsed TSBK is still returned so callers can log the contents
-// for diagnostics).
+// The trailer CRC is verified per the P25 TSBK convention
+// (framing.CRCCCITTAugmented over all 12 bytes returns 0 on a valid
+// codeword); CRCError is returned on mismatch (the partially-parsed
+// TSBK is still returned so callers can log the contents for
+// diagnostics).
+//
+// Issue #275 Phase B part 3: the prior implementation used the
+// CRC-CCITT/FALSE algorithm (init 0xFFFF, no final XOR) and inverted
+// the stored trailer for comparison. That algorithm is documented in
+// many P25 references but is not what the spec uses on-air: TSBK
+// trailers in the Mt Anakie capture verify cleanly under the
+// "augmented codeword" CRC variant (init 0, final XOR 0xFFFF, run
+// over all 12 bytes, expect 0). See framing.CRCCCITTAugmented and the
+// OP25 cross-reference for the algorithmic derivation; the field
+// symptom was 195/197 TSBK CRC failures on Mt Anakie even when the
+// upstream trellis decoder reported metric=0 (clean path).
 func ParseTSBK(info []byte) (TSBK, error) {
 	if len(info) != 12 {
 		return TSBK{}, fmt.Errorf("%w, got %d", ErrTSBKInfoLength, len(info))
@@ -41,16 +54,17 @@ func ParseTSBK(info []byte) (TSBK, error) {
 	t.MFID = info[1]
 	copy(t.Payload[:], info[2:10])
 
-	storedCRC := binary.BigEndian.Uint16(info[10:12]) ^ 0xFFFF
-	want := framing.CRCCCITT(info[:10])
-	if storedCRC != want {
+	if framing.CRCCCITTAugmented(info) != 0 {
 		return t, CRCError
 	}
 	return t, nil
 }
 
 // AssembleTSBK constructs a 12-byte TSBK info block from the structured
-// fields. Used in tests and for any future encoder work.
+// fields. Used in tests and for any future encoder work. The trailer
+// is the augmented-CRC value of (info ‖ 16 zero bits) per the P25
+// spec convention — that's the unique 16-bit value V such that
+// CRCCCITTAugmented(info ‖ V) returns 0.
 func AssembleTSBK(t TSBK) []byte {
 	out := make([]byte, 12)
 	if t.LB {
@@ -62,8 +76,7 @@ func AssembleTSBK(t TSBK) []byte {
 	out[0] |= byte(t.Opcode) & 0x3F
 	out[1] = t.MFID
 	copy(out[2:10], t.Payload[:])
-	crc := framing.CRCCCITT(out[:10]) ^ 0xFFFF
-	binary.BigEndian.PutUint16(out[10:12], crc)
+	binary.BigEndian.PutUint16(out[10:12], framing.CRCCCITTAugmented(out))
 	return out
 }
 
