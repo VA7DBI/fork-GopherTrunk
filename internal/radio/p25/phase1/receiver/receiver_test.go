@@ -3,6 +3,8 @@ package receiver
 import (
 	"math"
 	"testing"
+
+	"github.com/MattCheramie/GopherTrunk/internal/dsp/demod"
 )
 
 // TestReceiverConstructsAndProcessesSilence is a smoke test: make
@@ -261,4 +263,76 @@ func TestReceiverConstructorRequiresAtLeastOneSink(t *testing.T) {
 		}
 	}()
 	_ = New(Options{SampleRateHz: 48_000})
+}
+
+// TestC4FMSymbolAGCRescuesCollapsedSlicer guards the Phase B fix for
+// issue #275. Before the symbol-AGC, a real RTL-SDR capture's
+// matched-filter output landed ~sps× above the 4-level slicer's fixed
+// threshold (P25C4FMRxTaps has a DC gain of sps, the slicer is
+// calibrated to 2π·deviation/sampleRate), so every sample sliced to
+// the outer rails and the dibit stream became {1, 3} only — no NID
+// ever decoded even though the FSW correlated perfectly (the FSW is
+// all-outer, so a collapsed slicer still recovers it).
+//
+// The AGC normalises the running mean|x| to the slicer's expected
+// threshold, restoring the 4-level eye on any input level. This test
+// drives the receiver with a synthetic stream scaled to a level where
+// the un-AGC'd slicer would collapse to outers, then asserts the
+// recovered dibit histogram is roughly balanced (~25% per bin, not
+// 50/0/50/0). The exact balance depends on the synthetic dibit
+// distribution, so the assertion is a sanity bound rather than an
+// exact ratio.
+func TestC4FMSymbolAGCRescuesCollapsedSlicer(t *testing.T) {
+	// Build a balanced random dibit stream and modulate with the
+	// spec P25 transmitter at 960 kHz (sps=200) — the same
+	// parameters the Mt Anakie capture used. At this sample rate
+	// the matched filter's DC-gain-sps normalisation puts the
+	// matched-filter outer-symbol centres at sps× the slicerScale
+	// the un-AGC'd code computes, so the slicer would collapse to
+	// {1, 3} without AGC.
+	const (
+		sr  = 960_000.0
+		dev = 1800.0
+		n   = 8000
+	)
+	dibits := make([]uint8, n)
+	for i := range dibits {
+		dibits[i] = uint8((i*7 + 3) & 3)
+	}
+	iq := demod.ModulateP25C4FM(dibits, sr, dev)
+	// Scale the IQ up so the matched-filter output dwarfs the
+	// pre-AGC slicer threshold (mimicking the Mt Anakie capture
+	// where mean|MF output| was ~150× the calibrated slicerScale).
+	for i := range iq {
+		iq[i] *= 100
+	}
+
+	var hist [4]int
+	r := New(Options{
+		SampleRateHz: sr,
+		DeviationHz:  dev,
+		DibitSink: func(d []uint8, _ int) {
+			for _, v := range d {
+				hist[v&3]++
+			}
+		},
+	})
+	r.Process(iq)
+
+	total := hist[0] + hist[1] + hist[2] + hist[3]
+	if total == 0 {
+		t.Fatalf("receiver emitted no dibits")
+	}
+	// All four bins should carry meaningful mass — at least 10% of
+	// total each — proving the slicer didn't collapse to outers
+	// only. The exact ratio depends on the synthetic dibit stream,
+	// so 10% is a loose-but-decisive bound (a collapsed slicer
+	// yields ~50/0/50/0; a working one ~25/25/25/25).
+	for v := 0; v < 4; v++ {
+		pct := 100 * float64(hist[v]) / float64(total)
+		if pct < 10 {
+			t.Errorf("dibit value %d at %.1f%% (%d/%d) — slicer collapsed to outers (issue #275 Phase B regression)",
+				v, pct, hist[v], total)
+		}
+	}
 }

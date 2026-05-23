@@ -127,6 +127,17 @@ type Options struct {
 	// CQPSK path. <=0 uses defaultGardnerGain. Ignored when
 	// DemodMode == DemodC4FM (the C4FM path uses Mueller-Müller).
 	GardnerGain float64
+	// SoftSink, when non-nil, receives the per-symbol soft samples
+	// produced by the matched filter + symbol-clock recovery, just
+	// before slicing. The C4FM path emits the FM-discriminator +
+	// matched-filtered + MM-clock-recovered samples (rad/sample,
+	// typically ±2π·DeviationHz/SampleRateHz at the outer-symbol
+	// centres). The CQPSK path emits the real part of the rotated
+	// DQPSK quadrant decision per symbol. Nil by default — meant for
+	// offline diagnostics (issue #275: surfacing the matched-filter
+	// output level distribution when the slicer collapses to outer
+	// symbols only).
+	SoftSink func(softSamples []float32)
 }
 
 // Receiver is the composed IQ → dibit → LDU pipeline. Process is the
@@ -135,12 +146,14 @@ type Receiver struct {
 	demodMode DemodMode
 
 	// C4FM path: FM discriminator → real RRC matched filter →
-	// coarse-AFC carrier-offset removal → Mueller-Müller → 4-level
-	// slicer. Allocated only when demodMode == DemodC4FM.
+	// coarse-AFC carrier-offset removal → Mueller-Müller →
+	// symbol-AGC → 4-level slicer. Allocated only when demodMode ==
+	// DemodC4FM.
 	fm    *demod.FM
 	mf    *demod.C4FM
 	afc   *demod.CoarseAFC
 	clock *sync.MuellerMuller
+	agc   c4fmSymbolAGC
 
 	// CQPSK / LSM path: complex RRC + Gardner + DQPSK quadrant
 	// decode + LSM dibit remap. Allocated only when demodMode ==
@@ -149,6 +162,7 @@ type Receiver struct {
 
 	assembler *phase1.LDUAssembler
 	dibitSink phase1.DibitSink
+	softSink  func([]float32)
 	dibitBase int
 
 	// Reusable scratch slices so Process doesn't allocate per call
@@ -202,6 +216,7 @@ func New(opts Options) *Receiver {
 	r := &Receiver{
 		demodMode: opts.DemodMode,
 		dibitSink: opts.DibitSink,
+		softSink:  opts.SoftSink,
 	}
 	switch opts.DemodMode {
 	case DemodCQPSK:
@@ -215,6 +230,33 @@ func New(opts Options) *Receiver {
 		r.mf = demod.NewC4FMP25(opts.SampleRateHz, slicerScale)
 		r.afc = demod.NewCoarseAFC(sps)
 		r.clock = sync.NewMuellerMuller(sps, gain)
+		// Symbol-AGC bridges the level mismatch between the spec-
+		// faithful matched filter on a real P25 transmission and the
+		// 4-level slicer's fixed thresholds: on real RTL-SDR captures
+		// the matched-filter outer-symbol centres land at
+		// sps × 2π·deviation/sampleRate radians (the filter has a
+		// DC gain of sps so it integrates a full symbol's
+		// FM-discriminator output), which is ~sps× larger than the
+		// slicerScale the synthetic-modulator harness produces.
+		// Without AGC, every real sample exceeds the slicer
+		// threshold and the 4-level slicer collapses to ±3 only —
+		// the dibit stream becomes {1, 3} only, NIDs fail BCH at
+		// errs=10..11 regardless of alignment, and the control
+		// channel never locks (issue #275 Phase B). The AGC
+		// normalises the running mean|x| to the slicer's expected
+		// threshold (slicerScale × 2/3 — what mean|x| equals on a
+		// balanced inner/outer stream), so the slicer behaves
+		// correctly across the full range of real and synthetic
+		// signal levels. Time constant is ~256 symbols so the loop
+		// rides out short bursts of skewed content (a long FSW
+		// preamble is all-outer; an idle TDU run leans inner) but
+		// follows real signal-level changes (channel fades, AGC
+		// settling on the front-end) within a frame's worth of
+		// symbols.
+		r.agc = c4fmSymbolAGC{
+			target: float32(slicerScale * 2.0 / 3.0),
+			rate:   1.0 / 256.0,
+		}
 	}
 	if opts.Sink != nil {
 		r.assembler = phase1.NewLDUAssembler(opts.Sink, opts.Tolerance)
@@ -247,6 +289,10 @@ func (r *Receiver) Process(iq []complex64) {
 		r.symbols = r.clock.Process(r.symbols, r.matched)
 		if len(r.symbols) == 0 {
 			return
+		}
+		r.agc.process(r.symbols)
+		if r.softSink != nil {
+			r.softSink(r.symbols)
 		}
 		r.sliced = r.mf.SliceMany(r.sliced, r.symbols)
 		if cap(r.dibits) < len(r.sliced) {
@@ -286,7 +332,65 @@ func (r *Receiver) Reset() {
 	if r.afc != nil {
 		r.afc.Reset()
 	}
+	r.agc.reset()
 	// FM discriminator's `last` is harmless to leave alone — the
 	// next sample it processes will produce one slightly-wrong
 	// derivative, which the matched filter smooths out.
+}
+
+// c4fmSymbolAGC tracks a running estimate of mean|x| over the
+// per-symbol matched-filter output and scales each symbol so the
+// estimate matches a target reference. The C4FM slicer's fixed
+// thresholds are designed against a specific signal level; the AGC
+// reconciles that with whatever level the upstream filter actually
+// produces (issue #275 Phase B).
+//
+// State is a single EMA scalar — the loop is feed-forward (each
+// output is the input scaled by the current estimate), so an
+// occasional near-zero sample cannot drive the gain unbounded the
+// way a feedback loop would.
+type c4fmSymbolAGC struct {
+	target float32 // desired mean|x| in the output stream
+	rate   float32 // single-pole EMA coefficient (rate-of-tracking)
+	level  float32 // current mean|x| estimate of the input
+	seeded bool
+}
+
+// process scales symbols in place so the running mean|x| matches
+// target. Seeds the EMA from the first non-trivial sample's |x| (not
+// the first batch's mean) so the recovered stream is byte-identical
+// regardless of how the IQ is chunked — the chunk-boundary
+// determinism the Mueller-Müller fix already guarantees on the
+// clock side (TestHarnessC4FMChunkBoundary, issue #275).
+func (a *c4fmSymbolAGC) process(symbols []float32) {
+	if a.target <= 0 {
+		return // calibration disabled (legacy DeviationHz=0 path)
+	}
+	for i, x := range symbols {
+		ax := x
+		if ax < 0 {
+			ax = -ax
+		}
+		if !a.seeded {
+			if ax > 1e-12 {
+				a.level = ax
+				a.seeded = true
+			} else {
+				continue
+			}
+		} else {
+			a.level += a.rate * (ax - a.level)
+		}
+		if a.level > 1e-12 {
+			g := a.target / a.level
+			symbols[i] = x * g
+		}
+	}
+}
+
+// reset clears the level estimate so a stream re-sync starts from a
+// fresh seed.
+func (a *c4fmSymbolAGC) reset() {
+	a.level = 0
+	a.seeded = false
 }
