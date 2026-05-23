@@ -44,8 +44,8 @@ func (d DUID) String() string {
 
 // NID is the 64-bit Network ID immediately following the FSW. Bits 0..11
 // are the NAC (Network Access Code), bits 12..15 are the DUID, bits
-// 16..62 are the BCH(63,16,11) parity field, and bit 63 is even parity
-// over the 63 BCH bits.
+// 16..62 are the BCH(63,16,11) parity field, and bit 63 is a fixed
+// per-DUID flag (see expectedNIDParity).
 type NID struct {
 	NAC  uint16
 	DUID DUID
@@ -56,13 +56,33 @@ type NID struct {
 var ErrNIDUncorrectable = errors.New("p25/phase1: NID BCH uncorrectable")
 
 // ErrNIDParity is returned by ParseNID when the BCH decoder accepted a
-// codeword but the trailing even-parity bit disagrees with the
-// corrected codeword. Treated as uncorrectable.
+// codeword but the trailing NID flag bit disagrees with the
+// DUID-dictated value (see expectedNIDParity). Treated as uncorrectable.
 var ErrNIDParity = errors.New("p25/phase1: NID parity mismatch")
+
+// expectedNIDParity returns the value of the 64th NID bit a P25 Phase 1
+// transmitter sets for a given DUID — NOT an overall parity over the
+// 63-bit codeword (the obvious-but-wrong assumption that masked issue
+// #275 for as long as it did). Per TIA-102.BAAA Annex A and confirmed
+// against the OP25 reference implementation, the bit is a fixed flag:
+//
+//   - 0 for HDU (0), TDU (3), TSDU (7), PDU (12), TDULC (15)
+//   - 1 for LDU1 (5), LDU2 (10)
+//
+// Reserved DUIDs are unspecified; we default to 0 so synthetic test
+// frames carrying a reserved DUID still decode cleanly.
+func expectedNIDParity(duid DUID) byte {
+	switch duid {
+	case DUIDLogicalLink1, DUIDLogicalLink2:
+		return 1
+	default:
+		return 0
+	}
+}
 
 // ParseNID extracts the NAC and DUID from 64 received bits (MSB-first),
 // running BCH(63,16,11) error correction over the first 63 bits and
-// validating the trailing even-parity bit. Returns the corrected NID,
+// validating the trailing per-DUID flag bit. Returns the corrected NID,
 // the number of bit errors corrected (0 on a clean codeword), and a
 // non-nil error if the codeword is uncorrectable.
 func ParseNID(bits []byte) (NID, int, error) {
@@ -81,12 +101,11 @@ func ParseNID(bits []byte) (NID, int, error) {
 	if errs < 0 {
 		return NID{}, -1, ErrNIDUncorrectable
 	}
-	corrected := framing.BCHEncode63_16(data)
-	if framing.BCH6316ParityBit(corrected) != rxParity {
+	duid := DUID(data & 0xF)
+	if expectedNIDParity(duid) != rxParity {
 		return NID{}, errs, ErrNIDParity
 	}
 	nac := uint16((data >> 4) & 0xFFF)
-	duid := DUID(data & 0xF)
 	return NID{NAC: nac, DUID: duid}, errs, nil
 }
 
@@ -132,11 +151,12 @@ func NIDFromDibitsWithErrors(dibits []uint8) (NID, int, [32]uint8, error) {
 		return NID{}, -1, pattern, ErrNIDUncorrectable
 	}
 	corrected := framing.BCHEncode63_16(data)
-	correctedParity := framing.BCH6316ParityBit(corrected)
+	duid := DUID(data & 0xF)
+	correctedParity := expectedNIDParity(duid)
 
 	// Per-dibit error count: bit i of the received codeword vs bit i of
-	// the BCH-corrected codeword, with the parity bit (bit 63) folded
-	// into dibit 31.
+	// the BCH-corrected codeword, with the trailing per-DUID flag bit
+	// (bit 63) folded into dibit 31.
 	for i := 0; i < 63; i++ {
 		var corBit byte
 		if corrected&(uint64(1)<<uint(62-i)) != 0 {
@@ -154,7 +174,6 @@ func NIDFromDibitsWithErrors(dibits []uint8) (NID, int, [32]uint8, error) {
 		return NID{}, errs, pattern, ErrNIDParity
 	}
 	nac := uint16((data >> 4) & 0xFFF)
-	duid := DUID(data & 0xF)
 	return NID{NAC: nac, DUID: duid}, errs, pattern, nil
 }
 
@@ -163,13 +182,12 @@ func NIDFromDibitsWithErrors(dibits []uint8) (NID, int, [32]uint8, error) {
 func EncodeNIDBits(nac uint16, duid DUID) []byte {
 	info := (uint16(nac&0x0FFF) << 4) | uint16(uint8(duid)&0x0F)
 	cw := framing.BCHEncode63_16(info)
-	parity := framing.BCH6316ParityBit(cw)
 	bits := make([]byte, 64)
 	for i := 0; i < 63; i++ {
 		if cw&(uint64(1)<<uint(62-i)) != 0 {
 			bits[i] = 1
 		}
 	}
-	bits[63] = parity
+	bits[63] = expectedNIDParity(duid)
 	return bits
 }
