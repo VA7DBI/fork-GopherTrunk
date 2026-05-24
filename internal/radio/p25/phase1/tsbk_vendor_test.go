@@ -27,6 +27,67 @@ func TestAsMotorolaPatchGroupRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAsMotorolaPatchGroupSingleMemberTriplicated pins the dedup
+// against the live Mt Anakie observation: a Motorola patch with one
+// active member encodes the same talkgroup ID in all three member
+// slots, and the parser must report Patched = [ID] not [ID, ID, ID].
+// Without dedup the duplicate triples flow through PatchRegistry,
+// Grant.PatchedGroups, and the OpenMHz broadcaster's patch_list JSON
+// — issue #275 retest log showed `members="[32501 32501 32501]"`
+// for what was semantically a one-member patch.
+func TestAsMotorolaPatchGroupSingleMemberTriplicated(t *testing.T) {
+	// Mt Anakie capture: super-group 33601 (0x8341), member 32501 (0x7EF5)
+	// triplicated.
+	payload := [8]byte{0x83, 0x41, 0x7E, 0xF5, 0x7E, 0xF5, 0x7E, 0xF5}
+	tsbk := TSBK{Opcode: OpMotorolaPatchGroupAdd, MFID: MFIDMotorola, Payload: payload}
+	got, ok := tsbk.AsMotorolaPatchGroup()
+	if !ok {
+		t.Fatal("AsMotorolaPatchGroup returned !ok")
+	}
+	if got.SuperGroup != 0x8341 {
+		t.Errorf("SuperGroup = %#x, want 0x8341", got.SuperGroup)
+	}
+	if len(got.Patched) != 1 || got.Patched[0] != 0x7EF5 {
+		t.Errorf("Patched = %v, want [0x7EF5] (single logical member)", got.Patched)
+	}
+}
+
+// TestAsMotorolaPatchGroupTwoDistinctOneRepeated covers the
+// two-member case where the second slot is repeated as filler in the
+// third: payload encodes ID-A, ID-B, ID-A — semantically two members.
+func TestAsMotorolaPatchGroupTwoDistinctOneRepeated(t *testing.T) {
+	payload := [8]byte{0x12, 0x34, 0x00, 0x0A, 0x00, 0x14, 0x00, 0x0A}
+	tsbk := TSBK{Opcode: OpMotorolaPatchGroupAdd, MFID: MFIDMotorola, Payload: payload}
+	got, ok := tsbk.AsMotorolaPatchGroup()
+	if !ok {
+		t.Fatal("AsMotorolaPatchGroup returned !ok")
+	}
+	if len(got.Patched) != 2 || got.Patched[0] != 10 || got.Patched[1] != 20 {
+		t.Errorf("Patched = %v, want [10, 20] (dedup of [10, 20, 10])", got.Patched)
+	}
+}
+
+// TestAsMotorolaPatchGroupThreeDistinct guards that the dedup does
+// not collapse a genuine three-member patch where each slot carries a
+// distinct talkgroup. Without this the dedup might over-fire.
+func TestAsMotorolaPatchGroupThreeDistinct(t *testing.T) {
+	payload := [8]byte{0x12, 0x34, 0x00, 0x0A, 0x00, 0x14, 0x00, 0x1E}
+	tsbk := TSBK{Opcode: OpMotorolaPatchGroupAdd, MFID: MFIDMotorola, Payload: payload}
+	got, ok := tsbk.AsMotorolaPatchGroup()
+	if !ok {
+		t.Fatal("AsMotorolaPatchGroup returned !ok")
+	}
+	want := []uint16{10, 20, 30}
+	if len(got.Patched) != 3 {
+		t.Fatalf("Patched = %v, want %v", got.Patched, want)
+	}
+	for i, w := range want {
+		if got.Patched[i] != w {
+			t.Errorf("Patched[%d] = %d, want %d", i, got.Patched[i], w)
+		}
+	}
+}
+
 func TestAsMotorolaPatchDelete(t *testing.T) {
 	tsbk := TSBK{Opcode: OpMotorolaPatchGroupDelete, MFID: MFIDMotorola,
 		Payload: [8]byte{0x05, 0x55}}

@@ -54,16 +54,40 @@ type MotorolaPatchGroup struct {
 }
 
 // AsMotorolaPatchGroup returns the structured patch group if the TSBK
-// is a Motorola group-regroup add, otherwise (zero, false).
+// is a Motorola group-regroup add, otherwise (zero, false). The wire
+// layout reserves three 16-bit member slots; Motorola's convention for
+// a fewer-than-three-member patch is to repeat the first member's ID
+// in the unused slots rather than zeroing them (issue #275 retest
+// against Mt Anakie observed `0x7EF5 0x7EF5 0x7EF5` for a one-member
+// patch). The accessor deduplicates so Patched reports the logical
+// member set, not the on-wire filler-slot replicas. Downstream
+// consumers (PatchRegistry, Grant.PatchedGroups, OpenMHz broadcaster,
+// call log) iterate Patched literally with no dedup of their own, so
+// the dedup at parse stops three identical IDs from polluting every
+// surface that talks about a single-member patch.
 func (t TSBK) AsMotorolaPatchGroup() (MotorolaPatchGroup, bool) {
 	if t.MFID != MFIDMotorola || t.Opcode != OpMotorolaPatchGroupAdd {
 		return MotorolaPatchGroup{}, false
 	}
 	g := MotorolaPatchGroup{SuperGroup: binary.BigEndian.Uint16(t.Payload[0:2])}
+	var seen [3]uint16
 	for i := 2; i+2 <= 8; i += 2 {
-		if tg := binary.BigEndian.Uint16(t.Payload[i : i+2]); tg != 0 {
-			g.Patched = append(g.Patched, tg)
+		tg := binary.BigEndian.Uint16(t.Payload[i : i+2])
+		if tg == 0 {
+			continue
 		}
+		dup := false
+		for _, s := range seen[:len(g.Patched)] {
+			if s == tg {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		seen[len(g.Patched)] = tg
+		g.Patched = append(g.Patched, tg)
 	}
 	return g, true
 }
