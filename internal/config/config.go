@@ -649,12 +649,24 @@ func (c Config) Validate() error {
 	if c.SDR.SampleRate != 0 && (c.SDR.SampleRate < 225_000 || c.SDR.SampleRate > 3_200_000) {
 		return errors.New("sdr.sample_rate must be between 225 kHz and 3.2 MHz")
 	}
+	seenSerials := make(map[string]int, len(c.SDR.Devices))
 	for i, d := range c.SDR.Devices {
 		switch d.Role {
 		case "", "control", "voice", "auto":
 		default:
 			return fmt.Errorf("sdr.devices[%d]: role must be control|voice|auto", i)
 		}
+		if d.Serial == "" {
+			continue
+		}
+		if prev, dup := seenSerials[d.Serial]; dup {
+			return fmt.Errorf(
+				"sdr.devices[%d]: duplicate serial %q (also at sdr.devices[%d]) — "+
+					"one physical SDR cannot serve multiple roles; P25 trunking needs "+
+					"separate dongles for control and voice",
+				i, d.Serial, prev)
+		}
+		seenSerials[d.Serial] = i
 	}
 	for i, s := range c.Trunking.Systems {
 		if s.Name == "" {

@@ -124,7 +124,7 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 
 	transport, err := d.enumerator().Open(desc)
 	if err != nil {
-		return nil, fmt.Errorf("rtlsdr: open USB %s: %w", desc.Path, err)
+		return nil, fmt.Errorf("rtlsdr: open USB %s: %w%s", desc.Path, err, openUSBHint(err))
 	}
 	transport = usb.MaybeWrapDebug(transport, desc)
 
@@ -332,6 +332,27 @@ func tunerBringupHint(err error) string {
 			" on Windows, the WinUSB driver is not bound to the device (re-run Zadig and select the RTL-SDR);" +
 			" on any OS, marginal USB power, a flaky cable/hub, or another process already holding the device." +
 			" See https://mattcheramie.github.io/GopherTrunk/install-linux.html#troubleshooting)"
+	}
+	return ""
+}
+
+// openUSBHint returns a parenthesized, space-prefixed remediation
+// string when err looks like a Windows ERROR_ACCESS_DENIED from
+// CreateFile — the symptom seen when another user-space process (SDR
+// Sharp, AbracaDABra, rtl_test, a second gophertrunk) already holds
+// the dongle, or when the same serial is listed twice in sdr.devices
+// so the pool tries to open the same physical device for two roles
+// (issue #333). Returns "" for unrelated errors so the wrapped
+// message stays clean. The platform-specific check lives in
+// driver_windows.go / driver_other.go.
+func openUSBHint(err error) string {
+	if isAccessDenied(err) {
+		return " (hint: another process is holding the dongle —" +
+			" close any other SDR app (SDR Sharp, AbracaDABra, rtl_test," +
+			" or a second gophertrunk instance) and retry." +
+			" If only one gophertrunk is running, check that the same serial" +
+			" is not listed twice in sdr.devices — one physical SDR cannot" +
+			" serve two roles.)"
 	}
 	return ""
 }

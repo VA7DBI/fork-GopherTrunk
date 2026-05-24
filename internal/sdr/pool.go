@@ -179,7 +179,11 @@ func (p *Pool) Open(sampleRateHz uint32, hints []Hint) error {
 		}
 		dev, err := d.drv.Open(d.info.Index)
 		if err != nil {
-			p.log.Error("open device failed", "driver", d.drv.Name(), "index", d.info.Index, "err", err)
+			p.log.Error("open device failed",
+				"driver", d.drv.Name(),
+				"index", d.info.Index,
+				"serial", d.info.Serial,
+				"err", err)
 			continue
 		}
 		if err := dev.SetSampleRate(rate); err != nil {
