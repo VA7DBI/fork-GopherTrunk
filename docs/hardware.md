@@ -203,6 +203,64 @@ tuner type, and the supported gain values:
 The `Driver` column reads `rtlsdr`, `hackrf`, `airspy`, or
 `airspyhf` for each row.
 
+## USB disconnect recovery
+
+A control SDR that physically disconnects from the USB bus mid-run
+(flaky cable, marginal hub power, EMI burst, a brief brown-out on a
+laptop running on battery) no longer takes the daemon down: the IQ
+stream death is now recoverable in-process when the dongle
+re-enumerates promptly under the same serial number.
+
+When the underlying USB transfer fails, the daemon's ccdecoder retry
+loop logs each attempt and asks `sdr.Pool` to re-acquire the device:
+
+```text
+WARN  daemon: ccdecoder: IQ stream died; retrying attempt=1 max_attempts=4 backoff=1s
+       err="ccdecoder: IQ stream closed unexpectedly: rtl2832u: write block=1 ... usb: device disconnected"
+INFO  daemon: ccdecoder: control SDR reacquired serial=76361606
+INFO  sdr: reacquired driver=rtlsdr serial=76361606 role=control old_index=0 new_index=1
+INFO  cchunt: control tuner swapped (reacquired)
+```
+
+What happens under the hood:
+
+1. The original `Device` handle is `Close`d best-effort — a dead
+   handle's Close return is logged and ignored.
+2. The driver's `Enumerate()` re-scans the USB bus and finds the
+   matching serial at its new index.
+3. `Driver.Open(idx)` returns a fresh `Device` against the
+   re-enumerated USB transport.
+4. The configured sample rate (`sdr.sample_rate` in YAML) and the
+   original hint state (PPM, gain, bias-tee) are re-applied to the
+   fresh handle — the operator's tuning survives the disconnect.
+5. The new `Device` is swapped into the `PoolEntry` in place, so any
+   later `Pool.FindBySerial` / API snapshot returns the live handle.
+6. `KindSDRDetached` then `KindSDRAttached` are published so the API
+   (`GET /api/v1/devices`), the TUI device line, and the web console
+   reflect the gap and the recovery.
+7. The ccdecoder retry loop rebuilds the decoder against the new
+   handle and resumes pumping IQ. The cchunt supervisor's tuner is
+   atomically swapped and any in-flight retune is cancelled so the
+   next hunt round runs against the fresh handle.
+
+Recovery is bounded by the existing retry budget (1 s / 2 s / 5 s /
+10 s ≈ 18 s total) and the 60 s "healthy run" window that resets the
+counter. If the device stays gone after re-enumerate, or if
+`Driver.Open()` fails (kernel hasn't finished re-binding the
+USB descriptor, a permissions race, the dongle is genuinely dead),
+retries exhaust and the daemon escalates to a clean fatal exit. A
+process supervisor (`systemd`, `docker`, the GopherTrunk launcher's
+`-headless` mode) then restarts the daemon, which re-discovers the
+SDR by serial on next `pool.Open()` — so even unrecoverable cases
+still converge on the right hardware once it returns.
+
+If you see this log shape on a hardware unit, the daemon is doing the
+right thing — but the cause is almost always physical: a marginal
+USB-A cable, an unpowered hub, EMI from a nearby switching supply, or
+a thermal trip on a poorly-ventilated dongle. The on-board recovery
+keeps the stream live across one or two events per hour, but it isn't
+a substitute for fixing the underlying USB-link instability.
+
 ## Capturing IQ for replay
 
 GopherTrunk has two replay paths.

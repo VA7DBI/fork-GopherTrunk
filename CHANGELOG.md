@@ -7,6 +7,26 @@ for tagged releases.
 
 ## [Unreleased]
 
+- **Control SDR USB disconnect/re-enumerate now recovers in-process
+  without a daemon restart.** PR #348 surfaced the silent-stall failure
+  through the ccdecoder retry loop and escalated to a fatal exit so
+  systemd / docker could restart the process; on a dongle that
+  disconnects repeatedly (the reporter in issue #345 saw multiple
+  drops per day on a NESDR SMArt v5) that meant the daemon kept
+  exiting. The retry loop now first asks the `sdr.Pool` to re-acquire
+  the control device by serial: best-effort close of the dead handle,
+  driver re-enumerate, fresh `Open()` by the new USB index, sample
+  rate + per-device Hint (PPM, gain, bias-tee) re-applied to the new
+  handle, `Device` swapped in place in the `PoolEntry`, and
+  `KindSDRDetached` + `KindSDRAttached` events republished so the API
+  / TUI / web snapshot reflect the swap. `cchunt.Supervisor.SwapTuner`
+  feeds the fresh handle to in-flight hunters by closing any armed
+  retune channels so the next hunt round picks up the new tuner.
+  The existing 1s / 2s / 5s / 10s retry budget still applies — if the
+  device stays gone after re-enumerate or `Open` fails, retries
+  exhaust and the daemon still escalates to a clean fatal for the
+  supervisor restart path. Issue #345 follow-up.
+
 - **P25 Phase 1 `IdentifierUpdateVUHF` (TSBK opcode 0x34) now wired
   through the dispatcher — UHF P25 sites resolve voice grants without
   stalling on `no-bandplan`.** The 0x34 opcode constant was already
