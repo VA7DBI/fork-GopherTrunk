@@ -205,14 +205,20 @@ The `Driver` column reads `rtlsdr`, `hackrf`, `airspy`, or
 
 ## USB disconnect recovery
 
-A control SDR that physically disconnects from the USB bus mid-run
-(flaky cable, marginal hub power, EMI burst, a brief brown-out on a
-laptop running on battery) no longer takes the daemon down: the IQ
-stream death is now recoverable in-process when the dongle
-re-enumerates promptly under the same serial number.
+A dongle that physically disconnects from the USB bus mid-run (flaky
+cable, marginal hub power, EMI burst, a brief brown-out on a laptop
+running on battery) no longer takes the daemon down: the disconnect is
+recoverable in-process when the device re-enumerates under the same
+serial. Three independent paths cover the three states a device can
+be in when the disconnect lands.
 
-When the underlying USB transfer fails, the daemon's ccdecoder retry
-loop logs each attempt and asks `sdr.Pool` to re-acquire the device:
+### 1. Control SDR — in-stream IQ death
+
+The ccdecoder's `Decoder.Run` surfaces the stream death as
+`ErrIQStreamClosed`. The retry loop backs off, calls `Pool.Reacquire`,
+swaps the fresh `Device` into `ccDecoderOpts.IQ`/`Tuner`, and tells
+the cchunt supervisor to swap its tuner via `SwapTuner` so the next
+hunt round picks up the new handle:
 
 ```text
 WARN  daemon: ccdecoder: IQ stream died; retrying attempt=1 max_attempts=4 backoff=1s
@@ -222,7 +228,55 @@ INFO  sdr: reacquired driver=rtlsdr serial=76361606 role=control old_index=0 new
 INFO  cchunt: control tuner swapped (reacquired)
 ```
 
-What happens under the hood:
+Bounded by the existing 1 s / 2 s / 5 s / 10 s retry budget and the
+60 s "healthy run" window that resets the attempt counter.
+
+### 2. Voice SDR — stale at next call
+
+A voice dongle that disconnected while idle leaves the trunking
+engine holding a stale `Tuner` handle. The next time the engine
+calls `VoicePool.Bind`, `SetCenterFreq` fails. The pool's reacquire
+hook (wired by the daemon to `sdr.Pool.Reacquire`) opens a fresh
+handle for the same serial, swaps it into the `VoiceDevice`, and
+retries the tune once before the call drops:
+
+```text
+INFO  sdr: reacquired driver=rtlsdr serial=00000002 role=voice old_index=1 new_index=2
+```
+
+If the reacquire fails (device truly gone), Bind returns the
+original `SetCenterFreq` error joined with the reacquire failure so
+the operator gets the full story. The call drops and the next grant
+on that talkgroup will retry.
+
+### 3. Periodic watchdog — idle devices
+
+A background watchdog ticks every `sdr.watchdog_interval_ms` (default
+30 s, opt-out via `-1`), re-enumerates every registered driver, and
+acts on serial-level state transitions:
+
+- A serial the pool expects but the enumerate doesn't see transitions
+  to "missing"; one `KindSDRDetached` event surfaces the gap so the
+  API / TUI / web snapshot reflect it.
+- A serial that was missing in the previous tick and is now back
+  triggers `Pool.Reacquire` so the next consumer (a voice call or a
+  ccdecoder retry) touches a live handle instead of paying the
+  reacquire round-trip mid-use.
+
+```text
+WARN  sdr: watchdog: device missing from USB enumerate serial=76361606
+INFO  sdr: watchdog: device reappeared; reacquiring serial=76361606
+INFO  sdr: reacquired driver=rtlsdr serial=76361606 role=control old_index=0 new_index=1
+```
+
+The watchdog never reacquires a device that's been continuously
+present (no spurious churn on healthy hardware) and never proactively
+closes an in-use stream (the IQ-death path owns the in-use case).
+
+### Common contract
+
+What happens inside every `Pool.Reacquire` call, regardless of the
+caller:
 
 1. The original `Device` handle is `Close`d best-effort — a dead
    handle's Close return is logged and ignored.
@@ -238,28 +292,28 @@ What happens under the hood:
 6. `KindSDRDetached` then `KindSDRAttached` are published so the API
    (`GET /api/v1/devices`), the TUI device line, and the web console
    reflect the gap and the recovery.
-7. The ccdecoder retry loop rebuilds the decoder against the new
-   handle and resumes pumping IQ. The cchunt supervisor's tuner is
-   atomically swapped and any in-flight retune is cancelled so the
-   next hunt round runs against the fresh handle.
 
-Recovery is bounded by the existing retry budget (1 s / 2 s / 5 s /
-10 s ≈ 18 s total) and the 60 s "healthy run" window that resets the
-counter. If the device stays gone after re-enumerate, or if
-`Driver.Open()` fails (kernel hasn't finished re-binding the
-USB descriptor, a permissions race, the dongle is genuinely dead),
-retries exhaust and the daemon escalates to a clean fatal exit. A
-process supervisor (`systemd`, `docker`, the GopherTrunk launcher's
-`-headless` mode) then restarts the daemon, which re-discovers the
-SDR by serial on next `pool.Open()` — so even unrecoverable cases
-still converge on the right hardware once it returns.
+### Unrecoverable cases
 
-If you see this log shape on a hardware unit, the daemon is doing the
-right thing — but the cause is almost always physical: a marginal
-USB-A cable, an unpowered hub, EMI from a nearby switching supply, or
-a thermal trip on a poorly-ventilated dongle. The on-board recovery
-keeps the stream live across one or two events per hour, but it isn't
-a substitute for fixing the underlying USB-link instability.
+If the device stays gone after re-enumerate, or if `Driver.Open()`
+fails (kernel hasn't finished re-binding the USB descriptor, a
+permissions race, the dongle is genuinely dead), the in-stream paths
+exhaust their retry budget and the daemon escalates to a clean fatal
+exit. A process supervisor (`systemd`, `docker`, the GopherTrunk
+launcher's `-headless` mode) then restarts the daemon, which
+re-discovers the SDR by serial on next `pool.Open()`. The watchdog
+keeps logging "missing from USB enumerate" until the device returns
+but never escalates on its own — it's the safety net, not the
+authority.
+
+### Operator note
+
+If you see these log shapes on a hardware unit, the daemon is doing
+the right thing — but the cause is almost always physical: a
+marginal USB-A cable, an unpowered hub, EMI from a nearby switching
+supply, or a thermal trip on a poorly-ventilated dongle. The on-board
+recovery keeps the stream live across one or two events per hour, but
+it isn't a substitute for fixing the underlying USB-link instability.
 
 ## Capturing IQ for replay
 

@@ -7,6 +7,24 @@ for tagged releases.
 
 ## [Unreleased]
 
+- **Voice SDR USB disconnect recovery + periodic watchdog.**
+  Following the control-SDR re-acquire path (PR #349), the same
+  recovery now extends to voice dongles and to idle devices. When
+  `VoicePool.Bind`'s `SetCenterFreq` fails — typically because a
+  voice dongle disconnected between calls — the pool's new
+  reacquire hook (wired by the daemon to `sdr.Pool.Reacquire`)
+  re-opens the device by serial, swaps the fresh `Tuner` into the
+  `VoiceDevice`, and retries the tune once before the call drops.
+  Independently, the SDR pool runs a periodic watchdog
+  (`sdr.watchdog_interval_ms`, default 30 s, opt-out via `-1`)
+  that re-enumerates registered drivers, surfaces missing serials
+  via `KindSDRDetached`, and calls `Pool.Reacquire` the moment a
+  previously-missing serial reappears — so the next consumer
+  touches a live handle instead of paying the reacquire round-trip
+  mid-use. The watchdog only acts on the missing → reappeared
+  transition: continuously-present devices are never touched.
+  Issue #345 follow-up.
+
 - **Control SDR USB disconnect/re-enumerate now recovers in-process
   without a daemon restart.** PR #348 surfaced the silent-stall failure
   through the ccdecoder retry loop and escalated to a fatal exit so

@@ -352,6 +352,22 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 
 	// Voice device list from the pool; empty when no SDRs.
 	d.voicePool = trunking.NewVoicePool(d.collectVoiceDevices())
+	// Wire the voice pool's reacquire hook so a USB disconnect
+	// that left a voice dongle's handle stale gets the device
+	// re-opened from sdr.Pool on the next Bind, before the call
+	// drops. Pool entries share the configured sdr.sample_rate;
+	// per-role rate divergence isn't supported today, so the same
+	// value used at pool.Open is correct for reacquire. Issue #345.
+	if d.pool != nil {
+		sampleRate := cfg.SDR.SampleRate
+		d.voicePool.SetReacquire(func(serial string) (trunking.Tuner, error) {
+			entry, err := d.pool.Reacquire(serial, sampleRate)
+			if err != nil {
+				return nil, err
+			}
+			return entry.Device, nil
+		})
+	}
 
 	engine, err := trunking.NewEngine(trunking.EngineOptions{
 		Bus:        d.bus,
@@ -905,6 +921,21 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return d.convScan.Run(ctx)
 		})
 	}
+	if d.pool != nil {
+		// Periodic USB-disconnect watchdog. Catches dongles that
+		// vanish while idle (between calls / hunts) and re-acquires
+		// them by serial as soon as they come back, so the next
+		// consumer doesn't pay the reacquire round-trip mid-call.
+		// Negative interval disables; zero falls back to
+		// sdr.DefaultWatchdogInterval (30s). Issue #345.
+		interval := watchdogInterval(d.cfg.SDR.WatchdogIntervalMs)
+		if interval > 0 {
+			sampleRate := d.cfg.SDR.SampleRate
+			d.spawn(runCtx, "sdr-watchdog", false, func(ctx context.Context) error {
+				return d.pool.RunWatchdog(ctx, interval, sampleRate)
+			})
+		}
+	}
 	if d.httpAPI != nil {
 		// HTTP is essential — the launcher's TUI / web paths need
 		// it bound, and bind failures (port in use, permission
@@ -1213,6 +1244,21 @@ func retentionInterval(s string) (time.Duration, error) {
 func msToDuration(ms int, fallback time.Duration) time.Duration {
 	if ms <= 0 {
 		return fallback
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// watchdogInterval maps the YAML knob (sdr.watchdog_interval_ms) onto
+// the duration the SDR pool's USB-disconnect watchdog ticks at.
+// Negative explicitly disables (returns 0, which the watchdog treats
+// as "park on ctx and exit"). Zero (the default) selects the package
+// default (sdr.DefaultWatchdogInterval).
+func watchdogInterval(ms int) time.Duration {
+	if ms < 0 {
+		return 0
+	}
+	if ms == 0 {
+		return sdr.DefaultWatchdogInterval
 	}
 	return time.Duration(ms) * time.Millisecond
 }
