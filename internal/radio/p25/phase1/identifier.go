@@ -5,24 +5,29 @@ import (
 	"fmt"
 )
 
-// IdentifierUpdate carries a P25 IDENT_UP TSBK (opcode 0x3D), the
-// "Identifier Update" announcement that defines the band plan for one
-// channel-ID slot. A site repeats these periodically alongside its
-// status broadcasts; the receiver accumulates them and uses each slot
-// to translate a (Channel ID, Channel Number) pair from a voice grant
-// into a downlink frequency.
+// IdentifierUpdate carries a P25 IDENT_UP TSBK announcement that
+// defines the band plan for one channel-ID slot. A site repeats these
+// periodically alongside its status broadcasts; the receiver
+// accumulates them and uses each slot to translate a (Channel ID,
+// Channel Number) pair from a voice grant into a downlink frequency.
 //
-// Field units come straight from TIA-102.AABF Table 14:
+// Two on-air variants encode the same logical fields with different
+// bit packings, and both parse into this struct:
 //
-//	BandwidthHz   = BW    × 125  Hz
-//	SpacingHz     = STEP  × 125  Hz   (channel step)
-//	TxOffsetHz    = OFF   × 250 kHz   (signed; sign-extended from 9-bit)
-//	BaseHz        = FREQ  × 5    Hz
+//	0x3D  IDEN_UP        — standard 700/800/900 MHz form (ParseIdentifierUpdate)
+//	0x34  IDEN_UP_VUHF   — VHF/UHF form         (ParseIdentifierUpdateVUHF)
 //
-// Only the standard 700/800/900 MHz form is parsed here (opcode 0x3D).
-// VHF/UHF (0x34) and Phase-2 TDMA (0x33) variants encode the same
-// fields with different bit packings and are out of scope for this
-// pass; lighting them up is incremental.
+// Field units after parsing (independent of variant):
+//
+//	BandwidthHz   — channel bandwidth in Hz
+//	SpacingHz     — channel-to-channel step in Hz
+//	TxOffsetHz    — signed transmit offset (uplink = downlink + offset)
+//	BaseHz        — downlink base frequency for channel 0 in Hz
+//
+// The 0x33 Phase-2 TDMA variant remains a follow-up — it adds slot
+// count plus a different packing of the same fields. See
+// internal/radio/p25/phase2/identifier.go for the Phase 2 variant
+// shipped today (which is also a 0x3D-style packing).
 type IdentifierUpdate struct {
 	ChannelID   uint8  // 4-bit slot identifier (0..15)
 	BandwidthHz uint32 // channel bandwidth
@@ -53,6 +58,121 @@ func ParseIdentifierUpdate(p [8]byte) IdentifierUpdate {
 		SpacingHz:   uint32(step) * 125,
 		TxOffsetHz:  int64(off) * 250_000,
 		BaseHz:      uint64(freq5Hz) * 5,
+	}
+}
+
+// ParseIdentifierUpdateVUHF decodes the 8-byte payload of opcode 0x34
+// (OpIdentifierUpdateVUHF), the VHF/UHF variant. The bit layout, MSB
+// first, per TIA-102.AABF Table 14a:
+//
+//	[ ChanID(4) | BW(4) | TxOffsetSign(1) | TxOffsetMag(13) | STEP(10) | FREQ(32) ]
+//
+// Differences from the 0x3D variant:
+//
+//   - BW is a 4-bit lookup code (Table 16) rather than a 9-bit ×125 Hz
+//     field: 0x4 → 6.25 kHz, 0x5 → 12.5 kHz, others → 0 (unknown). The
+//     value is informational only — BandPlan.Frequency does not
+//     consult it.
+//
+//   - TxOffset is a 1-bit sign + 13-bit magnitude pair, and the
+//     magnitude unit is the channel step (SpacingHz) rather than a
+//     fixed 250 kHz. The same convention as 0x3D applies to the
+//     stored TxOffsetHz: positive = uplink above downlink ("mob Tx+"),
+//     negative = uplink below downlink ("mob Tx-").
+//
+// STEP, FREQ, and the resulting SpacingHz / BaseHz values use the same
+// scaling as 0x3D (×125 Hz / ×5 Hz).
+//
+// Cross-checked against OP25 (`op25/gr-op25_repeater/apps/trunking.py`
+// `iden_up vhf uhf`) and SDRTrunk
+// (`FrequencyBandUpdateVUHF.java`).
+func ParseIdentifierUpdateVUHF(p [8]byte) IdentifierUpdate {
+	chanID := p[0] >> 4
+	bwCode := p[0] & 0x0F
+	toff14 := uint16(p[1])<<6 | uint16(p[2])>>2
+	toffSign := (toff14 >> 13) & 0x1
+	toffMag := toff14 & 0x1FFF
+	step := uint16(p[2]&0x03)<<8 | uint16(p[3])
+	freq5Hz := uint32(p[4])<<24 | uint32(p[5])<<16 | uint32(p[6])<<8 | uint32(p[7])
+
+	spacingHz := uint32(step) * 125
+	offsetMagHz := int64(toffMag) * int64(spacingHz)
+	txOffsetHz := offsetMagHz
+	if toffSign == 0 {
+		txOffsetHz = -offsetMagHz
+	}
+
+	return IdentifierUpdate{
+		ChannelID:   chanID,
+		BandwidthHz: vuhfBandwidthHz(bwCode),
+		SpacingHz:   spacingHz,
+		TxOffsetHz:  txOffsetHz,
+		BaseHz:      uint64(freq5Hz) * 5,
+	}
+}
+
+// AssembleIdentifierUpdateVUHF is the inverse of ParseIdentifierUpdateVUHF;
+// useful for synthetic test streams. Out-of-range fields are silently
+// truncated to their on-air widths. TxOffsetHz that isn't an integer
+// multiple of SpacingHz is truncated toward zero; a zero SpacingHz
+// produces a zero on-air offset regardless of TxOffsetHz.
+func AssembleIdentifierUpdateVUHF(u IdentifierUpdate) [8]byte {
+	bwCode := vuhfBandwidthCode(u.BandwidthHz) & 0x0F
+	step := uint16(u.SpacingHz/125) & 0x3FF
+
+	var toffSign uint8
+	var toffMag uint16
+	if u.TxOffsetHz >= 0 {
+		toffSign = 1
+		if u.SpacingHz > 0 {
+			toffMag = uint16(uint64(u.TxOffsetHz)/uint64(u.SpacingHz)) & 0x1FFF
+		}
+	} else {
+		toffSign = 0
+		if u.SpacingHz > 0 {
+			toffMag = uint16(uint64(-u.TxOffsetHz)/uint64(u.SpacingHz)) & 0x1FFF
+		}
+	}
+	toff14 := uint16(toffSign)<<13 | (toffMag & 0x1FFF)
+
+	freq5 := uint32(u.BaseHz / 5)
+
+	var p [8]byte
+	p[0] = (u.ChannelID&0x0F)<<4 | bwCode
+	p[1] = byte(toff14 >> 6)
+	p[2] = byte((toff14&0x3F)<<2) | byte(step>>8)
+	p[3] = byte(step)
+	p[4] = byte(freq5 >> 24)
+	p[5] = byte(freq5 >> 16)
+	p[6] = byte(freq5 >> 8)
+	p[7] = byte(freq5)
+	return p
+}
+
+// vuhfBandwidthHz maps the 4-bit BW code in opcode 0x34 to channel
+// bandwidth in Hz per TIA-102.AABF Table 16. Unknown codes return 0;
+// BandPlan.Frequency does not consult this field.
+func vuhfBandwidthHz(code uint8) uint32 {
+	switch code & 0x0F {
+	case 0x4:
+		return 6250
+	case 0x5:
+		return 12500
+	default:
+		return 0
+	}
+}
+
+// vuhfBandwidthCode is the inverse of vuhfBandwidthHz used by
+// AssembleIdentifierUpdateVUHF. Unrecognised bandwidths emit code 0.
+func vuhfBandwidthCode(hz uint32) uint8 {
+	switch hz {
+	case 6250:
+		return 0x4
+	case 12500:
+		return 0x5
+	default:
+		return 0
 	}
 }
 

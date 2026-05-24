@@ -7,6 +7,31 @@ for tagged releases.
 
 ## [Unreleased]
 
+- **P25 Phase 1 `IdentifierUpdateVUHF` (TSBK opcode 0x34) now wired
+  through the dispatcher — UHF P25 sites resolve voice grants without
+  stalling on `no-bandplan`.** The 0x34 opcode constant was already
+  defined in `internal/radio/p25/phase1/opcodes.go`, but it had no
+  parser and no `switch` case, so `IDEN_UP_VUHF` TSBKs arriving from a
+  VHF / UHF site were silently dropped — the `BandPlan` stayed empty
+  and every subsequent `GroupVoiceChannelGrant` emitted
+  `decode.error stage=no-bandplan`. The CC lock itself worked fine; the
+  failure was downstream of the lock and invisible without inspecting
+  the events bus. `ParseIdentifierUpdateVUHF` /
+  `AssembleIdentifierUpdateVUHF` decode the VHF/UHF bit packing per
+  TIA-102.AABF Table 14a (4-bit `BW` lookup → 6.25 / 12.5 kHz per
+  Table 16, 1-bit sign + 13-bit magnitude `TxOffset` whose unit is the
+  channel step rather than a fixed 250 kHz, plus the same 10-bit
+  `STEP × 125 Hz` and 32-bit `FREQ × 5 Hz` as the 0x3D variant) and
+  populate the existing `IdentifierUpdate` struct, so
+  `BandPlan.Apply` / `BandPlan.Frequency` need no change. Cross-checked
+  bit-by-bit against OP25 (`op25/gr-op25_repeater/apps/trunking.py`
+  `iden_up vhf uhf`) and SDRTrunk (`FrequencyBandUpdateVUHF.java`).
+  Round-trip tests cover both negative offset (the typical UHF -5 MHz
+  case) and positive offset (sign-bit coverage); a new end-to-end test
+  feeds a VUHF `IdentifierUpdate` plus a subsequent grant through the
+  real `ControlChannel.Process` chain and asserts the grant resolves
+  to the expected frequency rather than falling to `decode.error`.
+
 ## [v0.2.0] — 2026-05-23
 
 SDR-fleet + DMR-voice + P25-lock release. The pure-Go SDR
