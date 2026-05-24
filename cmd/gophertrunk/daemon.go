@@ -102,7 +102,12 @@ type Daemon struct {
 	ccCache      *trunking.Cache
 	cchuntSup    *cchunt.Supervisor
 	ccDecoder    *ccdecoder.Decoder
-	convScan     *conventional.Scanner
+	// ccDecoderOpts is captured at construction so the spawn closure
+	// can rebuild the decoder after an IQ-stream death — Decoder.Run
+	// closes its bus subscription on exit, so a fresh instance is
+	// needed to restart cleanly (issue #345).
+	ccDecoderOpts ccdecoder.Options
+	convScan      *conventional.Scanner
 	metrics      *metrics.Metrics
 	httpAPI      *api.Server
 	grpcAPI      *api.GRPCServer
@@ -560,7 +565,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 				if d.metrics != nil {
 					iqObs = d.metrics
 				}
-				dec, err := ccdecoder.New(ccdecoder.Options{
+				d.ccDecoderOpts = ccdecoder.Options{
 					Bus:          d.bus,
 					Log:          log,
 					Tuner:        controlEntry.Device,
@@ -568,7 +573,8 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 					Systems:      d.systems,
 					SampleRateHz: float64(cfg.SDR.SampleRate),
 					Metrics:      iqObs,
-				})
+				}
+				dec, err := ccdecoder.New(d.ccDecoderOpts)
 				if err != nil {
 					return nil, fmt.Errorf("daemon: ccdecoder: %w", err)
 				}
@@ -884,9 +890,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		})
 	}
 	if d.ccDecoder != nil {
-		d.spawn(runCtx, "ccdecoder", false, func(ctx context.Context) error {
-			return d.ccDecoder.Run(ctx)
-		})
+		d.spawn(runCtx, "ccdecoder", false, d.runCCDecoderWithRetry)
 	}
 	if d.convScan != nil {
 		d.spawn(runCtx, "conv-scanner", false, func(ctx context.Context) error {
@@ -1049,6 +1053,82 @@ func (d *Daemon) Bus() *events.Bus { return d.bus }
 // these components — silently demoting their failures to log warnings
 // produces a half-dead daemon that frustrates the operator).
 // essential=false retains the legacy behaviour: warn-and-continue.
+// ccDecoderRetryBackoffs is the per-attempt sleep schedule used after
+// an IQ-stream death. After the schedule is exhausted, the daemon
+// escalates to a fatal error so an external supervisor (systemd,
+// docker, the launcher) restarts a clean process. See issue #345.
+var ccDecoderRetryBackoffs = []time.Duration{
+	1 * time.Second,
+	2 * time.Second,
+	5 * time.Second,
+	10 * time.Second,
+}
+
+// ccDecoderHealthyRunDuration is how long a successful Run must last
+// before the retry counter resets. Anything shorter is treated as a
+// repeated failure (e.g. the device immediately re-dies on reopen).
+const ccDecoderHealthyRunDuration = 60 * time.Second
+
+// runCCDecoderWithRetry drives the ccdecoder under a small restart
+// loop. On ErrIQStreamClosed (the USB reaper died, the consumer
+// channel closed — see issue #345) it sleeps with backoff, rebuilds
+// the decoder against the same SDR, and retries. When the backoff
+// schedule is exhausted it records a fatal error so the daemon's
+// supervisor restarts a clean process. ctx cancel and any other Run
+// error end the loop without escalation.
+func (d *Daemon) runCCDecoderWithRetry(ctx context.Context) error {
+	dec := d.ccDecoder
+	var attempt int
+	for {
+		started := time.Now()
+		err := dec.Run(ctx)
+		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if !errors.Is(err, ccdecoder.ErrIQStreamClosed) {
+			return err
+		}
+		// A Run that survived a healthy window means the previous
+		// recovery succeeded; reset the attempt counter so a fresh
+		// failure stretch gets its own retry budget.
+		if time.Since(started) >= ccDecoderHealthyRunDuration {
+			attempt = 0
+		}
+		if attempt >= len(ccDecoderRetryBackoffs) {
+			d.log.Error("daemon: ccdecoder: IQ stream died and retries exhausted; escalating to fatal",
+				"attempts", attempt, "err", err)
+			fatal := fmt.Errorf("ccdecoder: %w", err)
+			d.recordFatal(fatal)
+			return fatal
+		}
+		wait := ccDecoderRetryBackoffs[attempt]
+		attempt++
+		d.log.Warn("daemon: ccdecoder: IQ stream died; retrying",
+			"attempt", attempt, "max_attempts", len(ccDecoderRetryBackoffs),
+			"backoff", wait, "err", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		// Rebuild the decoder so it gets a fresh bus subscription —
+		// Decoder.Run defers Close on its subscription, so reusing
+		// the existing instance would see an immediately-closed
+		// channel and exit on the first event.
+		next, nerr := ccdecoder.New(d.ccDecoderOpts)
+		if nerr != nil {
+			d.log.Error("daemon: ccdecoder: rebuild failed; escalating to fatal", "err", nerr)
+			fatal := fmt.Errorf("ccdecoder rebuild: %w", nerr)
+			d.recordFatal(fatal)
+			return fatal
+		}
+		dec = next
+		d.mu.Lock()
+		d.ccDecoder = dec
+		d.mu.Unlock()
+	}
+}
+
 func (d *Daemon) spawn(ctx context.Context, name string, essential bool, fn func(context.Context) error) {
 	d.wg.Add(1)
 	go func() {

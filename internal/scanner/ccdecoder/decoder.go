@@ -62,6 +62,14 @@ type IQPowerObserver interface {
 	ClearIQPowerDbFS(system string)
 }
 
+// ErrIQStreamClosed is returned by Run when the SDR's IQ channel closes
+// while the context is still live — the underlying USB reaper died of
+// an unrecoverable error (host controller hang, ENODEV, EPROTO storm
+// under load) and the driver propagated EOF instead of hanging forever.
+// The daemon's restart loop watches for this and re-opens the SDR.
+// See issue #345.
+var ErrIQStreamClosed = errors.New("ccdecoder: IQ stream closed unexpectedly")
+
 // iqPowerWindow is how long the pump aggregates samples before
 // recomputing the mean dBFS and updating the gauge / debug log.
 const iqPowerWindow = time.Second
@@ -222,7 +230,7 @@ func (d *Decoder) Run(ctx context.Context) error {
 			d.handleProgress(p)
 		case iq, ok := <-stream:
 			if !ok {
-				return nil
+				return ErrIQStreamClosed
 			}
 			d.pump(iq)
 		}
