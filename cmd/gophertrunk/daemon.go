@@ -108,9 +108,9 @@ type Daemon struct {
 	// needed to restart cleanly (issue #345).
 	ccDecoderOpts ccdecoder.Options
 	convScan      *conventional.Scanner
-	metrics      *metrics.Metrics
-	httpAPI      *api.Server
-	grpcAPI      *api.GRPCServer
+	metrics       *metrics.Metrics
+	httpAPI       *api.Server
+	grpcAPI       *api.GRPCServer
 
 	// startupWarnings collects non-fatal observations from
 	// NewDaemon / preflight (missing talkgroup CSV, SDR enumeration

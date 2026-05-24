@@ -172,6 +172,6 @@ func (p *permissiveMockTransport) ReleaseInterface(int) error                   
 func (p *permissiveMockTransport) StartBulkIn(byte, int, int, func([]byte), func(error)) error {
 	return nil
 }
-func (p *permissiveMockTransport) StopBulkIn() error                                      { return nil }
-func (p *permissiveMockTransport) Reset() error                                           { return nil }
-func (p *permissiveMockTransport) Close() error                                           { return nil }
+func (p *permissiveMockTransport) StopBulkIn() error { return nil }
+func (p *permissiveMockTransport) Reset() error      { return nil }
+func (p *permissiveMockTransport) Close() error      { return nil }
