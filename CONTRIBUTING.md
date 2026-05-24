@@ -10,11 +10,17 @@ reviewable pieces.
 ```sh
 git clone https://github.com/mattcheramie/gophertrunk.git
 cd gophertrunk
-make build         # produces ./bin/gophertrunk
+make build         # Go-only — fast iteration; daemon shows a helpful 404 at / until the SPA is bundled
+make dist          # SPA + Go — single binary that serves the operator web console at /
 make test          # unit tests (fast, < 30 s)
 make integration   # daemon end-to-end tests (no SDR required)
 make vet           # static analysis
 ```
+
+Use `make build` while iterating on Go code (no npm needed). Use
+`make dist` when you want a daemon binary that serves the SPA at
+`/` — it runs `make web-build` first so the `//go:embed all:dist`
+snapshot picks up a real bundle.
 
 You need Go 1.24+ — no C toolchain (`CGO_ENABLED=0` everywhere),
 no `librtlsdr`, no `libusb`. macOS / Windows / Linux all build the
@@ -70,7 +76,8 @@ existing code; a few items worth calling out:
 
 | Target | Purpose |
 | --- | --- |
-| `make build` | Build `bin/gophertrunk` (the daemon + CLI) |
+| `make build` | Build `bin/gophertrunk` (Go-only — fast; daemon serves a helpful 404 at `/` until the SPA is bundled) |
+| `make dist` | Build `bin/gophertrunk` with the operator console embedded (`make web-build` then `make build`) |
 | `make test` | Unit tests, `-race`, `-count=1` |
 | `make integration` | Daemon end-to-end test (no SDR) — exercises the full IQ-replay path |
 | `make integration-cc-<proto>` | Per-protocol "lights up live trunked reception" check (P25 P1 / P25 P2 / DMR / NXDN / dPMR / EDACS / Motorola / LTR / MPT 1327 / TETRA / YSF) |

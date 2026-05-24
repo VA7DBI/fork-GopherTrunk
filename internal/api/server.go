@@ -682,11 +682,19 @@ func (s *Server) routes() *http.ServeMux {
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes
 	// (/scanner, /settings, /import, ...) fall back to index.html
-	// so React-Router takes over on the client side.
+	// so React-Router takes over on the client side. When the embed
+	// is empty (the binary was built without `make web-build` first),
+	// a fallback handler answers exactly `GET /` with an explanatory
+	// 404 instead of stdlib's blank "404 page not found".
+	embeddedSPA := false
 	if s.webAssets != nil {
 		if _, err := fs.Stat(s.webAssets, "index.html"); err == nil {
 			mux.Handle("GET /", s.spaHandler())
+			embeddedSPA = true
 		}
+	}
+	if !embeddedSPA {
+		mux.Handle("GET /{$}", s.spaMissingHandler())
 	}
 
 	return mux
@@ -721,6 +729,59 @@ func (s *Server) spaHandler() http.Handler {
 		fileSrv.ServeHTTP(w, r2)
 	})
 }
+
+// spaMissingHandler answers exactly `GET /` with an HTML 404 that
+// tells the operator how to bundle the SPA. Registered when the
+// daemon binary was built without `make web-build` first, so the
+// `//go:embed all:dist` snapshot contains only the `.gitkeep`
+// sentinel. Status stays 404 so proxies/curl/healthchecks still
+// treat the resource as missing — only the body changes.
+func (s *Server) spaMissingHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(spaMissingBody))
+	})
+}
+
+const spaMissingBody = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GopherTrunk — web console not bundled</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; color: #1a1a1a; line-height: 1.5; }
+  code, pre { background: #f4f4f5; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.95em; }
+  pre { padding: 0.8rem 1rem; overflow-x: auto; }
+  h1 { font-size: 1.4rem; }
+  a { color: #2563eb; }
+</style>
+</head>
+<body>
+<h1>Web console wasn&rsquo;t bundled into this daemon</h1>
+<p>
+  The daemon&rsquo;s API is healthy (try
+  <a href="/api/v1/health"><code>/api/v1/health</code></a>),
+  but the operator console at <code>/</code> wasn&rsquo;t embedded into this
+  binary. The Go <code>//go:embed</code> directive snapshots
+  <code>web/dist/</code> at compile time, and this build was produced before
+  the SPA was built.
+</p>
+<p>To fix it, rebuild with the SPA bundled in:</p>
+<pre>make dist
+./bin/gophertrunk</pre>
+<p>
+  Or, equivalently:
+  <code>make web-build &amp;&amp; make build</code>.
+  See <code>docs/web.md</code> for details.
+</p>
+<p>
+  The REST and WebSocket APIs continue to work normally — only the
+  embedded SPA is missing.
+</p>
+</body>
+</html>
+`
 
 // gate wraps a mutation handler in the auth middleware. The middleware
 // returns 401 when a token is required but missing / wrong, 403 when

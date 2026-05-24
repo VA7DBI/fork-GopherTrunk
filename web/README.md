@@ -96,6 +96,7 @@ autoplay rules).
 # from the repository root:
 make web-dev    # starts Vite at http://127.0.0.1:5173 with proxy to :8080
 make web-build  # produces web/dist/ — the shipping artifact
+make dist       # SPA + daemon — single binary that serves the console at / (runs web-build then build)
 make web-clean  # removes node_modules/, dist/, and SW dev-dist/
 
 # From web/ directly:
@@ -103,6 +104,12 @@ npm install     # one-time
 npm test        # Vitest + React Testing Library against panels
 npm run typecheck
 ```
+
+`make build` on its own is Go-only and skips the SPA — useful while
+iterating on backend code. Use `make dist` when you want a daemon
+binary that serves the operator console at `/`; the `//go:embed
+all:dist` snapshot in `web/embed.go` is captured at Go compile time,
+so the SPA bundle must exist on disk *before* `go build` runs.
 
 Tested with Node.js 20 LTS and npm 10. Older Node versions may
 work but aren't in CI.

@@ -69,15 +69,19 @@ file:///path/to/index.html#server=http://localhost:8080
 
 ### Embedded SPA
 
-When the daemon was built with `make web-build` before `go build`
-(the default in release archives), the SPA is baked into the binary
-via Go's `embed` package and the API server registers it at `/`.
-Client-side routes (`/scanner`, `/settings`, `/import`, …) fall back
-to `index.html` so React-Router takes over.
+When the daemon was built with `make dist` (which chains
+`make web-build` and `make build`, the default in release archives),
+the SPA is baked into the binary via Go's `embed` package and the API
+server registers it at `/`. Client-side routes (`/scanner`,
+`/settings`, `/import`, …) fall back to `index.html` so React-Router
+takes over.
 
-Fresh checkouts without `make web-build` use the sibling-directory
-discovery above instead — `web/dist/` contains only a `.gitkeep`
-sentinel in that case and the embedded `HasAssets()` reports false.
+Fresh checkouts built with plain `make build` (or a bare `go build`)
+skip the SPA and use the sibling-directory discovery above instead —
+`web/dist/` contains only a `.gitkeep` sentinel in that case and the
+embedded `HasAssets()` reports false. The daemon also serves a
+helpful HTML 404 at `/` explaining the fix, instead of stdlib's
+blank `404 page not found`.
 
 `xdg-open` is used on Linux, `open` on macOS, and `rundll32
 url.dll,FileProtocolHandler` on Windows. Headless hosts that don't

@@ -9,12 +9,25 @@ TAGS    ?=
 GO      ?= go
 PKGS    := ./...
 
-.PHONY: all build test test-dvsi test-integration integration integration-cc integration-cc-grant integration-cc-nxdn integration-cc-dmr integration-cc-dpmr integration-cc-edacs integration-cc-motorola integration-cc-tetra integration-cc-p25p2 integration-cc-mpt1327 integration-cc-ltr integration-cc-ysf lint tidy vet vulncheck licenses clean run proto cross-build release-archives release-dry-run web-build web-dev web-clean web-test
+.PHONY: all build dist test test-dvsi test-integration integration integration-cc integration-cc-grant integration-cc-nxdn integration-cc-dmr integration-cc-dpmr integration-cc-edacs integration-cc-motorola integration-cc-tetra integration-cc-p25p2 integration-cc-mpt1327 integration-cc-ltr integration-cc-ysf lint tidy vet vulncheck licenses clean run proto cross-build release-archives release-dry-run web-build web-dev web-clean web-test
 
 all: build
 
+# build produces a Go-only daemon binary. The SPA embed
+# (`//go:embed all:dist` in web/embed.go) only picks up an SPA bundle
+# that's already on disk at compile time; running `make build` on a
+# fresh checkout (or after `make web-clean`) produces a daemon that
+# returns a "web console wasn't bundled" 404 at `/`. Use `make dist`
+# to build a daemon that serves its own SPA at `/`.
 build:
 	$(GO) build -tags "$(TAGS)" -ldflags "$(LDFLAGS)" -o bin/gophertrunk ./cmd/gophertrunk
+
+# dist is the operator-facing build: it rebuilds the SPA into web/dist
+# first, then the Go binary, so the embedded console is always in sync
+# with the daemon. Use this when you want a single binary that serves
+# the web UI at `/`. Pure-Go contributors who don't need the UI can
+# keep using `make build`.
+dist: web-build build
 
 test:
 	$(GO) test -tags "$(TAGS)" -race -count=1 $(PKGS)
@@ -188,10 +201,14 @@ licenses:
 # the project uses purego for every system FFI (ALSA / WASAPI /
 # CoreAudio / IOKit / WinUSB) and modernc.org/sqlite for the call
 # log, so no cgo is required. Each output lands under dist/.
+#
+# Depends on `web-build` so every shipped binary embeds the operator
+# console; without that prerequisite the SPA `//go:embed` would
+# snapshot an empty `web/dist/` and the daemon would 404 at `/`.
 GOOSES   ?= linux darwin windows
 GOARCHES ?= amd64 arm64
 
-cross-build:
+cross-build: web-build
 	@mkdir -p dist
 	@for os in $(GOOSES); do \
 	    for arch in $(GOARCHES); do \
@@ -211,7 +228,10 @@ cross-build:
 #   make release-dry-run VERSION=v0.99.0
 # to exercise a prerelease build; default VERSION picks up the same
 # git-describe value the release workflow would compute.
-release-dry-run:
+#
+# Depends on `web-build` so the rehearsed binary embeds the operator
+# console — matches what `cross-build` and the release workflow ship.
+release-dry-run: web-build
 	@echo "→ Rehearsing release build for version $(VERSION)"
 	@echo "→ COMMIT=$(COMMIT) BUILD_TIME=$(BUILD_TIME)"
 	@rm -rf dist/dry-run
@@ -241,7 +261,7 @@ release-archives:
 clean:
 	rm -rf bin/ dist/
 
-run: build
+run: dist
 	./bin/gophertrunk
 
 # --- Web UI -----------------------------------------------------------------
