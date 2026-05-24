@@ -1097,3 +1097,121 @@ func TestControlChannelRejectsMarginalNIDWithoutTSBK(t *testing.T) {
 		}
 	}
 }
+
+// TestControlChannelDeferredGrantReplayedAfterIdentifierUpdate covers
+// the issue #345 follow-up: a Group Voice Channel Grant TSBK arrives
+// before the matching IdentifierUpdate. The grant is queued; the
+// subsequent IDEN_UP drains the queue and the grant resolves through
+// the freshly applied band-plan slot. Operator-visible outcome: a
+// trunking.Grant event lands on the bus with the correct
+// FrequencyHz, restoring call/talkgroup creation in the UI for sites
+// that broadcast IDEN_UP at a slower cadence than the first grant.
+func TestControlChannelDeferredGrantReplayedAfterIdentifierUpdate(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	// Same payload layout as the VUHF happy path (id=1, num=16 on a
+	// 460 MHz UHF system) but reversed in arrival order — grant first,
+	// IDEN_UP second.
+	grantPayload := [8]byte{
+		0x00,
+		(1 << 4) | 0x00, 0x10,
+		0x12, 0x34,
+		0xAB, 0xCD, 0xEF,
+	}
+	grantTSBK := TSBK{LB: true, Opcode: OpGroupVoiceChannelGrant, Payload: grantPayload}
+	identTSBK := TSBK{LB: false, Opcode: OpIdentifierUpdateVUHF}
+	identTSBK.Payload = AssembleIdentifierUpdateVUHF(IdentifierUpdate{
+		ChannelID:   1,
+		BandwidthHz: 12_500,
+		SpacingHz:   12_500,
+		TxOffsetHz:  -5_000_000,
+		BaseHz:      460_000_000,
+	})
+
+	stream1 := buildLockedStreamWithTSBK(10, 0x293, DUIDTrunkingSignaling, grantTSBK)
+	stream2 := buildLockedStreamWithTSBK(0, 0x293, DUIDTrunkingSignaling, identTSBK)
+
+	// Clock is monotonic but the two TSBKs land within a few hundred
+	// ms of each other on real systems; keep the test clock well
+	// inside pendingGrantTTL.
+	base := time.Unix(1_700_000_000, 0).UTC()
+	cc := New(Options{
+		Bus: bus, SystemName: "UHF-Site", FrequencyHz: 461_437_500,
+		Now: func() time.Time { return base },
+	})
+	cc.Process(stream1, 0)
+	cc.Process(stream2, len(stream1))
+
+	var got *trunking.Grant
+	deadline := time.After(time.Second)
+	for got == nil {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindGrant {
+				g := ev.Payload.(trunking.Grant)
+				got = &g
+			}
+		case <-deadline:
+			t.Fatal("no grant event published after deferred IDEN_UP drained the queue")
+		}
+	}
+	if got.ChannelID != 1 || got.ChannelNum != 0x010 || got.FrequencyHz != 460_200_000 {
+		t.Errorf("grant = id=%d num=%d freq=%d, want 1/16/460200000",
+			got.ChannelID, got.ChannelNum, got.FrequencyHz)
+	}
+	if got.GroupID != 0x1234 || got.SourceID != 0xABCDEF {
+		t.Errorf("group/source = %d/%d, want 4660/11259375", got.GroupID, got.SourceID)
+	}
+}
+
+// TestControlChannelDeferredGrantExpiresAfterTTL covers the cap on
+// the deferred queue: a queued grant older than pendingGrantTTL is
+// dropped on drain. We can't easily advance the receiver's wall clock
+// across the FSM, so we exercise the ring directly — the wiring in
+// control.go is one-line and shares the same Now() injection.
+func TestControlChannelDeferredGrantExpiresAfterTTL(t *testing.T) {
+	var q pendingGrants
+	base := time.Unix(1_700_000_000, 0).UTC()
+	q.add(7, voiceGrant{channelID: 7, channelNumber: 42}, 0x293, base)
+
+	// Advance one second past the TTL boundary — the entry must be dropped.
+	drained := q.drain(7, base.Add(pendingGrantTTL+time.Second))
+	if len(drained) != 0 {
+		t.Fatalf("expected 0 drained entries after TTL, got %d", len(drained))
+	}
+
+	// A fresh add followed by an immediate drain still works.
+	q.add(7, voiceGrant{channelID: 7, channelNumber: 99}, 0x293, base)
+	drained = q.drain(7, base.Add(time.Second))
+	if len(drained) != 1 || drained[0].g.channelNumber != 99 {
+		t.Fatalf("fresh entry not preserved: %+v", drained)
+	}
+}
+
+// TestControlChannelDeferredGrantsBoundedByRingCap ensures the
+// per-channel-ID ring drops oldest entries when full so a stuck
+// channel ID (site never broadcasts the IDEN_UP) can't grow memory
+// unbounded.
+func TestControlChannelDeferredGrantsBoundedByRingCap(t *testing.T) {
+	var q pendingGrants
+	base := time.Unix(1_700_000_000, 0).UTC()
+	for i := 0; i < pendingGrantSlotCap+2; i++ {
+		q.add(3, voiceGrant{channelID: 3, channelNumber: uint16(i)}, 0x111, base)
+	}
+	drained := q.drain(3, base)
+	if len(drained) != pendingGrantSlotCap {
+		t.Fatalf("ring size = %d, want %d", len(drained), pendingGrantSlotCap)
+	}
+	// Oldest two entries (channelNumber 0, 1) should have been
+	// evicted; the surviving range is [2, 2+cap).
+	for i, e := range drained {
+		want := uint16(i + 2)
+		if e.g.channelNumber != want {
+			t.Errorf("drained[%d].channelNumber = %d, want %d (oldest should have been evicted)",
+				i, e.g.channelNumber, want)
+		}
+	}
+}

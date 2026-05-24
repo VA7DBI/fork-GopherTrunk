@@ -65,6 +65,12 @@ type ControlChannel struct {
 	// queryable system-topology snapshot. Self-synchronised.
 	netModel NetworkModel
 
+	// pendingGrants buffers voice grants whose channel ID had no
+	// IdentifierUpdate at arrival. publishVoiceGrant adds on a
+	// BandPlan miss; dispatchTSBK drains after BandPlan.Apply lands a
+	// new slot. See pending_grants.go.
+	pendingGrants pendingGrants
+
 	// rotations is the dibit-alphabet rotation set the NID-alignment
 	// search probes. Nil/empty means RotationsAll (the legacy
 	// four-rotation behaviour). The ccdecoder pipeline restricts it
@@ -714,6 +720,7 @@ func (c *ControlChannel) dispatchTSBK(t TSBK, nac uint16, metric int) {
 			"nac", nac, "id", u.ChannelID,
 			"base_hz", u.BaseHz, "spacing_hz", u.SpacingHz,
 			"tx_offset_hz", u.TxOffsetHz)
+		c.drainPendingGrants(u.ChannelID, nac)
 	case OpIdentifierUpdateVUHF:
 		u := ParseIdentifierUpdateVUHF(t.Payload)
 		c.bandPlan.Apply(u)
@@ -722,6 +729,7 @@ func (c *ControlChannel) dispatchTSBK(t TSBK, nac uint16, metric int) {
 			"base_hz", u.BaseHz, "spacing_hz", u.SpacingHz,
 			"tx_offset_hz", u.TxOffsetHz,
 			"bandwidth_hz", u.BandwidthHz)
+		c.drainPendingGrants(u.ChannelID, nac)
 	case OpGroupVoiceChannelGrant:
 		c.publishGroupGrant(ParseGroupVoiceChannelGrant(t.Payload), nac)
 	case OpGroupVoiceChannelUpdate:
@@ -865,6 +873,7 @@ func (c *ControlChannel) publishVoiceGrant(g voiceGrant, nac uint16) {
 	if err != nil {
 		c.log.Debug("p25: grant before identifier update",
 			"nac", nac, "id", g.channelID, "num", g.channelNumber, "err", err)
+		c.pendingGrants.add(g.channelID, g, nac, c.now())
 		c.bus.Publish(events.Event{
 			Kind:    events.KindDecodeError,
 			Payload: events.DecodeError{Protocol: "p25", Stage: events.StageNoBandPlan},
@@ -893,6 +902,24 @@ func (c *ControlChannel) publishVoiceGrant(g voiceGrant, nac uint16) {
 		"tg", g.groupID, "src", g.sourceID,
 		"id", g.channelID, "num", g.channelNumber, "freq_hz", freq,
 		"enc", so.Encrypted(), "emer", so.Emergency(), "data", g.dataCall)
+}
+
+// drainPendingGrants re-publishes every voice grant that arrived for
+// channelID before its IdentifierUpdate landed. Called from
+// dispatchTSBK immediately after BandPlan.Apply populates the slot,
+// so the second publishVoiceGrant pass resolves through the freshly
+// applied band-plan entry. Entries older than pendingGrantTTL are
+// dropped silently — the call they describe has already passed.
+func (c *ControlChannel) drainPendingGrants(channelID uint8, nac uint16) {
+	queued := c.pendingGrants.drain(channelID, c.now())
+	if len(queued) == 0 {
+		return
+	}
+	c.log.Debug("p25: draining deferred grants",
+		"nac", nac, "id", channelID, "count", len(queued))
+	for _, p := range queued {
+		c.publishVoiceGrant(p.g, p.nac)
+	}
 }
 
 // publishGroupGrant publishes a standard group voice grant (opcode

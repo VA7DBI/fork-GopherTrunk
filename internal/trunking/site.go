@@ -99,6 +99,19 @@ func ParseProtocol(s string) (Protocol, error) {
 	}
 }
 
+// P25BandPlanEntry is one operator-supplied IDEN_UP slot seed for the
+// P25 Phase 1 receiver — mirrors the on-air phase1.IdentifierUpdate
+// fields without the trunking package having to import phase1. The
+// pipeline factory translates each entry into the receiver's runtime
+// shape and calls BandPlan.Apply before the decoder runs.
+type P25BandPlanEntry struct {
+	ChannelID   uint8  // 0..15; matches the 4-bit IDEN_UP slot index
+	BaseHz      uint64 // downlink base frequency for channel 0, Hz
+	SpacingHz   uint32 // channel-to-channel step, Hz
+	TxOffsetHz  int64  // signed uplink offset (uplink = downlink + offset), Hz
+	BandwidthHz uint32 // informational; not consulted by BandPlan.Frequency
+}
+
 // System describes one trunked radio system the engine should track.
 type System struct {
 	Name            string
@@ -159,6 +172,17 @@ type System struct {
 	// ltr.ControlChannel.SetManchesterMode by the ccdecoder
 	// connector after parsing via ltr.ParseManchesterMode.
 	LTRManchesterMode string
+
+	// P25BandPlan seeds the Phase 1 receiver's BandPlan with operator-
+	// supplied IdentifierUpdate entries before the decoder runs.
+	// Useful for sites that don't broadcast an IDEN_UP TSBK for every
+	// channel ID their grants reference (issue #345 — Mt Anakie
+	// broadcasts grants on id=10 but never the matching IDEN_UP, so
+	// the receiver has nothing to resolve the frequency against).
+	// Over-the-air IDEN_UPs naturally override these via the same
+	// BandPlan.Apply path; entries here are the floor, not the ceiling.
+	// Ignored for non-P25-Phase-1 protocols.
+	P25BandPlan []P25BandPlanEntry
 
 	// P25Phase1DemodMode selects the symbol-recovery path for the
 	// P25 Phase 1 receiver. Recognised values (case-insensitive):

@@ -81,6 +81,13 @@ func TestValidate(t *testing.T) {
 		{"distinct sdr serials ok", Config{SDR: SDRConfig{Devices: []DeviceConfig{{Serial: "00000001", Role: "control"}, {Serial: "00000002", Role: "voice"}}}}, false},
 		{"empty sdr serials ok", Config{SDR: SDRConfig{Devices: []DeviceConfig{{Role: "control"}, {Role: "voice"}}}}, false},
 		{"oversized key", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr", EncryptionKeys: []EncryptionKeyConfig{{KeyID: 1, Algorithm: "rc4", Key: strings.Repeat("ab", 33)}}}}}}, true},
+		// p25_band_plan: the operator's escape hatch for sites that
+		// never broadcast IDEN_UP for some channel ID (issue #345).
+		{"band_plan ok", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "p25", P25BandPlan: []P25BandPlanEntryConfig{{ChannelID: 10, BaseHz: 425_262_500, SpacingHz: 6250, TxOffsetHz: 4_000_000, BandwidthHz: 12500}}}}}}, false},
+		{"band_plan channel_id too high", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "p25", P25BandPlan: []P25BandPlanEntryConfig{{ChannelID: 16, BaseHz: 1, SpacingHz: 1}}}}}}, true},
+		{"band_plan duplicate channel_id", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "p25", P25BandPlan: []P25BandPlanEntryConfig{{ChannelID: 3, BaseHz: 1, SpacingHz: 1}, {ChannelID: 3, BaseHz: 2, SpacingHz: 2}}}}}}, true},
+		{"band_plan zero spacing", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "p25", P25BandPlan: []P25BandPlanEntryConfig{{ChannelID: 3, BaseHz: 1, SpacingHz: 0}}}}}}, true},
+		{"band_plan zero base", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "p25", P25BandPlan: []P25BandPlanEntryConfig{{ChannelID: 3, BaseHz: 0, SpacingHz: 1}}}}}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

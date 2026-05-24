@@ -158,11 +158,35 @@ func newP25Phase1Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 	if demodMode == p25phase1rx.DemodC4FM {
 		rotations = p25phase1.RotationsC4FM
 	}
+	// Seed the BandPlan with operator-supplied IDEN_UP entries (issue
+	// #345). Sites that route grants through a channel ID they never
+	// broadcast an IDEN_UP TSBK for would otherwise have those grants
+	// silently dropped; this gives the operator a startup floor that
+	// over-the-air IDEN_UPs naturally override later via the same
+	// BandPlan.Apply path.
+	var bandPlan *p25phase1.BandPlan
+	if len(opts.System.P25BandPlan) > 0 {
+		bandPlan = &p25phase1.BandPlan{}
+		for _, e := range opts.System.P25BandPlan {
+			bandPlan.Apply(p25phase1.IdentifierUpdate{
+				ChannelID:   e.ChannelID,
+				BaseHz:      e.BaseHz,
+				SpacingHz:   e.SpacingHz,
+				TxOffsetHz:  e.TxOffsetHz,
+				BandwidthHz: e.BandwidthHz,
+			})
+			log.Info("ccdecoder: p25/phase1 band-plan seeded",
+				"system", opts.SystemName,
+				"id", e.ChannelID, "base_hz", e.BaseHz,
+				"spacing_hz", e.SpacingHz, "tx_offset_hz", e.TxOffsetHz)
+		}
+	}
 	cc := p25phase1.New(p25phase1.Options{
 		Bus:         opts.Bus,
 		Log:         opts.Log,
 		SystemName:  opts.SystemName,
 		FrequencyHz: opts.FrequencyHz,
+		BandPlan:    bandPlan,
 		Rotations:   rotations,
 	})
 	rx := p25phase1rx.New(p25phase1rx.Options{
