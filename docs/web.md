@@ -61,10 +61,15 @@ On a headless host (SSH session, no `$DISPLAY`) the launcher prints
 the URL + a hint instead of trying to launch a browser, so a remote
 operator can open the URL from their laptop.
 
-If you're building the daemon yourself, run `make web-build` (or
-`cd web && npm run build`) before `go build` so `web/dist/` is
-populated for the embed. Without the embed the launcher falls back
-to the standalone-bundle workflow below.
+If you're building the daemon yourself, use **`make dist`** — it
+runs `make web-build` and `make build` in the right order so the
+`//go:embed all:dist` snapshot in `web/embed.go` picks up a real
+bundle and the daemon serves the SPA at `/`. Plain `make build`
+(or a bare `go build`) skips the SPA build, so the embed contains
+only the `.gitkeep` sentinel and the daemon answers a helpful 404
+at `/` explaining the fix. The REST and WebSocket APIs work
+normally in both cases — only the embedded SPA differs. The
+launcher's standalone-bundle fallback (below) also still works.
 
 ## 1. Get the bundle
 
@@ -291,7 +296,8 @@ The web console builds with Vite. The daemon's `Makefile` wraps
 the npm scripts:
 
 ```bash
-make web-build      # produces web/dist/ — the shipped artifact
+make dist           # SPA + daemon — the operator binary that serves / itself
+make web-build      # produces web/dist/ — the shipped artifact (consumed by `make dist`)
 make web-dev        # Vite dev server on :5173 with proxy to :8080
 make web-clean      # removes node_modules/, dist/, dev-dist/
 ```

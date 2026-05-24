@@ -120,7 +120,7 @@ func TestSPA_APIRoutesNotShadowed(t *testing.T) {
 	}
 }
 
-func TestSPA_NoEmbedSkipsRoute(t *testing.T) {
+func TestSPA_NoEmbedReturnsHelpfulMessage(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
 	base, teardown := mkServer(t, ServerOptions{Bus: bus})
@@ -133,6 +133,44 @@ func TestSPA_NoEmbedSkipsRoute(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status=%d want 404 (no embed configured)", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct == "" || !bytesContains([]byte(ct), "text/html") {
+		t.Errorf("Content-Type=%q want text/html", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{"make dist", "web console", "/api/v1/health"} {
+		if !bytesContains(body, want) {
+			t.Errorf("missing-embed body does not mention %q; body=%q", want, string(body))
+		}
+	}
+}
+
+// TestSPA_NoEmbedDoesNotShadowSubpaths confirms the fallback handler
+// only attaches to exactly `GET /` — sibling paths like `/scanner`
+// must still 404 normally (no fake SPA fallback), and `/api/v1/...`
+// must continue to dispatch to its real handler.
+func TestSPA_NoEmbedDoesNotShadowSubpaths(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	base, teardown := mkServer(t, ServerOptions{Bus: bus, Version: "test"})
+	defer teardown()
+
+	resp, err := http.Get(base + "/scanner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("/scanner status=%d want 404", resp.StatusCode)
+	}
+
+	resp, err = http.Get(base + "/api/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("/api/v1/health status=%d want 200 (missing-embed handler must not shadow APIs)", resp.StatusCode)
 	}
 }
 

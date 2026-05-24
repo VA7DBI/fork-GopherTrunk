@@ -2387,7 +2387,8 @@ and DVB-driver blacklisting on Linux.
 ### Build, test, run
 
 ```sh
-make build                    # produces ./bin/gophertrunk (preferred — injects -ldflags version stamp)
+make dist                     # SPA + daemon — single binary that serves the web console at /
+make build                    # produces ./bin/gophertrunk (Go-only — daemon shows a helpful 404 at / until bundled)
 make test                     # go test -race ./...
 make web-test                 # Vitest + React Testing Library against the SPA panels
 make integration              # boots the wired daemon end-to-end (no SDR needed)
