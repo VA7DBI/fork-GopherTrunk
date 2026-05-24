@@ -77,6 +77,9 @@ func TestValidate(t *testing.T) {
 		{"bad hex key", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr", EncryptionKeys: []EncryptionKeyConfig{{KeyID: 1, Algorithm: "rc4", Key: "xyz"}}}}}}, true},
 		{"empty key", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr", EncryptionKeys: []EncryptionKeyConfig{{KeyID: 1, Algorithm: "rc4", Key: ""}}}}}}, true},
 		{"duplicate key_id", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr", EncryptionKeys: []EncryptionKeyConfig{{KeyID: 1, Algorithm: "rc4", Key: "ab"}, {KeyID: 1, Algorithm: "rc4", Key: "cd"}}}}}}, true},
+		{"duplicate sdr serial", Config{SDR: SDRConfig{Devices: []DeviceConfig{{Serial: "00000006", Role: "control"}, {Serial: "00000006", Role: "voice"}}}}, true},
+		{"distinct sdr serials ok", Config{SDR: SDRConfig{Devices: []DeviceConfig{{Serial: "00000001", Role: "control"}, {Serial: "00000002", Role: "voice"}}}}, false},
+		{"empty sdr serials ok", Config{SDR: SDRConfig{Devices: []DeviceConfig{{Role: "control"}, {Role: "voice"}}}}, false},
 		{"oversized key", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr", EncryptionKeys: []EncryptionKeyConfig{{KeyID: 1, Algorithm: "rc4", Key: strings.Repeat("ab", 33)}}}}}}, true},
 	}
 	for _, tc := range cases {
