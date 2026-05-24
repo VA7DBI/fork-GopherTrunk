@@ -107,10 +107,16 @@ type Daemon struct {
 	// closes its bus subscription on exit, so a fresh instance is
 	// needed to restart cleanly (issue #345).
 	ccDecoderOpts ccdecoder.Options
-	convScan      *conventional.Scanner
-	metrics       *metrics.Metrics
-	httpAPI       *api.Server
-	grpcAPI       *api.GRPCServer
+	// controlSerial + controlSampleRate let the ccdecoder retry loop
+	// ask the pool to re-acquire the control SDR by serial after a
+	// USB disconnect/re-enumerate before rebuilding the decoder
+	// against a fresh Device handle (issue #345).
+	controlSerial     string
+	controlSampleRate uint32
+	convScan          *conventional.Scanner
+	metrics           *metrics.Metrics
+	httpAPI           *api.Server
+	grpcAPI           *api.GRPCServer
 
 	// startupWarnings collects non-fatal observations from
 	// NewDaemon / preflight (missing talkgroup CSV, SDR enumeration
@@ -574,6 +580,8 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 					SampleRateHz: float64(cfg.SDR.SampleRate),
 					Metrics:      iqObs,
 				}
+				d.controlSerial = controlEntry.Info.Serial
+				d.controlSampleRate = cfg.SDR.SampleRate
 				dec, err := ccdecoder.New(d.ccDecoderOpts)
 				if err != nil {
 					return nil, fmt.Errorf("daemon: ccdecoder: %w", err)
@@ -1110,6 +1118,38 @@ func (d *Daemon) runCCDecoderWithRetry(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(wait):
+		}
+		// Attempt to re-acquire the control SDR by serial before
+		// rebuilding the decoder. The retry's whole point is to
+		// recover from a USB disconnect/re-enumerate; without
+		// swapping in a freshly-opened Device, the rebuild will
+		// stream against the same dead handle and fail again. If the
+		// pool is missing (test scaffolding) or the serial wasn't
+		// captured, skip re-acquire and rebuild against whatever the
+		// captured opts hold — restores legacy behaviour for callers
+		// that drive the loop with a logical IQSource.
+		if d.pool != nil && d.controlSerial != "" {
+			if newEntry, rerr := d.pool.Reacquire(d.controlSerial, d.controlSampleRate); rerr != nil {
+				// Failure to re-acquire is *not* terminal — the
+				// next backoff iteration retries. Log and fall
+				// through to the rebuild attempt below; the
+				// rebuilt decoder against the stale handle will
+				// itself return ErrIQStreamClosed on the next
+				// Run, queuing another retry.
+				d.log.Warn("daemon: ccdecoder: control SDR reacquire failed; will retry",
+					"serial", d.controlSerial, "err", rerr)
+			} else {
+				d.log.Info("daemon: ccdecoder: control SDR reacquired",
+					"serial", d.controlSerial)
+				d.ccDecoderOpts.IQ = newEntry.Device
+				d.ccDecoderOpts.Tuner = newEntry.Device
+				if d.cchuntSup != nil {
+					if serr := d.cchuntSup.SwapTuner(newEntry.Device); serr != nil {
+						d.log.Warn("daemon: cchunt: SwapTuner failed",
+							"err", serr)
+					}
+				}
+			}
 		}
 		// Rebuild the decoder so it gets a fresh bus subscription —
 		// Decoder.Run defers Close on its subscription, so reusing
