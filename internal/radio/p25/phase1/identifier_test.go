@@ -37,6 +37,63 @@ func TestIdentifierUpdateRoundTripPositiveOffset(t *testing.T) {
 	}
 }
 
+func TestIdentifierUpdateVUHFRoundTripNegativeOffset(t *testing.T) {
+	// Realistic UHF P25 site fixture: ChannelID 1, base 460.0 MHz,
+	// 12.5 kHz spacing + bandwidth, -5 MHz transmit offset.
+	in := IdentifierUpdate{
+		ChannelID:   1,
+		BandwidthHz: 12_500,
+		SpacingHz:   12_500,
+		TxOffsetHz:  -5_000_000,
+		BaseHz:      460_000_000,
+	}
+	out := ParseIdentifierUpdateVUHF(AssembleIdentifierUpdateVUHF(in))
+	if out != in {
+		t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", out, in)
+	}
+}
+
+func TestIdentifierUpdateVUHFRoundTripPositiveOffset(t *testing.T) {
+	// 6.25 kHz narrowband VHF fixture with a positive offset to exercise
+	// the sign bit.
+	in := IdentifierUpdate{
+		ChannelID:   3,
+		BandwidthHz: 6_250,
+		SpacingHz:   6_250,
+		TxOffsetHz:  5_000_000,
+		BaseHz:      154_000_000,
+	}
+	out := ParseIdentifierUpdateVUHF(AssembleIdentifierUpdateVUHF(in))
+	if out != in {
+		t.Errorf("round-trip mismatch: got %+v want %+v", out, in)
+	}
+}
+
+func TestIdentifierUpdateVUHFUnknownBandwidthCodeMapsToZero(t *testing.T) {
+	// On-air payload with BW code 0 (reserved per TIA-102.AABF Table 16).
+	// Parser must surface BandwidthHz=0 rather than fabricating a value.
+	var p [8]byte
+	p[0] = 0x10 // ChannelID=1, BW code 0
+	p[3] = 0x64 // STEP=100 → 12.5 kHz
+	// FREQ=92_000_000 → 460 MHz at ×5 Hz
+	freq5 := uint32(460_000_000 / 5)
+	p[4] = byte(freq5 >> 24)
+	p[5] = byte(freq5 >> 16)
+	p[6] = byte(freq5 >> 8)
+	p[7] = byte(freq5)
+
+	out := ParseIdentifierUpdateVUHF(p)
+	if out.BandwidthHz != 0 {
+		t.Errorf("BandwidthHz = %d, want 0 for reserved BW code", out.BandwidthHz)
+	}
+	if out.SpacingHz != 12_500 {
+		t.Errorf("SpacingHz = %d, want 12_500", out.SpacingHz)
+	}
+	if out.BaseHz != 460_000_000 {
+		t.Errorf("BaseHz = %d, want 460_000_000", out.BaseHz)
+	}
+}
+
 func TestBandPlanResolvesKnownChannel(t *testing.T) {
 	bp := &BandPlan{}
 	bp.Apply(IdentifierUpdate{

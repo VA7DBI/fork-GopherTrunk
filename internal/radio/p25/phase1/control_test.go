@@ -253,6 +253,79 @@ func TestControlChannelAppliesIdentifierUpdateAndPublishesGrant(t *testing.T) {
 	}
 }
 
+func TestControlChannelAppliesVUHFIdentifierUpdateAndPublishesGrant(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	// UHF P25 site (the scenario that motivated wiring opcode 0x34):
+	// IdentifierUpdateVUHF for ChannelID 1, base 460 MHz, 12.5 kHz
+	// spacing, -5 MHz tx offset; followed by a GroupVoiceChannelGrant
+	// on (ID=1, Number=16), which must resolve to 460.2 MHz via the
+	// new dispatcher path.
+	identTSBK := TSBK{LB: false, Opcode: OpIdentifierUpdateVUHF}
+	identTSBK.Payload = AssembleIdentifierUpdateVUHF(IdentifierUpdate{
+		ChannelID:   1,
+		BandwidthHz: 12_500,
+		SpacingHz:   12_500,
+		TxOffsetHz:  -5_000_000,
+		BaseHz:      460_000_000,
+	})
+
+	grantPayload := [8]byte{
+		0x00,                  // service options: cleartext, non-emergency
+		(1 << 4) | 0x00, 0x10, // channel = ID 1, number 0x010 (=16)
+		0x12, 0x34, // group address 0x1234
+		0xAB, 0xCD, 0xEF, // source ID 0xABCDEF
+	}
+	grantTSBK := TSBK{LB: true, Opcode: OpGroupVoiceChannelGrant, Payload: grantPayload}
+
+	stream1 := buildLockedStreamWithTSBK(10, 0x293, DUIDTrunkingSignaling, identTSBK)
+	stream2 := buildLockedStreamWithTSBK(0, 0x293, DUIDTrunkingSignaling, grantTSBK)
+
+	cc := New(Options{
+		Bus:         bus,
+		SystemName:  "UHF-Site",
+		FrequencyHz: 461_437_500,
+		Now:         func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	cc.Process(stream1, 0)
+	cc.Process(stream2, len(stream1))
+
+	var got *trunking.Grant
+	deadline := time.After(time.Second)
+	for got == nil {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindDecodeError {
+				de := ev.Payload.(events.DecodeError)
+				if de.Stage == "no-bandplan" {
+					t.Fatal("VUHF IdentifierUpdate was not applied: grant fell to no-bandplan")
+				}
+			}
+			if ev.Kind == events.KindGrant {
+				g := ev.Payload.(trunking.Grant)
+				got = &g
+			}
+		case <-deadline:
+			t.Fatal("no grant event published")
+		}
+	}
+	if got.System != "UHF-Site" || got.Protocol != "p25" {
+		t.Errorf("identity = %s/%s", got.System, got.Protocol)
+	}
+	if got.GroupID != 0x1234 || got.SourceID != 0xABCDEF {
+		t.Errorf("group/source = %d/%d, want 4660/11259375", got.GroupID, got.SourceID)
+	}
+	if got.ChannelID != 1 || got.ChannelNum != 0x010 {
+		t.Errorf("channel = %d.%d, want 1.16", got.ChannelID, got.ChannelNum)
+	}
+	if got.FrequencyHz != 460_200_000 {
+		t.Errorf("freq = %d, want 460_200_000", got.FrequencyHz)
+	}
+}
+
 // TestControlChannelLocksAndGrantsAcrossSmallChunks feeds a two-frame
 // stream (IdentifierUpdate then GroupVoiceChannelGrant) through Process
 // in 19-dibit batches — the dibit count a real RTL-SDR's 16 KiB USB

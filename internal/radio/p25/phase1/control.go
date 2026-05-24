@@ -20,8 +20,9 @@ import (
 // dibits, deinterleave + Viterbi-decode the next 98-dibit TSBK block,
 // validate the CRC trailer, and dispatch on the parsed opcode.
 //
-//   - OpIdentifierUpdate (0x3D) populates the band-plan slot for its
-//     Channel ID.
+//   - OpIdentifierUpdate (0x3D) and OpIdentifierUpdateVUHF (0x34)
+//     populate the band-plan slot for their Channel ID; 0x3D carries
+//     the 700/800/900 MHz packing, 0x34 carries the VHF/UHF packing.
 //   - OpGroupVoiceChannelGrant (0x00) parses the channel/group/source
 //     payload, looks up the frequency in the band plan, and publishes
 //     a trunking.Grant with Protocol="p25" on the bus.
@@ -713,6 +714,14 @@ func (c *ControlChannel) dispatchTSBK(t TSBK, nac uint16, metric int) {
 			"nac", nac, "id", u.ChannelID,
 			"base_hz", u.BaseHz, "spacing_hz", u.SpacingHz,
 			"tx_offset_hz", u.TxOffsetHz)
+	case OpIdentifierUpdateVUHF:
+		u := ParseIdentifierUpdateVUHF(t.Payload)
+		c.bandPlan.Apply(u)
+		c.log.Debug("p25: identifier update (VUHF)",
+			"nac", nac, "id", u.ChannelID,
+			"base_hz", u.BaseHz, "spacing_hz", u.SpacingHz,
+			"tx_offset_hz", u.TxOffsetHz,
+			"bandwidth_hz", u.BandwidthHz)
 	case OpGroupVoiceChannelGrant:
 		c.publishGroupGrant(ParseGroupVoiceChannelGrant(t.Payload), nac)
 	case OpGroupVoiceChannelUpdate:

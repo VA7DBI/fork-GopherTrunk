@@ -50,7 +50,7 @@ Full per-OS install (Windows installer / macOS Apple Silicon / Linux aarch64): *
 
 ## Features
 
-**Trunked-radio control-channel decoders** — P25 Phase 1 + Phase 2 (full TIA-102 chain with RS(24,16,9) outer verifier + PN44 scrambler), DMR Tier II + Tier III, NXDN, Motorola Type II / SmartZone, EDACS / GE-Marc, LTR, MPT 1327, dPMR Mode 3, TETRA TMO. All run live on IQ via `internal/scanner/ccdecoder` with per-protocol FEC chains default-on.
+**Trunked-radio control-channel decoders** — P25 Phase 1 + Phase 2 (full TIA-102 chain with RS(24,16,9) outer verifier + PN44 scrambler; both the 0x3D 700/800/900 MHz and 0x34 VHF/UHF `IdentifierUpdate` band-plan variants are wired into the dispatcher, so UHF P25 sites resolve grants without a no-bandplan stall), DMR Tier II + Tier III, NXDN, Motorola Type II / SmartZone, EDACS / GE-Marc, LTR, MPT 1327, dPMR Mode 3, TETRA TMO. All run live on IQ via `internal/scanner/ccdecoder` with per-protocol FEC chains default-on.
 
 **Amateur-radio digital modes** — D-STAR (JARL DV-mode K=5 R=½ Viterbi + PN15 scrambler + 22×30 interleaver) and Yaesu System Fusion (C4FM + FICH trellis).
 
