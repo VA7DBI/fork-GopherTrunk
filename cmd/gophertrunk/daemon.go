@@ -231,10 +231,24 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		if err != nil {
 			return nil, fmt.Errorf("daemon: %w", err)
 		}
+		var p25BandPlan []trunking.P25BandPlanEntry
+		if len(sys.P25BandPlan) > 0 {
+			p25BandPlan = make([]trunking.P25BandPlanEntry, 0, len(sys.P25BandPlan))
+			for _, e := range sys.P25BandPlan {
+				p25BandPlan = append(p25BandPlan, trunking.P25BandPlanEntry{
+					ChannelID:   e.ChannelID,
+					BaseHz:      e.BaseHz,
+					SpacingHz:   e.SpacingHz,
+					TxOffsetHz:  e.TxOffsetHz,
+					BandwidthHz: e.BandwidthHz,
+				})
+			}
+		}
 		s := trunking.System{
 			Name:                    sys.Name,
 			Protocol:                proto,
 			ControlChannels:         sys.ControlChannels,
+			P25BandPlan:             p25BandPlan,
 			TETRAColourCode:         sys.TETRAColourCode,
 			TETRAChannel:            sys.TETRAChannel,
 			TETRAChannelCoding:      sys.TETRAChannelCoding,

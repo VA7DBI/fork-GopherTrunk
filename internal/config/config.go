@@ -449,6 +449,14 @@ type SystemConfig struct {
 	// protocols.
 	DStarFECMode string `yaml:"dstar_fec_mode"`
 
+	// P25BandPlan seeds the Phase 1 receiver's BandPlan with static
+	// IdentifierUpdate slot entries — the operator's escape hatch for
+	// sites that route grants through a channel ID they never
+	// broadcast an IDEN_UP TSBK for (issue #345). Over-the-air
+	// IDEN_UPs take precedence; entries here are the startup floor.
+	// Ignored for non-P25-Phase-1 protocols.
+	P25BandPlan []P25BandPlanEntryConfig `yaml:"p25_band_plan"`
+
 	// EncryptionKeys lists operator-supplied decryption keys for this
 	// system. GopherTrunk decrypts only with keys the operator
 	// already holds and is authorized to use — it performs no key
@@ -457,6 +465,22 @@ type SystemConfig struct {
 	// so AES can be added later without a config break. Ignored for
 	// protocols without an encryption decoder. See issue #276.
 	EncryptionKeys []EncryptionKeyConfig `yaml:"encryption_keys"`
+}
+
+// P25BandPlanEntryConfig is one operator-supplied IDEN_UP slot seed
+// for the Phase 1 receiver. ChannelID is the 4-bit IDEN_UP slot index
+// (0..15). BaseHz / SpacingHz / TxOffsetHz / BandwidthHz mirror the
+// on-air IDEN_UP fields per TIA-102.AABF — see
+// internal/radio/p25/phase1/identifier.go for the bit layout. Most
+// operators only need to populate ChannelID + BaseHz + SpacingHz +
+// TxOffsetHz; BandwidthHz is informational and BandPlan.Frequency
+// does not consult it.
+type P25BandPlanEntryConfig struct {
+	ChannelID   uint8  `yaml:"channel_id"`
+	BaseHz      uint64 `yaml:"base_hz"`
+	SpacingHz   uint32 `yaml:"spacing_hz"`
+	TxOffsetHz  int64  `yaml:"tx_offset_hz"`
+	BandwidthHz uint32 `yaml:"bandwidth_hz"`
 }
 
 // EncryptionKeyConfig is one operator-supplied decryption key for a
@@ -686,6 +710,22 @@ func (c Config) Validate() error {
 		}
 		if _, err := trunking.ParseProtocol(s.Protocol); err != nil {
 			return fmt.Errorf("trunking.systems[%d]: %w", i, err)
+		}
+		seenBandPlanIDs := make(map[uint8]int, len(s.P25BandPlan))
+		for k, e := range s.P25BandPlan {
+			if e.ChannelID > 15 {
+				return fmt.Errorf("trunking.systems[%d].p25_band_plan[%d]: channel_id %d outside 0..15", i, k, e.ChannelID)
+			}
+			if prev, dup := seenBandPlanIDs[e.ChannelID]; dup {
+				return fmt.Errorf("trunking.systems[%d].p25_band_plan[%d]: duplicate channel_id %d (also at p25_band_plan[%d])", i, k, e.ChannelID, prev)
+			}
+			seenBandPlanIDs[e.ChannelID] = k
+			if e.SpacingHz == 0 {
+				return fmt.Errorf("trunking.systems[%d].p25_band_plan[%d]: spacing_hz required (nonzero)", i, k)
+			}
+			if e.BaseHz == 0 {
+				return fmt.Errorf("trunking.systems[%d].p25_band_plan[%d]: base_hz required (nonzero)", i, k)
+			}
 		}
 		seenKeyIDs := make(map[uint16]struct{}, len(s.EncryptionKeys))
 		for k, ek := range s.EncryptionKeys {
