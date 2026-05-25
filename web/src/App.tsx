@@ -15,6 +15,7 @@ import { Import } from "./panels/Import";
 import { Metrics } from "./panels/Metrics";
 import { Scanner } from "./panels/Scanner";
 import { Settings } from "./panels/Settings";
+import { Spectrum } from "./panels/Spectrum";
 import { Systems } from "./panels/Systems";
 import { Talkgroups } from "./panels/Talkgroups";
 import { Tones } from "./panels/Tones";
@@ -32,6 +33,7 @@ const EXTRA_TABS: Tab[] = [
   { to: "/history", label: "History", icon: "↺" },
   { to: "/events", label: "Events", icon: "≣" },
   { to: "/tones", label: "Tones", icon: "♪" },
+  { to: "/spectrum", label: "Spectrum", icon: "≈" },
   { to: "/metrics", label: "Metrics", icon: "▰" },
   { to: "/devices", label: "Devices", icon: "⌗" },
   { to: "/import", label: "Import", icon: "↗" },
@@ -129,6 +131,7 @@ export function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/active" element={<Active />} />
           <Route path="/scanner" element={<Scanner />} />
+          <Route path="/spectrum" element={<Spectrum />} />
           <Route path="/systems" element={<Systems />} />
           <Route path="/talkgroups" element={<Talkgroups />} />
           <Route path="/history" element={<History />} />
