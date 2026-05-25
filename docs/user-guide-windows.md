@@ -176,6 +176,218 @@ If you see `no SDR devices found`:
   cd "C:\Program Files\GopherTrunk"
   .\gophertrunk.exe sdr list
   ```
+- Run `gophertrunk sdr doctor` (§ 4.1 below) to see exactly which
+  driver Windows has bound to the dongle and what to do about it.
+
+### 4.1 `gophertrunk sdr doctor` — per-dongle driver report
+
+`sdr list` only shows dongles whose driver is already WinUSB. When a
+dongle is plugged in but missing from `sdr list`, `sdr doctor` walks
+the Windows USB tree, reads the **function driver currently bound to
+each known RTL-SDR VID/PID**, and prints a row per device with a
+concrete next step. It never claims or opens the device, so it's safe
+to run alongside a live daemon and as a non-admin user.
+
+```powershell
+gophertrunk sdr doctor
+```
+
+Example output for a dongle that hasn't been Zadig'd yet:
+
+```
+VID:PID    SERIAL    DRIVER       EXPECTED  STATUS  NEXT-STEP
+0bda:2838  00000001  RTL2832UUSB  WinUSB    BAD     Windows in-box DVB-T driver is bound. Run Zadig from the Start Menu, …
+```
+
+For a working dongle:
+
+```
+VID:PID    SERIAL    DRIVER  EXPECTED  STATUS  NEXT-STEP
+0bda:2838  00000001  WinUSB  WinUSB    OK      -
+```
+
+Pass `-v` for the extra `DESCRIPTION` column (the Device Manager
+friendly description), useful when several dongles share VID:PID and
+you need to disambiguate which one Zadig touched.
+
+### 4.2 Windows 11-specific driver-binding failure modes
+
+Windows 11 has several mechanisms that can prevent the WinUSB driver
+from binding correctly even after a Zadig run. Match the symptom in
+your `sdr doctor` output to the relevant subsection below.
+
+#### Core Isolation / Memory Integrity blocks the WinUSB INF
+
+Symptom: Zadig's install dialog appears to succeed, but `sdr doctor`
+still shows `RTL2832UUSB` (or the dongle vanishes from Device Manager
+with a "driver couldn't be installed" toast).
+
+Cause: Windows 11's **Memory Integrity** (a Core Isolation feature)
+rejects driver catalogs that don't carry an HVCI-compatible
+signature. Older Zadig builds shipped an INF the HVCI verifier rejects.
+
+Fix:
+
+1. Settings → Privacy & security → Windows Security → Device security
+   → Core isolation → toggle **Memory integrity** off and reboot.
+2. Re-run Zadig; the WinUSB swap will land.
+3. (Optional, recommended) Toggle Memory integrity back on after the
+   driver is bound — Windows keeps the existing binding across the
+   re-enable.
+
+#### Smart App Control blocks the unsigned driver install (Win11 22H2+)
+
+Symptom: Zadig itself refuses to launch, or the driver install fails
+with "Windows blocked this app to keep your device protected."
+
+Cause: **Smart App Control** in Enforced mode blocks unsigned-catalog
+driver installers. Smart App Control cannot be re-enabled once
+disabled without reinstalling Windows, so disable only if you're
+comfortable with that trade-off.
+
+Fix: Settings → Privacy & security → Windows Security → App & browser
+control → Smart App Control settings → switch to **Off** or
+**Evaluation** (not **Enforced**). Re-run Zadig.
+
+#### Driver Signature Enforcement blocks older Zadig builds
+
+Symptom: Zadig fails with "INF third-party driver was not digitally
+signed."
+
+Cause: Older Zadig builds bundle a self-signed catalog Windows 11
+won't accept under default Driver Signature Enforcement.
+
+Fix: Use the Zadig bundled by the GopherTrunk installer (it ships a
+signed catalog). If you must use an older Zadig, boot to Recovery →
+Advanced startup → Startup Settings → press **7** (Disable driver
+signature enforcement) for a one-shot install.
+
+#### Windows Update re-installs the DVB driver after feature updates
+
+Symptom: `sdr doctor` showed `WinUSB` before a major Windows release
+(22H2 → 23H2 → 24H2); after the upgrade it shows `RTL2832UUSB` again
+and the daemon fails to open the dongle.
+
+Cause: Feature updates re-evaluate driver matching for every USB
+device and can override Zadig's binding with the in-box DVB driver.
+
+Fix (one-shot): Re-run Zadig.
+
+Fix (permanent, requires Pro/Enterprise): `gpedit.msc` → Computer
+Configuration → Administrative Templates → System → Device
+Installation → Device Installation Restrictions → **Prevent
+installation of devices that match any of these device IDs** →
+enable, and add:
+
+```
+USB\VID_0BDA&PID_2838
+USB\VID_0BDA&PID_2832
+```
+
+(Add any other rows from `sdr doctor` that match dongles you own.)
+
+#### Multi-dongle: only one was Zadig'd
+
+Symptom: `sdr doctor` shows mixed status — `OK` for one row and
+`RTL2832UUSB` for the rest.
+
+Cause: Zadig binds one device at a time. Each dongle (each USB
+device-instance, even of the same model) needs its own driver swap.
+
+Fix: Re-run Zadig, **Options → List All Devices**, and rebind every
+row whose serial appears in `sdr doctor` with status `BAD`. The
+device-instance is keyed by serial number, so a swap for serial
+`00000001` doesn't carry over to serial `00000002`.
+
+#### Composite-device parent is bound instead of Interface 0
+
+Symptom: `sdr doctor` shows `usbccgp` as the driver.
+
+Cause: In Zadig you picked the **USB Composite Device** parent node
+instead of the child **Bulk-In, Interface (Interface 0)** entry. The
+RTL2832U firmware exposes a single bulk interface; the WinUSB
+binding has to land on the child, not the composite parent.
+
+Fix: Re-run Zadig, **Options → List All Devices**, and pick the
+`Bulk-In, Interface (Interface 0)` entry (typically named
+`RTL2832U` or `RTL2838UHIDIR`). Confirm the destination box still
+shows **WinUSB**, then click Replace Driver.
+
+#### Zadig installed libusbK or libusb-win32 instead of WinUSB
+
+Symptom: `sdr doctor` shows `libusbK` or `libusb0` as the driver.
+
+Cause: Zadig's target-driver dropdown defaults to whichever driver
+was used last — easy to leave on **libusbK** from a previous device.
+GopherTrunk's transport speaks WinUSB only; libusbK/libusb-win32 are
+different APIs.
+
+Fix: Re-run Zadig, change the target driver dropdown to **WinUSB**,
+and click Replace Driver.
+
+#### USB Selective Suspend drops the dongle mid-bring-up
+
+Symptom: First `sdr list --probe` after plug-in succeeds; subsequent
+runs report `winusb: WinUsb_Initialize failed`.
+
+Cause: Windows 11's USB Selective Suspend power policy puts idle USB
+ports to sleep aggressively; WinUSB doesn't always wake them cleanly.
+
+Fix: Control Panel → Hardware and Sound → Power Options → **Change
+plan settings** → Change advanced power settings → **USB settings**
+→ **USB selective suspend setting** → Disabled.
+
+#### USB 3.0 / xHCI controller quirks
+
+Symptom: `sdr list --probe` succeeds, but the daemon reports bulk
+timeouts under load (you see `bulk timeout` in the log; the IQ
+stream stalls or drops).
+
+Cause: Several xHCI controllers (notably early ASMedia, some
+Intel-side firmware regressions in Win11 22H2+) misbehave with
+bulk-IN URBs of the size GopherTrunk submits.
+
+Fix: Move the dongle to a USB 2.0 port (most desktops have a few),
+or interpose a powered USB 2.0 hub. If you must use USB 3.0, disable
+**xHCI Hand-off** in the BIOS and let the OS legacy driver own the
+port.
+
+#### Antivirus blocks the driver install during Zadig
+
+Symptom: Zadig hangs at the install dialog, or completes with a
+success message but `sdr doctor` shows no change.
+
+Cause: McAfee, Norton, Bitdefender, and several enterprise EDRs flag
+Zadig's catalog as suspicious and silently block the install.
+
+Fix: Temporarily disable real-time protection (or add Zadig's
+install folder to the exclusion list) for the duration of the
+driver swap.
+
+#### Windows S mode forbids unsigned driver installers
+
+Symptom: Zadig won't launch at all; Windows refuses to run
+non-Microsoft Store binaries.
+
+Cause: **Windows 11 in S mode** restricts installs to the Microsoft
+Store.
+
+Fix: Settings → System → Activation → **Switch out of S mode**. This
+is one-way (you cannot return to S mode without reinstalling
+Windows). Once switched, install GopherTrunk and run Zadig normally.
+
+#### Group Policy "Prevent installation of devices not described by other policy settings"
+
+Symptom: Zadig prompts for elevation, completes successfully, but
+`sdr doctor` shows the driver unchanged.
+
+Cause: Managed/AD-joined machines often deny driver installs for
+devices not pre-approved by IT.
+
+Fix: Coordinate with IT to whitelist the dongle's VID/PID
+(`USB\VID_0BDA&PID_2838`, etc.) under Administrative Templates →
+System → Device Installation → Device Installation Restrictions →
+**Allow installation of devices that match any of these device IDs**.
 
 List audio output devices too — useful when you plan to enable live
 playback (§ 13):
