@@ -252,6 +252,11 @@ type Server struct {
 	// the same fan-out. nil disables the route.
 	audioPub *AudioPublisher
 
+	// spectrum is the optional provider backing /api/v1/spectrum/...
+	// routes. nil disables the routes. Implemented by the daemon
+	// over its iqtap broker map.
+	spectrum SpectrumProvider
+
 	mu     sync.Mutex
 	srv    *http.Server
 	closed bool
@@ -421,6 +426,13 @@ type ServerOptions struct {
 	// publisher that backs gRPC StreamAudio so the HTTP stream is
 	// a parallel subscriber rather than a second fan-out.
 	AudioPublisher *AudioPublisher
+	// Spectrum, when non-nil, enables the
+	// GET /api/v1/spectrum/devices read endpoint and the
+	// WS /api/v1/spectrum/stream live FFT frame stream. The daemon
+	// implements this on top of its iqtap.Broker map; nil keeps the
+	// routes returning 503 so a build without SDRs doesn't pretend
+	// to have a waterfall.
+	Spectrum SpectrumProvider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -512,6 +524,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		tlsKey:         opts.TLSKey,
 		cors:           opts.CORS,
 		audioPub:       opts.AudioPublisher,
+		spectrum:       opts.Spectrum,
 	}, nil
 }
 
@@ -678,6 +691,14 @@ func (s *Server) routes() *http.ServeMux {
 	// it via <audio src="/api/v1/audio/stream">. Returns 503 when
 	// the daemon was started without an audio publisher.
 	mux.HandleFunc("GET /api/v1/audio/stream", s.handleAudioStream)
+
+	// Spectrum / waterfall — list devices that can be streamed and
+	// open a WS feed of FFT magnitude frames. Foundation for the
+	// browser + TUI live spectrum panel. Returns 503 when the
+	// daemon was started without a SpectrumProvider (no SDRs, or
+	// the broker map wasn't wired).
+	mux.HandleFunc("GET /api/v1/spectrum/devices", s.handleSpectrumDevices)
+	mux.HandleFunc("GET /api/v1/spectrum/stream", s.handleSpectrumStream)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes

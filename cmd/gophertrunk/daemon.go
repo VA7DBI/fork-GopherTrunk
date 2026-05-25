@@ -22,6 +22,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/iqtap"
 	"github.com/MattCheramie/GopherTrunk/internal/storage"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 	"github.com/MattCheramie/GopherTrunk/internal/voice"
@@ -116,9 +117,19 @@ type Daemon struct {
 	controlSampleRate uint32
 	convScan          *conventional.Scanner
 	widebandT2        []*widebandt2.Engine
-	metrics           *metrics.Metrics
-	httpAPI           *api.Server
-	grpcAPI           *api.GRPCServer
+	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
+	// Primary consumers (CC decoder, conventional scanner) stream IQ
+	// through the broker so secondary observers (live spectrum,
+	// future paging / AIS / ADS-B decoders, rtl_tcp server) can
+	// Subscribe without disturbing the primary's StreamIQ contract.
+	// Foundation for the trunking-adjacent feature work — see
+	// internal/sdr/iqtap. Populated after wrapBasebandRecorders so
+	// the broker wraps the recorder when baseband recording is on
+	// for the same dongle.
+	iqBrokers map[string]*iqtap.Broker
+	metrics   *metrics.Metrics
+	httpAPI   *api.Server
+	grpcAPI   *api.GRPCServer
 
 	// startupWarnings collects non-fatal observations from
 	// NewDaemon / preflight (missing talkgroup CSV, SDR enumeration
@@ -341,6 +352,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			d.pool = nil
 		} else {
 			d.wrapBasebandRecorders(cfg, log)
+			d.wrapIQBrokers(log)
 		}
 	} else if len(cfg.Trunking.Systems) > 0 {
 		// Trunked systems configured but no SDR devices listed —
@@ -568,10 +580,20 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		if cchEnabled {
 			controlEntry := d.pool.FirstByRole(sdr.RoleControl)
 			if controlEntry != nil {
+				// Route the supervisor's retunes through the broker
+				// (when present) so SetCenterFreq follows the same
+				// broker.SetInner swap path the ccdecoder uses after
+				// pool.Reacquire — and so retunes during a future
+				// spectrum subscription still hit whatever device the
+				// pool now considers authoritative.
+				var cchTuner cchunt.Tuner = controlEntry.Device
+				if br := d.iqBrokers[controlEntry.Info.Serial]; br != nil {
+					cchTuner = br
+				}
 				sup, err := cchunt.New(cchunt.Options{
 					Bus:            d.bus,
 					Log:            log,
-					Tuner:          controlEntry.Device,
+					Tuner:          cchTuner,
 					Cache:          d.ccCache,
 					Systems:        d.systems,
 					Dwell:          msToDuration(cfg.Scanner.CCHunt.DwellMs, 3*time.Second),
@@ -604,11 +626,24 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 				if d.metrics != nil {
 					iqObs = d.metrics
 				}
+				// Route the control SDR's IQ through the iqtap broker
+				// so secondary observers (live spectrum, future paging /
+				// AIS / ADS-B decoders) can Subscribe without disturbing
+				// the CC decoder. Tuner goes through the same broker so
+				// SetCenterFreq calls land on whichever inner the broker
+				// currently wraps (kept in sync with pool.Reacquire via
+				// broker.SetInner below).
+				var iqSrc ccdecoder.IQSource = controlEntry.Device
+				var tuner ccdecoder.Tuner = controlEntry.Device
+				if br := d.iqBrokers[controlEntry.Info.Serial]; br != nil {
+					iqSrc = br
+					tuner = br
+				}
 				d.ccDecoderOpts = ccdecoder.Options{
 					Bus:          d.bus,
 					Log:          log,
-					Tuner:        controlEntry.Device,
-					IQ:           controlEntry.Device,
+					Tuner:        tuner,
+					IQ:           iqSrc,
 					Systems:      d.systems,
 					SampleRateHz: float64(cfg.SDR.SampleRate),
 					Metrics:      iqObs,
@@ -803,6 +838,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			AudioPublisher: d.audioPub,
 			TLSCert:        cfg.API.TLSCert,
 			TLSKey:         cfg.API.TLSKey,
+		}
+		if len(d.iqBrokers) > 0 {
+			opts.Spectrum = newSpectrumProvider(d.pool, d.iqBrokers, log)
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1237,10 +1275,22 @@ func (d *Daemon) runCCDecoderWithRetry(ctx context.Context) error {
 			} else {
 				d.log.Info("daemon: ccdecoder: control SDR reacquired",
 					"serial", d.controlSerial)
-				d.ccDecoderOpts.IQ = newEntry.Device
-				d.ccDecoderOpts.Tuner = newEntry.Device
+				// Keep the broker pointed at the fresh handle so
+				// secondary subscribers (spectrum, paging, ...)
+				// resume streaming on the next StreamIQ. If no
+				// broker exists (pool wired without iqBrokers),
+				// fall back to the raw new device.
+				var iqSrc ccdecoder.IQSource = newEntry.Device
+				var tuner ccdecoder.Tuner = newEntry.Device
+				if br := d.iqBrokers[d.controlSerial]; br != nil {
+					br.SetInner(newEntry.Device)
+					iqSrc = br
+					tuner = br
+				}
+				d.ccDecoderOpts.IQ = iqSrc
+				d.ccDecoderOpts.Tuner = tuner
 				if d.cchuntSup != nil {
-					if serr := d.cchuntSup.SwapTuner(newEntry.Device); serr != nil {
+					if serr := d.cchuntSup.SwapTuner(tuner); serr != nil {
 						d.log.Warn("daemon: cchunt: SwapTuner failed",
 							"err", serr)
 					}
@@ -1450,6 +1500,32 @@ func (d *Daemon) wrapBasebandRecorders(cfg config.Config, log *slog.Logger) {
 		_ = rec.SetSampleRate(rate)
 		e.Device = rec
 		log.Info("baseband recording enabled", "serial", e.Info.Serial, "dir", dir)
+	}
+}
+
+// wrapIQBrokers creates one iqtap.Broker per pool entry, keyed by
+// serial, wrapping whatever entry.Device currently points at (the raw
+// driver Device, or a baseband.RecordingDevice if wrapBasebandRecorders
+// already wrapped it). Brokers live in d.iqBrokers as a parallel map
+// to the pool — entry.Device itself is left untouched so the existing
+// Pool.Reacquire contract (which mutates entry.Device in place) keeps
+// working unchanged. Primary consumers that want fan-out wire
+// d.iqBrokers[serial] in as their IQSource + Tuner; the broker
+// forwards every Device method to its inner.
+//
+// After a successful pool.Reacquire, the daemon must call
+// broker.SetInner(newEntry.Device) so the next StreamIQ session
+// streams from the fresh handle. Note: Reacquire returns the raw new
+// device, not a RecordingDevice — baseband recording stops across a
+// USB-disconnect cycle, which is an existing behavior the broker
+// inherits rather than fixes.
+func (d *Daemon) wrapIQBrokers(log *slog.Logger) {
+	if d.pool == nil {
+		return
+	}
+	d.iqBrokers = make(map[string]*iqtap.Broker, len(d.pool.Entries()))
+	for _, e := range d.pool.Entries() {
+		d.iqBrokers[e.Info.Serial] = iqtap.New(e.Device, 0, log)
 	}
 }
 
