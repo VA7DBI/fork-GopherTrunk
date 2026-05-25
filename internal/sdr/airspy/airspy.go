@@ -194,11 +194,11 @@ type Device struct {
 	t    usb.Transport
 	info sdr.Info
 
-	mu             sync.Mutex
-	closed         bool
-	streaming      bool
-	sampleTypeSet  bool     // true once SET_SAMPLE_TYPE has been issued
-	rates          []uint32 // supported sample rates, Hz, descending order
+	mu            sync.Mutex
+	closed        bool
+	streaming     bool
+	sampleTypeSet bool     // true once SET_SAMPLE_TYPE has been issued
+	rates         []uint32 // supported sample rates, Hz, descending order
 }
 
 // Info implements sdr.Device.
