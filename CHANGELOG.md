@@ -36,6 +36,21 @@ for tagged releases.
   antivirus blocking, Windows S mode, and Group Policy device-install
   restrictions.
 
+### Fixed
+
+- **airspy**: Defer `SET_SAMPLE_TYPE` from `Open()` to `StreamIQ()`,
+  matching libairspy's open ordering (`GET_SAMPLERATES` IN first,
+  no vendor OUT during open). Fixes Airspy R2 failing to open on
+  Windows with `winusb: WinUsb_ControlTransfer OUT: usb: device
+  disconnected` even though `sdr list` detected the device
+  (issue #270, reporter @VA7DBI).
+- **windows usb backend**: Stop folding `ERROR_GEN_FAILURE` into
+  `ErrDeviceGone`. That conflation printed "usb: device
+  disconnected" for what is actually a firmware NAK / stalled
+  pipe / wrong-driver-bound condition, and actively misled the
+  issue #270 reporter. The error now names the Win32 code and
+  suggests re-binding via Zadig.
+
 ## [v0.2.2] — 2026-05-25
 
 Operational-recovery + Mt Anakie follow-up release. The reporter in

@@ -661,6 +661,12 @@ func parseDevicePath(p string) (vid, pid uint16, serial string) {
 // winErr maps Windows error codes to the package's sentinel errors;
 // unmapped errors come through wrapped as-is so callers can still
 // inspect the underlying code via errors.As(*windows.Errno).
+//
+// ERROR_GEN_FAILURE (0x1F) is deliberately NOT folded into
+// ErrDeviceGone: it commonly means the device firmware NAK'd the
+// request, the pipe stalled, or the wrong function driver is bound
+// (e.g. libusbK rather than in-box WinUSB.sys). Conflating it with
+// physical disconnect actively misled the issue #270 reporter.
 func winErr(errno error) error {
 	if errno == nil {
 		return nil
@@ -668,9 +674,10 @@ func winErr(errno error) error {
 	switch errno {
 	case windows.ERROR_DEVICE_NOT_CONNECTED,
 		windows.ERROR_NO_SUCH_DEVICE,
-		windows.ERROR_DEV_NOT_EXIST,
-		windows.ERROR_GEN_FAILURE:
+		windows.ERROR_DEV_NOT_EXIST:
 		return ErrDeviceGone
+	case windows.ERROR_GEN_FAILURE:
+		return fmt.Errorf("winusb: device rejected request (ERROR_GEN_FAILURE 0x1F — firmware NAK / stalled pipe / wrong driver bound; try re-binding to WinUSB via Zadig): %w", errno)
 	case windows.ERROR_SEM_TIMEOUT, windows.ERROR_TIMEOUT:
 		return ErrTimeout
 	}

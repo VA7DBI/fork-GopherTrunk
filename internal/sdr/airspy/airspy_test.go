@@ -16,10 +16,10 @@ func withDevice(t *testing.T) (*Device, *usb.MockTransport) {
 	return &Device{t: mt, info: sdr.Info{Driver: driverName, Serial: "test"}}, mt
 }
 
-func TestDriverEnumerateOpenSetsSampleType(t *testing.T) {
-	// On Open the driver pins INT16_IQ and reads the samplerate table
-	// (count first, then list). Provide both calls in the OpenFunc'd
-	// transport.
+func TestDriverOpenReadsSamplerates(t *testing.T) {
+	// On Open the driver reads the samplerate table (count first,
+	// then list) and does NOT issue SET_SAMPLE_TYPE — that's deferred
+	// to StreamIQ, matching libairspy's ordering (issue #270).
 	openCalled := false
 	enum := &usb.MockEnumerator{
 		Devices: []usb.Descriptor{
@@ -34,7 +34,6 @@ func TestDriverEnumerateOpenSetsSampleType(t *testing.T) {
 			binary.LittleEndian.PutUint32(list[0:4], 10_000_000)
 			binary.LittleEndian.PutUint32(list[4:8], 2_500_000)
 			mt.Script = []usb.CtrlExchange{
-				{BRequest: reqSetSampleType, WValue: sampleTypeInt16IQ},
 				{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 0, Reply: count, N: 4},
 				{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 2, Reply: list, N: 8},
 			}
@@ -59,6 +58,9 @@ func TestDriverEnumerateOpenSetsSampleType(t *testing.T) {
 	asDev := dev.(*Device)
 	if len(asDev.rates) != 2 || asDev.rates[0] != 10_000_000 {
 		t.Fatalf("samplerate table = %v", asDev.rates)
+	}
+	if asDev.sampleTypeSet {
+		t.Error("Open issued SET_SAMPLE_TYPE; expected it deferred to StreamIQ (#270)")
 	}
 	if err := dev.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -244,6 +246,8 @@ func TestDecodeInt16IQ(t *testing.T) {
 func TestStreamIQFlipsReceiverAndStops(t *testing.T) {
 	dev, mt := withDevice(t)
 	mt.Script = []usb.CtrlExchange{
+		// SET_SAMPLE_TYPE moved out of Open; first StreamIQ pins it.
+		{BRequest: reqSetSampleType, WValue: sampleTypeInt16IQ},
 		{BRequest: reqReceiverMode, WValue: receiverModeOn},
 		{BRequest: reqReceiverMode, WValue: receiverModeOff},
 	}
@@ -251,6 +255,9 @@ func TestStreamIQFlipsReceiverAndStops(t *testing.T) {
 	ch, err := dev.StreamIQ(ctx)
 	if err != nil {
 		t.Fatalf("StreamIQ: %v", err)
+	}
+	if !dev.sampleTypeSet {
+		t.Error("StreamIQ did not record sampleTypeSet")
 	}
 	cancel()
 	deadline := time.Now().Add(time.Second)
