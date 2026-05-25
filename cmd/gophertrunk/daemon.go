@@ -725,6 +725,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 				CenterFreqHz:  devCfg.CenterFreqHz,
 				TunerStrategy: devCfg.TunerStrategy,
 				Channels:      channels,
+				Systems:       d.systems,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("daemon: widebandt2 %q: %w", devCfg.Serial, err)

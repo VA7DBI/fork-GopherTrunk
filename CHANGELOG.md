@@ -10,19 +10,25 @@ for tagged releases.
 ### Added
 
 - **`role: wideband` SDR devices — one dongle, many DMR Tier II
-  repeaters.** A single SDR pinned to a centre frequency now decodes
-  every conventional DMR repeater inside its IQ bandwidth (e.g.
+  repeaters and DMR Tier III control channels.** A single SDR pinned
+  to a centre frequency now decodes every conventional DMR repeater
+  AND a DMR Tier III control channel inside its IQ bandwidth (e.g.
   several 12.5 kHz carriers within a 2.4 MHz IQ window around
   453 MHz), no extra hardware needed. Add a `role: wideband` entry to
   `sdr.devices` with a `center_freq_hz` and a `channels: [...]` list
-  binding each repeater frequency to a `trunking.systems` entry; the
-  daemon's new `internal/scanner/widebandt2` engine fans the dongle's
-  IQ out to N independent T2 decoders via the new
-  `internal/dsp/tuner` package (DDC-per-channel or shared polyphase
-  channelizer, picked by channel count). See
+  binding each frequency to a `trunking.systems` entry; per channel,
+  systems with `protocol: dmr-tier2` get a Tier II `ConventionalChannel`
+  state machine, systems with `protocol: dmr` get a Tier III
+  `ControlChannel` (channel frequency must match one of the system's
+  `control_channels`). T2 and T3 can mix on the same dongle. The
+  daemon's `internal/scanner/widebandt2` engine fans the dongle's IQ
+  out via the `internal/dsp/tuner` package (DDC-per-channel or shared
+  polyphase channelizer, picked by channel count). See
   [`docs/hardware.md` § Sharing one dongle across multiple repeaters](docs/hardware.md)
-  and `samples/dmr-tier2-multichannel/`. Tier III trunked-over-
-  wideband is planned as a follow-up; v1 is Tier II conventional.
+  and `samples/dmr-tier2-multichannel/`. Tier III voice grants still
+  route through the existing physical voice pool (a `role: voice`
+  SDR follows the call); decoding T3 voice directly on the wideband
+  dongle via a virtual voice pool is the next planned step.
 - **`gophertrunk sdr doctor` — per-dongle driver-binding report.**
   Many Windows 11 users reported their RTL-SDR dongles weren't being
   recognized despite appearing in Device Manager, mirroring the

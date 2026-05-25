@@ -733,10 +733,6 @@ func (c Config) Validate() error {
 		return errors.New("sdr.sample_rate must be between 225 kHz and 3.2 MHz")
 	}
 	seenSerials := make(map[string]int, len(c.SDR.Devices))
-	systemProtocols := make(map[string]string, len(c.Trunking.Systems))
-	for _, s := range c.Trunking.Systems {
-		systemProtocols[s.Name] = s.Protocol
-	}
 	for i, d := range c.SDR.Devices {
 		switch d.Role {
 		case "", "control", "voice", "auto", "wideband":
@@ -744,7 +740,7 @@ func (c Config) Validate() error {
 			return fmt.Errorf("sdr.devices[%d]: role must be control|voice|auto|wideband", i)
 		}
 		if d.Role == "wideband" {
-			if err := validateWidebandDevice(i, d, c.SDR.SampleRate, systemProtocols); err != nil {
+			if err := validateWidebandDevice(i, d, c.SDR.SampleRate, c.Trunking.Systems); err != nil {
 				return err
 			}
 		}
@@ -895,7 +891,14 @@ const widebandGuardFrac = 0.05
 // already accepted that as "fall back to the pool default" — in which
 // case the in-band check uses sdr.DefaultSampleRateHz so a missing
 // rate doesn't bypass the per-channel sanity check.
-func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, systemProtocols map[string]string) error {
+//
+// Each channel must reference a system whose protocol is either:
+//   - "dmr-tier2" — Tier II conventional; the channel frequency is one
+//     repeater carrier.
+//   - "dmr"       — Tier III trunked; the channel frequency must match
+//     one of the system's control_channels (the wideband dongle is
+//     hosting that CC).
+func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, systems []SystemConfig) error {
 	if d.Serial == "" {
 		return fmt.Errorf("sdr.devices[%d]: role: wideband requires serial (the daemon binds the channel list to the device by USB serial)", idx)
 	}
@@ -915,6 +918,10 @@ func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, system
 		rate = 2_048_000 // sdr.DefaultSampleRateHz; avoid an import cycle by repeating it
 	}
 	usableHalfBand := float64(rate) * (0.5 - widebandGuardFrac)
+	systemsByName := make(map[string]SystemConfig, len(systems))
+	for _, s := range systems {
+		systemsByName[s.Name] = s
+	}
 	seenFreq := make(map[uint32]int, len(d.Channels))
 	for j, ch := range d.Channels {
 		if ch.FrequencyHz == 0 {
@@ -923,12 +930,35 @@ func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, system
 		if ch.System == "" {
 			return fmt.Errorf("sdr.devices[%d].channels[%d]: system required", idx, j)
 		}
-		proto, ok := systemProtocols[ch.System]
+		sys, ok := systemsByName[ch.System]
 		if !ok {
 			return fmt.Errorf("sdr.devices[%d].channels[%d]: system %q is not declared in trunking.systems", idx, j, ch.System)
 		}
-		if proto != "dmr" {
-			return fmt.Errorf("sdr.devices[%d].channels[%d]: system %q has protocol %q; wideband currently supports dmr only", idx, j, ch.System, proto)
+		switch sys.Protocol {
+		case "dmr-tier2", "dmr_tier2", "dmr-t2", "dmrtier2":
+			// Tier II conventional - channel freq is a repeater carrier,
+			// no relationship to system.ControlChannels required.
+		case "dmr":
+			// Tier III trunked - the wideband channel MUST be one of
+			// the system's declared control channels.
+			matched := false
+			for _, cc := range sys.ControlChannels {
+				if cc == ch.FrequencyHz {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return fmt.Errorf(
+					"sdr.devices[%d].channels[%d]: frequency_hz %d does not match any of system %q's "+
+						"control_channels %v (wideband T3 channels must sit on a declared control channel)",
+					idx, j, ch.FrequencyHz, ch.System, sys.ControlChannels)
+			}
+		default:
+			return fmt.Errorf(
+				"sdr.devices[%d].channels[%d]: system %q has protocol %q; wideband currently supports dmr-tier2 "+
+					"(Tier II conventional) and dmr (Tier III trunked control channel)",
+				idx, j, ch.System, sys.Protocol)
 		}
 		offset := float64(ch.FrequencyHz) - float64(d.CenterFreqHz)
 		if offset > usableHalfBand || offset < -usableHalfBand {

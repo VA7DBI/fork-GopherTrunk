@@ -1,9 +1,25 @@
-// Package widebandt2 monitors several DMR Tier II conventional
-// repeaters with a single SDR dongle. The dongle is pinned to a
-// configured centre frequency; an internal/dsp/tuner.Bank extracts
-// one narrow-band IQ stream per repeater carrier inside the dongle's
-// IQ band; each stream feeds a DMR receiver and a tier2 state
-// machine that publishes cc.locked / grant events on the bus.
+// Package widebandt2 monitors several DMR repeaters with a single SDR
+// dongle. The dongle is pinned to a configured centre frequency; an
+// internal/dsp/tuner.Bank extracts one narrow-band IQ stream per
+// repeater carrier inside the dongle's IQ band; each stream feeds a
+// DMR receiver and a per-channel state machine that publishes
+// cc.locked / grant events on the bus.
+//
+// Two DMR variants are supported as channel state machines:
+//
+//   - DMR Tier II conventional (config protocol "dmr-tier2"). Each
+//     channel is a per-repeater carrier; the state machine
+//     (radio/dmr/tier2) emits a grant on every Voice LC Header burst.
+//
+//   - DMR Tier III trunked control channel (config protocol "dmr").
+//     The channel frequency must match one of the system's
+//     control_channels; the state machine (radio/dmr/tier3) emits
+//     grants from the CSBK chain. The published grants flow through
+//     the trunking engine's existing voice-pool allocator, which
+//     binds them to a physical role: voice dongle. Voice grants are
+//     not (yet) decoded by the wideband dongle itself — that needs
+//     a per-call narrow-band composer chain which is roadmapped as
+//     a follow-up.
 //
 // One Engine owns one wideband SDR. Multiple wideband dongles each
 // get their own Engine; they run independently and share only the
@@ -22,7 +38,9 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/radio/dmr"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/dmr/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/dmr/tier2"
+	"github.com/MattCheramie/GopherTrunk/internal/radio/dmr/tier3"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
+	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
 // narrowbandRateHz is the per-tap sample rate the bank decimates to.
@@ -55,8 +73,9 @@ const channelizerTapsPerBranch = 16
 const channelizerKaiserBeta = 9.0
 
 // ChannelConfig binds one repeater frequency to the trunking system
-// it belongs to. The Engine creates one tier2.ConventionalChannel
-// per entry.
+// it belongs to. The Engine creates one DMR state machine per entry,
+// dispatched by the referenced system's protocol (dmr-tier2 →
+// tier2.ConventionalChannel; dmr → tier3.ControlChannel).
 type ChannelConfig struct {
 	FrequencyHz uint32
 	SystemName  string
@@ -85,6 +104,13 @@ type Options struct {
 	// band (CenterFreqHz ± SampleRateHz/2 minus guardFrac).
 	Channels []ChannelConfig
 
+	// Systems is the trunking-system table. The Engine looks up
+	// each ChannelConfig.SystemName here to decide whether the
+	// channel is a Tier II conventional carrier (protocol
+	// "dmr-tier2") or a Tier III control channel (protocol "dmr").
+	// Required when Channels is non-empty.
+	Systems []trunking.System
+
 	// Now overrides the wall clock the per-channel state machines
 	// use for Grant.At timestamps. nil ⇒ time.Now.
 	Now func() time.Time
@@ -103,11 +129,20 @@ type Engine struct {
 	strategyTag string
 }
 
+// channelProcessor is the per-channel dibit consumer. Tier II's
+// ConventionalChannel and Tier III's ControlChannel both expose
+// Process(dibits []uint8, baseIdx int) int with the same semantics, so
+// the engine treats them uniformly.
+type channelProcessor interface {
+	Process(dibits []uint8, baseIdx int) int
+}
+
 type engineChannel struct {
-	freqHz   uint32
-	sysName  string
-	cc       *tier2.ConventionalChannel
-	receiver *receiver.Receiver
+	freqHz    uint32
+	sysName   string
+	protoTag  string // "dmr-tier2" or "dmr-tier3"
+	processor channelProcessor
+	receiver  *receiver.Receiver
 }
 
 // New constructs an Engine. The device is not opened or streamed
@@ -129,6 +164,13 @@ func New(opts Options) (*Engine, error) {
 	}
 	if len(opts.Channels) == 0 {
 		return nil, errors.New("widebandt2: at least one channel is required")
+	}
+	if len(opts.Systems) == 0 {
+		return nil, errors.New("widebandt2: Systems table is required (used to resolve T2 vs T3 per channel)")
+	}
+	systemsByName := make(map[string]trunking.System, len(opts.Systems))
+	for _, s := range opts.Systems {
+		systemsByName[s.Name] = s
 	}
 	log := opts.Log
 	if log == nil {
@@ -158,33 +200,38 @@ func New(opts Options) (*Engine, error) {
 	}
 
 	for _, ch := range opts.Channels {
+		sys, ok := systemsByName[ch.SystemName]
+		if !ok {
+			return nil, fmt.Errorf("widebandt2: channel freq=%d references unknown system %q",
+				ch.FrequencyHz, ch.SystemName)
+		}
 		offset := float64(ch.FrequencyHz) - float64(opts.CenterFreqHz)
-		cc := tier2.New(tier2.Options{
-			Bus:         opts.Bus,
-			Log:         log.With("system", ch.SystemName, "freq_hz", ch.FrequencyHz),
-			SystemName:  ch.SystemName,
-			FrequencyHz: ch.FrequencyHz,
-			Now:         opts.Now,
-		})
-		// dibitSink hands the receiver's dibits to the Tier II
-		// process adapter. The adapter buffers across calls,
-		// runs sync detection, and emits cc.locked / grant
-		// events on the bus.
-		dibitSink := func(cc *tier2.ConventionalChannel) dmr.DibitSink {
+		processor, protoTag, err := buildProcessor(sys, ch.FrequencyHz, opts.Bus, log, opts.Now)
+		if err != nil {
+			return nil, err
+		}
+		// DibitSink hands the receiver's dibits to the
+		// per-channel state machine's Process adapter. Both
+		// tier2.ConventionalChannel and tier3.ControlChannel
+		// satisfy channelProcessor; the adapter buffers across
+		// calls, runs sync detection, frames bursts, and emits
+		// cc.locked / grant events on the bus.
+		dibitSink := func(p channelProcessor) dmr.DibitSink {
 			return func(dibits []uint8, baseIdx int) {
-				cc.Process(dibits, baseIdx)
+				p.Process(dibits, baseIdx)
 			}
-		}(cc)
+		}(processor)
 		rcv := receiver.New(receiver.Options{
 			SampleRateHz: narrowbandRateHz,
 			DibitSink:    dibitSink,
 			DeviationHz:  receiver.SymbolRate * 0.405, // ~1944 Hz per ETSI TS 102 361-1 §6.3
 		})
 		ec := &engineChannel{
-			freqHz:   ch.FrequencyHz,
-			sysName:  ch.SystemName,
-			cc:       cc,
-			receiver: rcv,
+			freqHz:    ch.FrequencyHz,
+			sysName:   ch.SystemName,
+			protoTag:  protoTag,
+			processor: processor,
+			receiver:  rcv,
 		}
 		sink := func(ec *engineChannel) tuner.SinkFunc {
 			return func(out []complex64) {
@@ -203,6 +250,47 @@ func New(opts Options) (*Engine, error) {
 	return engine, nil
 }
 
+// buildProcessor instantiates the right DMR state machine for a
+// channel: Tier III ControlChannel for protocol "dmr" (the channel
+// frequency must be one of the system's control_channels), Tier II
+// ConventionalChannel for protocol "dmr-tier2".
+func buildProcessor(sys trunking.System, freqHz uint32, bus *events.Bus, log *slog.Logger, now func() time.Time) (channelProcessor, string, error) {
+	switch sys.Protocol {
+	case trunking.ProtocolDMR:
+		matched := false
+		for _, cc := range sys.ControlChannels {
+			if cc == freqHz {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return nil, "", fmt.Errorf("widebandt2: channel freq=%d on system %q (protocol dmr / Tier III) "+
+				"must match one of the system's control_channels %v", freqHz, sys.Name, sys.ControlChannels)
+		}
+		cc := tier3.New(tier3.Options{
+			Bus:         bus,
+			Log:         log.With("system", sys.Name, "freq_hz", freqHz, "tier", 3),
+			SystemName:  sys.Name,
+			FrequencyHz: freqHz,
+			Now:         now,
+		})
+		return cc, "dmr-tier3", nil
+	case trunking.ProtocolDMRTier2:
+		cc := tier2.New(tier2.Options{
+			Bus:         bus,
+			Log:         log.With("system", sys.Name, "freq_hz", freqHz, "tier", 2),
+			SystemName:  sys.Name,
+			FrequencyHz: freqHz,
+			Now:         now,
+		})
+		return cc, "dmr-tier2", nil
+	default:
+		return nil, "", fmt.Errorf("widebandt2: system %q has protocol %q; wideband only supports dmr-tier2 and dmr",
+			sys.Name, sys.Protocol.String())
+	}
+}
+
 // Channels returns the per-channel frequencies the engine is
 // monitoring. Used by callers (the daemon, tests) for logging and
 // status snapshots.
@@ -210,6 +298,18 @@ func (e *Engine) Channels() []uint32 {
 	out := make([]uint32, 0, len(e.channels))
 	for _, c := range e.channels {
 		out = append(out, c.freqHz)
+	}
+	return out
+}
+
+// ChannelProtocolTags returns a frequency → protocol-tag map for the
+// channels this engine drives ("dmr-tier2" or "dmr-tier3"). Used by
+// the daemon's startup log and by tests to verify the dispatcher
+// picked the right state machine per channel.
+func (e *Engine) ChannelProtocolTags() map[uint32]string {
+	out := make(map[uint32]string, len(e.channels))
+	for _, c := range e.channels {
+		out[c.freqHz] = c.protoTag
 	}
 	return out
 }

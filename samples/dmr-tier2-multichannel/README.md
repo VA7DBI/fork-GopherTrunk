@@ -1,29 +1,34 @@
-# One dongle, several DMR Tier II repeaters
+# One dongle, several DMR repeaters
 
 This sample config monitors four conventional DMR Tier II repeaters
 that all live inside a single 2.4 MHz IQ window around 453.5 MHz with
 one RTL-SDR. No extra hardware, no hardware re-tune per call - the
 daemon's internal channelizer (`internal/dsp/tuner`) extracts a
 separate 48 kHz baseband stream per repeater and feeds an independent
-T2 decoder for each.
+DMR decoder for each.
 
 ## When to use this layout
 
 - You have several DMR Tier II repeaters whose carriers cluster
   inside the IQ bandwidth of one dongle (typically ≤ 2.4 MHz of
   total spread).
+- You have a DMR Tier III trunked control channel inside the same
+  IQ window — the wideband engine can decode the T3 CC alongside
+  any T2 carriers. The commented-out section in `config.yaml`
+  shows how. (Voice grants from T3 still need a `role: voice`
+  SDR; the wideband dongle decodes the CC only.)
 - You only own one SDR or want to free your other dongles for
   other systems.
-- All the repeaters belong to the same conventional system - i.e.
-  you'd happily merge their call streams into one talkgroup CSV.
 
 ## What it doesn't do
 
-- Trunked DMR (Tier III) grant chasing is not supported by the
-  wideband role in v1. Add a separate `role: voice` dongle for
-  trunked systems.
+- Decode DMR Tier III voice grants directly on the wideband
+  dongle. Grants from the T3 CC publish on the bus; the daemon's
+  existing voice pool retunes a `role: voice` SDR to follow them.
+  A virtual voice pool that allocates a tuner tap per grant is
+  planned as a follow-up so T3-on-one-dongle becomes possible.
 - Other protocols (P25, NXDN, TETRA, etc.) inside the wideband
-  IQ are not decoded. Wideband is currently DMR Tier II only.
+  IQ. Wideband is currently DMR-only.
 - The wideband dongle is dedicated to this layout - it can't
   double as a voice-pool member or a control-channel hunter.
 
@@ -57,7 +62,10 @@ calls arrive.
 
 ## Limits and follow-ups
 
-- DMR Tier III via wideband is planned (the engine and the DSP can
-  do it - the voice-pool adapter is the remaining piece).
+- DMR Tier III voice on the wideband dongle is planned (the engine
+  and DSP can do it; the missing piece is a virtual voice pool that
+  allocates a tuner tap per grant instead of retuning a physical
+  dongle). Today T3 voice grants from a wideband CC route to a
+  physical `role: voice` SDR.
 - Multi-protocol wideband (P25 + DMR + NXDN sharing one dongle) is
-  not on the v1 roadmap.
+  not on the near-term roadmap.
