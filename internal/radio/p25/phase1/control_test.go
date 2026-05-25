@@ -1215,3 +1215,125 @@ func TestControlChannelDeferredGrantsBoundedByRingCap(t *testing.T) {
 		}
 	}
 }
+
+// TestControlChannelAppliesTDMAIdentifierUpdateAndPublishesGrant
+// covers the issue #345 round-3 fix: the Mt Anakie site broadcasts
+// IDEN_UP for channel id=10 as opcode 0x33 (TDMA-2), not 0x34 VUHF.
+// With 0x33 now wired into dispatchTSBK, a subsequent grant on
+// (id=10, num=176) must resolve through the freshly applied band-plan
+// slot to 468.6125 MHz — the exact downlink the operator should see
+// pop into /api/v1/calls/active.
+func TestControlChannelAppliesTDMAIdentifierUpdateAndPublishesGrant(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	identTSBK := TSBK{LB: false, Opcode: OpIdentifierUpdateTDMA}
+	identTSBK.Payload = AssembleIdentifierUpdateTDMA(IdentifierUpdate{
+		ChannelID:   10,
+		BandwidthHz: 6_250,
+		SpacingHz:   6_250,
+		TxOffsetHz:  -10_000_000,
+		BaseHz:      467_512_500,
+	})
+
+	// num=176 = 0x0B0 — exact Mt Anakie grant the operator reported.
+	grantTSBK := TSBK{LB: true, Opcode: OpGroupVoiceChannelGrant, Payload: [8]byte{
+		0x00,
+		(10 << 4) | 0x00, 0xB0,
+		0x12, 0x34,
+		0xAB, 0xCD, 0xEF,
+	}}
+
+	stream1 := buildLockedStreamWithTSBK(10, 0x164, DUIDTrunkingSignaling, identTSBK)
+	stream2 := buildLockedStreamWithTSBK(0, 0x164, DUIDTrunkingSignaling, grantTSBK)
+
+	cc := New(Options{
+		Bus: bus, SystemName: "MMR", FrequencyHz: 420_087_500,
+		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	cc.Process(stream1, 0)
+	cc.Process(stream2, len(stream1))
+
+	var got *trunking.Grant
+	deadline := time.After(time.Second)
+	for got == nil {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindDecodeError {
+				de := ev.Payload.(events.DecodeError)
+				if de.Stage == "no-bandplan" {
+					t.Fatal("TDMA IdentifierUpdate was not applied: grant fell to no-bandplan")
+				}
+			}
+			if ev.Kind == events.KindGrant {
+				g := ev.Payload.(trunking.Grant)
+				got = &g
+			}
+		case <-deadline:
+			t.Fatal("no grant event published")
+		}
+	}
+	if got.ChannelID != 10 || got.ChannelNum != 0x0B0 {
+		t.Errorf("grant channel = %d.%d, want 10.176", got.ChannelID, got.ChannelNum)
+	}
+	// base 467_512_500 + 176 * 6250 = 468_612_500
+	if got.FrequencyHz != 468_612_500 {
+		t.Errorf("freq = %d, want 468_612_500", got.FrequencyHz)
+	}
+}
+
+// TestControlChannelDeferredGrantReplayedAfterTDMAIdentifierUpdate
+// composes the prior fix (deferred queue) with the new TDMA dispatch:
+// a grant arrives before its TDMA IDEN_UP, lands in the pending ring,
+// then the IDEN_UP arrives via the 0x33 path and drains it.
+func TestControlChannelDeferredGrantReplayedAfterTDMAIdentifierUpdate(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	grantTSBK := TSBK{LB: true, Opcode: OpGroupVoiceChannelGrant, Payload: [8]byte{
+		0x00,
+		(10 << 4) | 0x00, 0xB0,
+		0x12, 0x34,
+		0xAB, 0xCD, 0xEF,
+	}}
+	identTSBK := TSBK{LB: false, Opcode: OpIdentifierUpdateTDMA}
+	identTSBK.Payload = AssembleIdentifierUpdateTDMA(IdentifierUpdate{
+		ChannelID:   10,
+		BandwidthHz: 6_250,
+		SpacingHz:   6_250,
+		TxOffsetHz:  -10_000_000,
+		BaseHz:      467_512_500,
+	})
+
+	stream1 := buildLockedStreamWithTSBK(10, 0x164, DUIDTrunkingSignaling, grantTSBK)
+	stream2 := buildLockedStreamWithTSBK(0, 0x164, DUIDTrunkingSignaling, identTSBK)
+
+	base := time.Unix(1_700_000_000, 0).UTC()
+	cc := New(Options{
+		Bus: bus, SystemName: "MMR", FrequencyHz: 420_087_500,
+		Now: func() time.Time { return base },
+	})
+	cc.Process(stream1, 0)
+	cc.Process(stream2, len(stream1))
+
+	var got *trunking.Grant
+	deadline := time.After(time.Second)
+	for got == nil {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindGrant {
+				g := ev.Payload.(trunking.Grant)
+				got = &g
+			}
+		case <-deadline:
+			t.Fatal("no grant event published after TDMA IDEN_UP drained the queue")
+		}
+	}
+	if got.FrequencyHz != 468_612_500 {
+		t.Errorf("freq = %d, want 468_612_500", got.FrequencyHz)
+	}
+}

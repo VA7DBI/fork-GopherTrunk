@@ -36,6 +36,7 @@ const (
 	OpUnitRegistrationResponse     Opcode = 0x2C
 	OpUnitRegistrationCommand      Opcode = 0x2D
 	OpDeregistrationAck            Opcode = 0x2F
+	OpIdentifierUpdateTDMA         Opcode = 0x33
 	OpIdentifierUpdateVUHF         Opcode = 0x34
 	OpProtectionParamUpdate        Opcode = 0x35
 	OpSecondaryControlChannel      Opcode = 0x39
@@ -68,6 +69,10 @@ func (o Opcode) String() string {
 		return "SecondaryControlChannelBroadcast"
 	case OpIdentifierUpdate:
 		return "IdentifierUpdate"
+	case OpIdentifierUpdateVUHF:
+		return "IdentifierUpdateVUHF"
+	case OpIdentifierUpdateTDMA:
+		return "IdentifierUpdateTDMA"
 	case OpGroupAffiliationResponse:
 		return "GroupAffiliationResponse"
 	case OpUnitRegistrationResponse:
