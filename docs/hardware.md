@@ -210,6 +210,81 @@ tuner type, and the supported gain values:
 The `Driver` column reads `rtlsdr`, `hackrf`, `airspy`, or
 `airspyhf` for each row.
 
+## Sharing one dongle across multiple repeaters
+
+A single SDR can monitor several conventional DMR Tier II repeaters as
+long as every carrier falls inside the dongle's IQ bandwidth. The
+dongle is pinned to a centre frequency; an internal channelizer
+extracts one narrow-band IQ stream per repeater and feeds an
+independent T2 decoder for each. No extra hardware is needed beyond
+the one dongle, and there is no per-repeater hardware re-tune.
+
+Add a `role: wideband` entry to `sdr.devices` in your config:
+
+```yaml
+sdr:
+  sample_rate: 2_400_000
+  devices:
+    - serial: "00000003"
+      role: wideband
+      center_freq_hz: 453_500_000
+      channels:
+        - frequency_hz: 453_125_000
+          system: "regional-dmr-t2"
+        - frequency_hz: 453_275_000
+          system: "regional-dmr-t2"
+        - frequency_hz: 453_775_000
+          system: "regional-dmr-t2"
+        - frequency_hz: 454_100_000
+          system: "regional-dmr-t2"
+
+trunking:
+  systems:
+    - name: "regional-dmr-t2"
+      protocol: dmr
+      talkgroup_file: "/etc/gophertrunk/talkgroups-dmr.csv"
+```
+
+The daemon programs the dongle's tuner to `center_freq_hz` once, opens
+a single IQ stream, and routes one decimated 48 kHz IQ stream per
+configured `channels[].frequency_hz` into a separate DMR T2 state
+machine. Grants and `cc.locked` events fire per repeater frequency
+just like they do for a dedicated dongle.
+
+### Picking a centre frequency and bandwidth
+
+The usable IQ band is `center_freq_hz ± sample_rate/2` with a 5 %
+guard at each edge. At `sample_rate: 2_400_000` that's ±1.08 MHz of
+usable spectrum either side of the centre. Put the centre frequency
+such that every repeater you care about fits inside that window. The
+config validator rejects out-of-band channels at load time with a
+message that names the offending entry.
+
+### Tuner strategy
+
+`tuner_strategy` chooses how the dongle's wide IQ stream is sliced:
+
+- `auto` (default) — picks `ddc` for ≤ 6 channels, `polyphase` above.
+- `ddc` — one independent NCO mixer + rational resampler per channel.
+  Linear cost in channel count; no constraint on the spacing between
+  repeaters. Best for a handful (≤ 6) of repeaters.
+- `polyphase` — one shared M-channel polyphase channelizer amortises
+  the wide-band filter across all channels; a per-channel fine-tune
+  DDC cleans up the residual. Wins on CPU once you have 7+ channels.
+
+### Limits
+
+- **DMR Tier II only in v1.** Tier III trunked support over a wideband
+  dongle is on the roadmap; today the listed channels must be
+  DMR conventional carriers.
+- **The wideband dongle is dedicated.** It can't double as a Voice
+  pool member (the daemon needs it pinned to one centre frequency).
+  If you also run a trunked system that allocates voice grants, add a
+  separate Voice dongle for that.
+- **CPU scales with channel count.** Eight DDC taps at 2.4 MS/s is a
+  few percent of one modern x86 core; the polyphase mode lands lower
+  at the same count.
+
 ## USB disconnect recovery
 
 A dongle that physically disconnects from the USB bus mid-run (flaky

@@ -281,6 +281,42 @@ type DeviceConfig struct {
 	// GPIO bit that goes nowhere — librtlsdr accepts the call
 	// either way.
 	BiasTee bool `yaml:"bias_tee"`
+
+	// CenterFreqHz pins a `role: wideband` dongle to the centre of
+	// the IQ band it should cover. Every Channels[].FrequencyHz must
+	// fall within ±sample_rate/2 of this value, with a 5 % guard.
+	// Required for wideband; ignored for other roles.
+	CenterFreqHz uint32 `yaml:"center_freq_hz"`
+
+	// TunerStrategy picks the DSP layout that extracts each per-
+	// repeater narrow-band stream from the dongle's wide IQ stream:
+	//   - ""        / "auto"      — auto-pick by Channel count
+	//                                (≤ 6 channels: ddc; otherwise
+	//                                polyphase)
+	//   - "ddc"                   — independent NCO mixer + rational
+	//                                resampler per channel.
+	//   - "polyphase"             — shared M-channel polyphase
+	//                                channelizer + fine-tune DDC.
+	// Ignored for non-wideband roles. See internal/dsp/tuner for the
+	// trade-offs.
+	TunerStrategy string `yaml:"tuner_strategy"`
+
+	// Channels is the list of repeater carriers a wideband dongle
+	// should monitor inside its IQ band. Each entry binds a
+	// frequency to a configured trunking.systems[].name; v1 only
+	// supports DMR Tier II conventional. Ignored for non-wideband
+	// roles.
+	Channels []DeviceChannelConfig `yaml:"channels"`
+}
+
+// DeviceChannelConfig is one repeater carrier carried by a
+// `role: wideband` dongle. FrequencyHz must lie inside the dongle's
+// IQ band (CenterFreqHz ± sample_rate/2 minus a guard); System must
+// match an existing trunking.systems[].name with a supported
+// per-channel protocol.
+type DeviceChannelConfig struct {
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	System      string `yaml:"system"`
 }
 
 type TrunkingConfig struct {
@@ -697,11 +733,20 @@ func (c Config) Validate() error {
 		return errors.New("sdr.sample_rate must be between 225 kHz and 3.2 MHz")
 	}
 	seenSerials := make(map[string]int, len(c.SDR.Devices))
+	systemProtocols := make(map[string]string, len(c.Trunking.Systems))
+	for _, s := range c.Trunking.Systems {
+		systemProtocols[s.Name] = s.Protocol
+	}
 	for i, d := range c.SDR.Devices {
 		switch d.Role {
-		case "", "control", "voice", "auto":
+		case "", "control", "voice", "auto", "wideband":
 		default:
-			return fmt.Errorf("sdr.devices[%d]: role must be control|voice|auto", i)
+			return fmt.Errorf("sdr.devices[%d]: role must be control|voice|auto|wideband", i)
+		}
+		if d.Role == "wideband" {
+			if err := validateWidebandDevice(i, d, c.SDR.SampleRate, systemProtocols); err != nil {
+				return err
+			}
 		}
 		if d.Serial == "" {
 			continue
@@ -835,6 +880,67 @@ func (c Config) Validate() error {
 		default:
 			return fmt.Errorf("baseband.replay[%d]: role must be control|voice|auto", i)
 		}
+	}
+	return nil
+}
+
+// widebandGuardFrac reserves this fraction of the dongle's IQ band at
+// each edge as a guard against alias roll-off. Channel frequencies
+// outside the resulting usable interval are rejected at config load.
+// Mirrors the default passed to internal/dsp/tuner.NewDDCBank.
+const widebandGuardFrac = 0.05
+
+// validateWidebandDevice checks a wideband SDR entry's centre-freq,
+// strategy, and channel list. sampleRateHz may be zero — Validate has
+// already accepted that as "fall back to the pool default" — in which
+// case the in-band check uses sdr.DefaultSampleRateHz so a missing
+// rate doesn't bypass the per-channel sanity check.
+func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, systemProtocols map[string]string) error {
+	if d.Serial == "" {
+		return fmt.Errorf("sdr.devices[%d]: role: wideband requires serial (the daemon binds the channel list to the device by USB serial)", idx)
+	}
+	if d.CenterFreqHz == 0 {
+		return fmt.Errorf("sdr.devices[%d]: role: wideband requires center_freq_hz", idx)
+	}
+	switch d.TunerStrategy {
+	case "", "auto", "ddc", "polyphase":
+	default:
+		return fmt.Errorf("sdr.devices[%d]: tuner_strategy must be auto|ddc|polyphase, got %q", idx, d.TunerStrategy)
+	}
+	if len(d.Channels) == 0 {
+		return fmt.Errorf("sdr.devices[%d]: role: wideband requires at least one channel", idx)
+	}
+	rate := sampleRateHz
+	if rate == 0 {
+		rate = 2_048_000 // sdr.DefaultSampleRateHz; avoid an import cycle by repeating it
+	}
+	usableHalfBand := float64(rate) * (0.5 - widebandGuardFrac)
+	seenFreq := make(map[uint32]int, len(d.Channels))
+	for j, ch := range d.Channels {
+		if ch.FrequencyHz == 0 {
+			return fmt.Errorf("sdr.devices[%d].channels[%d]: frequency_hz required", idx, j)
+		}
+		if ch.System == "" {
+			return fmt.Errorf("sdr.devices[%d].channels[%d]: system required", idx, j)
+		}
+		proto, ok := systemProtocols[ch.System]
+		if !ok {
+			return fmt.Errorf("sdr.devices[%d].channels[%d]: system %q is not declared in trunking.systems", idx, j, ch.System)
+		}
+		if proto != "dmr" {
+			return fmt.Errorf("sdr.devices[%d].channels[%d]: system %q has protocol %q; wideband currently supports dmr only", idx, j, ch.System, proto)
+		}
+		offset := float64(ch.FrequencyHz) - float64(d.CenterFreqHz)
+		if offset > usableHalfBand || offset < -usableHalfBand {
+			return fmt.Errorf(
+				"sdr.devices[%d].channels[%d]: frequency_hz %d is %.1f kHz from center; usable band is ±%.1f kHz "+
+					"(sample_rate %d Hz minus %.0f%% guard)",
+				idx, j, ch.FrequencyHz, offset/1000, usableHalfBand/1000, rate, widebandGuardFrac*100)
+		}
+		if prev, dup := seenFreq[ch.FrequencyHz]; dup {
+			return fmt.Errorf("sdr.devices[%d].channels[%d]: duplicate frequency_hz %d (also at channels[%d])", idx, j, ch.FrequencyHz, prev)
+		}
+		seenFreq[ch.FrequencyHz] = j
 	}
 	return nil
 }
