@@ -39,8 +39,8 @@ func (s *streamingFakeDevice) SetSampleRate(hz uint32) error {
 	s.rate.Store(hz)
 	return nil
 }
-func (s *streamingFakeDevice) SetGain(int) error    { return nil }
-func (s *streamingFakeDevice) SetPPM(int) error     { return nil }
+func (s *streamingFakeDevice) SetGain(int) error     { return nil }
+func (s *streamingFakeDevice) SetPPM(int) error      { return nil }
 func (s *streamingFakeDevice) SetBiasTee(bool) error { return nil }
 func (s *streamingFakeDevice) Close() error          { s.closes.Add(1); return nil }
 

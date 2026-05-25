@@ -126,10 +126,10 @@ type Daemon struct {
 	// internal/sdr/iqtap. Populated after wrapBasebandRecorders so
 	// the broker wraps the recorder when baseband recording is on
 	// for the same dongle.
-	iqBrokers         map[string]*iqtap.Broker
-	metrics           *metrics.Metrics
-	httpAPI           *api.Server
-	grpcAPI           *api.GRPCServer
+	iqBrokers map[string]*iqtap.Broker
+	metrics   *metrics.Metrics
+	httpAPI   *api.Server
+	grpcAPI   *api.GRPCServer
 
 	// startupWarnings collects non-fatal observations from
 	// NewDaemon / preflight (missing talkgroup CSV, SDR enumeration
