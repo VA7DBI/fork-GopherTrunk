@@ -34,6 +34,7 @@ func TestDriverEnumerateOpenSetsSampleType(t *testing.T) {
 			binary.LittleEndian.PutUint32(list[0:4], 10_000_000)
 			binary.LittleEndian.PutUint32(list[4:8], 2_500_000)
 			mt.Script = []usb.CtrlExchange{
+				{BRequest: reqReceiverMode, WValue: receiverModeOff},
 				{BRequest: reqSetSampleType, WValue: sampleTypeInt16IQ},
 				{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 0, Reply: count, N: 4},
 				{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 2, Reply: list, N: 8},
@@ -62,6 +63,69 @@ func TestDriverEnumerateOpenSetsSampleType(t *testing.T) {
 	}
 	if err := dev.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestDriverOpenRetriesTransientDeviceGoneOnSetSampleType(t *testing.T) {
+	prevBackoff := openRetryBackoff
+	openRetryBackoff = 0
+	t.Cleanup(func() { openRetryBackoff = prevBackoff })
+
+	openCalls := 0
+	var first *usb.MockTransport
+	var second *usb.MockTransport
+
+	enum := &usb.MockEnumerator{
+		Devices: []usb.Descriptor{
+			{Bus: 1, Address: 4, VID: vidAirspy, PID: pidAirspy, Serial: "AS1", Product: "Airspy R2", Path: "mock/1"},
+		},
+		OpenFunc: func(d usb.Descriptor) (*usb.MockTransport, error) {
+			openCalls++
+			mt := usb.NewMockTransport()
+			switch openCalls {
+			case 1:
+				mt.Script = []usb.CtrlExchange{
+					{BRequest: reqReceiverMode, WValue: receiverModeOff},
+					{BRequest: reqSetSampleType, WValue: sampleTypeInt16IQ, Err: usb.ErrDeviceGone},
+				}
+				first = mt
+			case 2:
+				count := make([]byte, 4)
+				binary.LittleEndian.PutUint32(count, 1)
+				list := make([]byte, 4)
+				binary.LittleEndian.PutUint32(list, 10_000_000)
+				mt.Script = []usb.CtrlExchange{
+					{BRequest: reqReceiverMode, WValue: receiverModeOff},
+					{BRequest: reqSetSampleType, WValue: sampleTypeInt16IQ},
+					{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 0, Reply: count, N: 4},
+					{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 1, Reply: list, N: 4},
+				}
+				second = mt
+			default:
+				t.Fatalf("unexpected OpenFunc call #%d", openCalls)
+			}
+			return mt, nil
+		},
+	}
+
+	drv := New(enum)
+	if _, err := drv.Enumerate(); err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+	dev, err := drv.Open(0)
+	if err != nil {
+		t.Fatalf("Open after transient ErrDeviceGone: %v", err)
+	}
+	defer dev.Close()
+
+	if openCalls < 2 {
+		t.Fatalf("OpenFunc calls = %d, want at least 2", openCalls)
+	}
+	if first == nil || second == nil {
+		t.Fatalf("transports not captured (first=%v second=%v)", first != nil, second != nil)
+	}
+	if !first.Closed {
+		t.Error("first transport should have been closed after transient failure")
 	}
 }
 

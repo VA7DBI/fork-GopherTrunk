@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/usb"
@@ -62,6 +63,8 @@ const (
 	defaultVGAGain   = 10
 	controlTimeoutMs = 1000
 )
+
+var openRetryBackoff = 250 * time.Millisecond
 
 // Driver implements sdr.Driver for Airspy.
 type Driver struct {
@@ -146,6 +149,34 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 		return nil, fmt.Errorf("airspy: index %d out of range", idx)
 	}
 	desc := cached[idx]
+	serial := fallbackSerial(desc.Serial, idx)
+
+	// Windows hosts occasionally surface a transient ErrDeviceGone on early
+	// post-open control transfers even though enumeration + WinUsb_Initialize
+	// just succeeded. Retry with a fresh open (and descriptor refresh by
+	// serial/path) before failing daemon startup.
+	const maxOpenAttempts = 5
+	var lastErr error
+	for attempt := 1; attempt <= maxOpenAttempts; attempt++ {
+		dev, err := d.openDevice(desc, idx, serial)
+		if err == nil {
+			return dev, nil
+		}
+		lastErr = err
+		if !errors.Is(err, usb.ErrDeviceGone) || attempt == maxOpenAttempts {
+			break
+		}
+		if refreshed, ok := d.refreshDescriptor(desc); ok {
+			desc = refreshed
+		}
+		if openRetryBackoff > 0 {
+			time.Sleep(openRetryBackoff)
+		}
+	}
+	return nil, lastErr
+}
+
+func (d *Driver) openDevice(desc usb.Descriptor, idx int, serial string) (*Device, error) {
 	t, err := d.enum.Open(desc)
 	if err != nil {
 		return nil, fmt.Errorf("airspy: open %s: %w", desc.Path, err)
@@ -159,15 +190,16 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 		info: sdr.Info{
 			Driver:       driverName,
 			Index:        idx,
-			Serial:       fallbackSerial(desc.Serial, idx),
+			Serial:       serial,
 			Manufacturer: desc.Manufacturer,
 			Product:      desc.Product,
 			TunerName:    tunerNameFor(desc.Product),
 		},
 	}
+	_ = controlOutInterfaceFallback(t, reqReceiverMode, receiverModeOff, nil, controlTimeoutMs)
 	// Pin the device to INT16_IQ — the format the StreamIQ decoder
 	// expects.
-	if err := t.ControlOut(reqSetSampleType, sampleTypeInt16IQ, 0, nil, controlTimeoutMs); err != nil {
+	if err := setSampleTypeInt16(t); err != nil {
 		_ = dev.Close()
 		return nil, fmt.Errorf("airspy: set sample type: %w", err)
 	}
@@ -182,6 +214,43 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 		dev.rates = rates
 	}
 	return dev, nil
+}
+
+func setSampleTypeInt16(t usb.Transport) error {
+	return controlOutInterfaceFallback(t, reqSetSampleType, sampleTypeInt16IQ, nil, controlTimeoutMs)
+}
+
+func controlOutInterfaceFallback(t usb.Transport, req uint8, wValue uint16, data []byte, timeoutMs int) error {
+	err := t.ControlOut(req, wValue, 0, data, timeoutMs)
+	if err == nil {
+		return nil
+	}
+	if err1 := t.ControlOut(req, wValue, 1, data, timeoutMs); err1 == nil {
+		return nil
+	}
+	return err
+}
+
+func (d *Driver) refreshDescriptor(current usb.Descriptor) (usb.Descriptor, bool) {
+	list, err := d.enum.List(vidAirspy, pidAirspy)
+	if err != nil || len(list) == 0 {
+		return current, false
+	}
+	if current.Serial != "" {
+		for _, cand := range list {
+			if cand.Serial == current.Serial {
+				return cand, true
+			}
+		}
+	}
+	if current.Path != "" {
+		for _, cand := range list {
+			if cand.Path == current.Path {
+				return cand, true
+			}
+		}
+	}
+	return list[0], true
 }
 
 func fallbackSerial(s string, idx int) string {
@@ -212,7 +281,7 @@ func (d *Device) SetCenterFreq(hz uint32) error {
 	}
 	payload := make([]byte, 4)
 	binary.LittleEndian.PutUint32(payload, hz)
-	return d.t.ControlOut(reqSetFreq, 0, 0, payload, controlTimeoutMs)
+	return controlOutInterfaceFallback(d.t, reqSetFreq, 0, payload, controlTimeoutMs)
 }
 
 // SetSampleRate selects the firmware-advertised rate closest to hz. If
@@ -222,7 +291,7 @@ func (d *Device) SetSampleRate(hz uint32) error {
 		return usb.ErrClosed
 	}
 	idx := d.closestRateIndex(hz)
-	return d.t.ControlOut(reqSetSamplerate, uint16(idx), 0, nil, controlTimeoutMs)
+	return controlOutInterfaceFallback(d.t, reqSetSamplerate, uint16(idx), nil, controlTimeoutMs)
 }
 
 // closestRateIndex returns the index of the supported sample rate
@@ -345,7 +414,7 @@ func (d *Device) SetBiasTee(enable bool) error {
 	if enable {
 		v = 1
 	}
-	return d.t.ControlOut(reqSetRFBiasCmd, v, 0, nil, controlTimeoutMs)
+	return controlOutInterfaceFallback(d.t, reqSetRFBiasCmd, v, nil, controlTimeoutMs)
 }
 
 // StreamIQ flips the receiver on and starts the bulk-IN reaper,
@@ -436,7 +505,7 @@ func (d *Device) isClosed() bool {
 }
 
 func (d *Device) setReceiver(mode uint16) error {
-	return d.t.ControlOut(reqReceiverMode, mode, 0, nil, controlTimeoutMs)
+	return controlOutInterfaceFallback(d.t, reqReceiverMode, mode, nil, controlTimeoutMs)
 }
 
 // fetchSampleRates reads the firmware's supported-rate table. libairspy's

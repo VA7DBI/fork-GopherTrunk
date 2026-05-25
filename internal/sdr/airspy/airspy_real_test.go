@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/usb"
 )
 
 const (
@@ -18,6 +19,7 @@ const (
 	airspyRealRateEnv   = "GOPHERTRUNK_AIRSPY_REAL_RATE_HZ"
 	airspyRealGainEnv   = "GOPHERTRUNK_AIRSPY_REAL_GAIN_TENTH_DB"
 	airspyRealBiasEnv   = "GOPHERTRUNK_AIRSPY_REAL_BIAS_TEE"
+	airspyRealDiagEnv   = "GOPHERTRUNK_AIRSPY_REAL_DIAG"
 )
 
 func TestRealHardware_OpenConfigureStream(t *testing.T) {
@@ -139,6 +141,88 @@ func TestRealHardware_BiasTeeToggle(t *testing.T) {
 	}
 }
 
+func TestRealHardware_USBControlTransferProbe(t *testing.T) {
+	requireRealAirspy(t)
+	if !envBool(airspyRealDiagEnv) {
+		t.Skipf("set %s=1 to run raw USB control-transfer probe", airspyRealDiagEnv)
+	}
+
+	serialHint := strings.TrimSpace(os.Getenv(airspyRealSerialEnv))
+	enum := usb.DefaultEnumerator()
+	descs, err := enum.List(vidAirspy, pidAirspy)
+	if err != nil {
+		t.Fatalf("usb enumerate: %v", err)
+	}
+	if len(descs) == 0 {
+		t.Fatalf("usb enumerate returned no Airspy descriptors")
+	}
+
+	desc := descs[0]
+	if serialHint != "" {
+		matched := false
+		for _, d := range descs {
+			if d.Serial == serialHint || strings.Contains(d.Serial, serialHint) {
+				desc = d
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Fatalf("no Airspy descriptor matched %q; found serials: %v", serialHint, collectUSBSerials(descs))
+		}
+	}
+
+	t.Logf("probing backend=%s path=%q serial=%q", enum.Name(), desc.Path, desc.Serial)
+	tr, err := enum.Open(desc)
+	if err != nil {
+		t.Fatalf("usb open: %v", err)
+	}
+	defer tr.Close()
+	if err := tr.ClaimInterface(0); err != nil {
+		t.Fatalf("usb claim interface 0: %v", err)
+	}
+	defer tr.ReleaseInterface(0)
+
+	candidates := []uint16{0, 1, 2}
+	var (
+		inOK, outModeOK, outTypeOK bool
+		inLastErr, outModeLastErr, outTypeLastErr error
+	)
+	for _, idx := range candidates {
+		_, inErr := tr.ControlIn(reqGetSamplerates, 0, idx, 4, controlTimeoutMs)
+		modeErr := tr.ControlOut(reqReceiverMode, receiverModeOff, idx, nil, controlTimeoutMs)
+		typeErr := tr.ControlOut(reqSetSampleType, sampleTypeInt16IQ, idx, nil, controlTimeoutMs)
+
+		if inErr == nil {
+			inOK = true
+			t.Logf("raw control in samplerate-count succeeded with wIndex=%d", idx)
+		} else {
+			inLastErr = inErr
+			t.Logf("raw control in samplerate-count failed: req=0x%02x wIndex=%d err=%v", reqGetSamplerates, idx, inErr)
+		}
+
+		if modeErr == nil {
+			outModeOK = true
+			t.Logf("raw control out receiver OFF succeeded with wIndex=%d", idx)
+		} else {
+			outModeLastErr = modeErr
+			t.Logf("raw control out receiver OFF failed: req=0x%02x wValue=%d wIndex=%d err=%v", reqReceiverMode, receiverModeOff, idx, modeErr)
+		}
+
+		if typeErr == nil {
+			outTypeOK = true
+			t.Logf("raw control out set sample type succeeded with wIndex=%d", idx)
+		} else {
+			outTypeLastErr = typeErr
+			t.Logf("raw control out set sample type failed: req=0x%02x wValue=%d wIndex=%d err=%v", reqSetSampleType, sampleTypeInt16IQ, idx, typeErr)
+		}
+	}
+
+	if !inOK && !outModeOK && !outTypeOK {
+		t.Fatalf("raw control probe failed for all wIndex candidates %v (IN=%v receiverMode=%v sampleType=%v)", candidates, inLastErr, outModeLastErr, outTypeLastErr)
+	}
+}
+
 func requireRealAirspy(t *testing.T) {
 	t.Helper()
 	v := strings.TrimSpace(os.Getenv(airspyRealEnv))
@@ -191,6 +275,14 @@ func collectSerials(infos []sdr.Info) []string {
 	out := make([]string, 0, len(infos))
 	for _, i := range infos {
 		out = append(out, i.Serial)
+	}
+	return out
+}
+
+func collectUSBSerials(descs []usb.Descriptor) []string {
+	out := make([]string, 0, len(descs))
+	for _, d := range descs {
+		out = append(out, d.Serial)
 	}
 	return out
 }

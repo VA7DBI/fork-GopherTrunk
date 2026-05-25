@@ -9,7 +9,7 @@ TAGS    ?=
 GO      ?= go
 PKGS    := ./...
 
-.PHONY: all build dist test test-dvsi test-airspy-real test-airspy-real-bias test-integration integration integration-cc integration-cc-grant integration-cc-nxdn integration-cc-dmr integration-cc-dpmr integration-cc-edacs integration-cc-motorola integration-cc-tetra integration-cc-p25p2 integration-cc-mpt1327 integration-cc-ltr integration-cc-ysf lint tidy vet vulncheck licenses clean run proto cross-build release-archives release-dry-run web-build web-dev web-clean web-test
+.PHONY: all build dist test test-dvsi test-airspy-real test-airspy-real-bias test-airspy-real-diag test-integration integration integration-cc integration-cc-grant integration-cc-nxdn integration-cc-dmr integration-cc-dpmr integration-cc-edacs integration-cc-motorola integration-cc-tetra integration-cc-p25p2 integration-cc-mpt1327 integration-cc-ltr integration-cc-ysf lint tidy vet vulncheck licenses clean run proto cross-build release-archives release-dry-run web-build web-dev web-clean web-test
 
 all: build
 
@@ -53,6 +53,12 @@ test-airspy-real:
 # bias-tee toggle validation. Use only when a safe load is connected.
 test-airspy-real-bias:
 	GOPHERTRUNK_AIRSPY_REAL=1 GOPHERTRUNK_AIRSPY_REAL_BIAS_TEE=1 $(GO) test -tags "$(TAGS)" -race -count=1 -run TestRealHardware_ ./internal/sdr/airspy
+
+# test-airspy-real-diag runs a lower-level raw WinUSB/USB control-transfer
+# probe in addition to the driver-level real hardware tests, useful for
+# isolating where open-time failures occur.
+test-airspy-real-diag:
+	GOPHERTRUNK_AIRSPY_REAL=1 GOPHERTRUNK_AIRSPY_REAL_DIAG=1 $(GO) test -tags "$(TAGS)" -race -count=1 -run TestRealHardware_ ./internal/sdr/airspy
 
 # integration boots the wired daemon (no real SDR) end-to-end and asserts
 # the engine + recorder + call log + metrics + API agree on a synthetic

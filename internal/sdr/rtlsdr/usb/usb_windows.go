@@ -5,6 +5,7 @@ package usb
 import (
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -77,6 +78,8 @@ type spDeviceInterfaceData struct {
 // hard-code.
 const spDeviceInterfaceDetailDataHeaderSize = 8
 
+const winusbIfaceGUIDEnv = "RTLSDR_WINUSB_IFACE_GUID"
+
 func platformEnumerator() Enumerator { return &winEnumerator{} }
 
 // winEnumerator walks every present USB device interface via SetupAPI
@@ -88,8 +91,14 @@ type winEnumerator struct{}
 func (w *winEnumerator) Name() string { return "winusb" }
 
 func (w *winEnumerator) List(vid, pid uint16) ([]Descriptor, error) {
+	ifaceGUID, guidLabel, err := winInterfaceClassGUID()
+	if err != nil {
+		return nil, err
+	}
+	debugLogf("winusb", "List start vid=0x%04x pid=0x%04x", vid, pid)
+	debugLogf("winusb", "List interface class guid=%s", guidLabel)
 	devSet, _, errno := procSetupDiGetClassDevsW.Call(
-		uintptr(unsafe.Pointer(&guidDevInterfaceUSBDevice)),
+		uintptr(unsafe.Pointer(&ifaceGUID)),
 		0,
 		0,
 		uintptr(digcfPresentDeviceInterface),
@@ -106,7 +115,7 @@ func (w *winEnumerator) List(vid, pid uint16) ([]Descriptor, error) {
 		ret, _, errno := procSetupDiEnumDeviceInterfaces.Call(
 			devSet,
 			0,
-			uintptr(unsafe.Pointer(&guidDevInterfaceUSBDevice)),
+			uintptr(unsafe.Pointer(&ifaceGUID)),
 			uintptr(memberIndex),
 			uintptr(unsafe.Pointer(&iface)),
 		)
@@ -118,16 +127,20 @@ func (w *winEnumerator) List(vid, pid uint16) ([]Descriptor, error) {
 		}
 		path, err := getDeviceInterfacePath(devSet, &iface)
 		if err != nil {
+			debugLogf("winusb", "List[%d] interface path error: %v", memberIndex, err)
 			continue
 		}
 		v, p, serial := parseDevicePath(path)
+		debugLogf("winusb", "List[%d] path=%q parsed vid=0x%04x pid=0x%04x serial=%q", memberIndex, path, v, p, serial)
 		if v == 0 && p == 0 {
 			continue
 		}
 		if vid != 0 && v != vid {
+			debugLogf("winusb", "List[%d] skip: vid mismatch (want 0x%04x)", memberIndex, vid)
 			continue
 		}
 		if pid != 0 && p != pid {
+			debugLogf("winusb", "List[%d] skip: pid mismatch (want 0x%04x)", memberIndex, pid)
 			continue
 		}
 		out = append(out, Descriptor{
@@ -139,6 +152,7 @@ func (w *winEnumerator) List(vid, pid uint16) ([]Descriptor, error) {
 			Path:    path,
 		})
 	}
+	debugLogf("winusb", "List done matches=%d", len(out))
 	return out, nil
 }
 
@@ -146,33 +160,87 @@ func (w *winEnumerator) Open(d Descriptor) (Transport, error) {
 	if d.Path == "" {
 		return nil, errors.New("winusb: Descriptor.Path empty (re-enumerate)")
 	}
+	debugLogf("winusb", "Open path=%q serial=%q vid=0x%04x pid=0x%04x", d.Path, d.Serial, d.VID, d.PID)
 	wpath, err := windows.UTF16PtrFromString(d.Path)
 	if err != nil {
 		return nil, fmt.Errorf("winusb: bad path %q: %w", d.Path, err)
 	}
+	flags := winCreateFileFlags()
 	handle, err := windows.CreateFile(
 		wpath,
 		windows.GENERIC_READ|windows.GENERIC_WRITE,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 		nil,
 		windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OVERLAPPED,
+		flags,
 		0,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("winusb: CreateFile %q: %w", d.Path, err)
 	}
+	debugLogf("winusb", "Open CreateFile ok handle=0x%x flags=0x%x", uintptr(handle), flags)
 	var ifaceHandle uintptr
 	ret, _, errno := procWinUsbInitialize.Call(uintptr(handle), uintptr(unsafe.Pointer(&ifaceHandle)))
 	if ret == 0 {
 		windows.CloseHandle(handle)
 		return nil, fmt.Errorf("winusb: WinUsb_Initialize (driver not bound? run Zadig): %w", winErr(errno))
 	}
-	return &winTransport{
+	debugLogf("winusb", "Open WinUsb_Initialize ok iface=0x%x", ifaceHandle)
+	t := &winTransport{
 		fileHandle:  handle,
 		ifaceHandle: ifaceHandle,
 		desc:        d,
-	}, nil
+	}
+	return MaybeWrapDebug(t, d), nil
+}
+
+func winCreateFileFlags() uint32 {
+	flags := uint32(windows.FILE_ATTRIBUTE_NORMAL | windows.FILE_FLAG_OVERLAPPED)
+	if os.Getenv("RTLSDR_WINUSB_NO_OVERLAPPED") != "" {
+		flags = windows.FILE_ATTRIBUTE_NORMAL
+	}
+	return flags
+}
+
+func winInterfaceClassGUID() (windows.GUID, string, error) {
+	raw := strings.TrimSpace(os.Getenv(winusbIfaceGUIDEnv))
+	if raw == "" {
+		return guidDevInterfaceUSBDevice, guidToString(guidDevInterfaceUSBDevice), nil
+	}
+	g, err := parseGUID(raw)
+	if err != nil {
+		return windows.GUID{}, "", fmt.Errorf("winusb: invalid %s=%q: %w", winusbIfaceGUIDEnv, raw, err)
+	}
+	return g, guidToString(g), nil
+}
+
+func parseGUID(s string) (windows.GUID, error) {
+	var (
+		d1     uint32
+		d2, d3 uint16
+		d4     [8]uint8
+	)
+	formats := []string{
+		"{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
+		"%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+	}
+	for _, f := range formats {
+		n, err := fmt.Sscanf(s, f,
+			&d1, &d2, &d3,
+			&d4[0], &d4[1], &d4[2], &d4[3], &d4[4], &d4[5], &d4[6], &d4[7],
+		)
+		if err == nil && n == 11 {
+			return windows.GUID{Data1: d1, Data2: d2, Data3: d3, Data4: d4}, nil
+		}
+	}
+	return windows.GUID{}, errors.New("expected GUID form {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}")
+}
+
+func guidToString(g windows.GUID) string {
+	return fmt.Sprintf("{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
+		g.Data1, g.Data2, g.Data3,
+		g.Data4[0], g.Data4[1], g.Data4[2], g.Data4[3], g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7],
+	)
 }
 
 // winTransport is the WinUSB-backed [Transport].
@@ -210,6 +278,13 @@ type winusbSetupPacket struct {
 	Length      uint16
 }
 
+// Some WinUSB-bound devices expose vendor control requests on interface
+// recipient scope (bmRequestType ...|RECIPIENT_INTERFACE) rather than
+// device scope. Most devices (including RTL-SDR) accept recipient-device,
+// so we try device first and fall back to interface only when the first
+// transfer reports ErrDeviceGone.
+const interfaceRecipientBit uint8 = 0x01
+
 func (t *winTransport) applyControlTimeout(timeoutMs int) {
 	if timeoutMs <= 0 {
 		return
@@ -240,13 +315,30 @@ func (t *winTransport) ControlIn(bRequest uint8, wValue, wIndex uint16, n int, t
 		return nil, fmt.Errorf("winusb: control IN length %d out of range", n)
 	}
 	t.applyControlTimeout(timeoutMs)
+	out, err := t.controlInWithType(VendorIn, bRequest, wValue, wIndex, n)
+	if err == nil {
+		return out, nil
+	}
+	if !errors.Is(err, ErrDeviceGone) {
+		return nil, err
+	}
+	debugLogf("winusb", "ControlIn retry with interface recipient req=0x%02x val=0x%04x idx=0x%04x", bRequest, wValue, wIndex)
+	out, err = t.controlInWithType(VendorIn|interfaceRecipientBit, bRequest, wValue, wIndex, n)
+	if err != nil {
+		debugLogf("winusb", "ControlIn interface-recipient retry failed: %v", err)
+	}
+	return out, err
+}
+
+func (t *winTransport) controlInWithType(reqType uint8, bRequest uint8, wValue, wIndex uint16, n int) ([]byte, error) {
 	pkt := winusbSetupPacket{
-		RequestType: VendorIn,
+		RequestType: reqType,
 		Request:     bRequest,
 		Value:       wValue,
 		Index:       wIndex,
 		Length:      uint16(n),
 	}
+	setup := *(*uint64)(unsafe.Pointer(&pkt))
 	var buf []byte
 	var bufPtr uintptr
 	if n > 0 {
@@ -256,7 +348,7 @@ func (t *winTransport) ControlIn(bRequest uint8, wValue, wIndex uint16, n int, t
 	var transferred uint32
 	ret, _, errno := procWinUsbControlTransfer.Call(
 		t.ifaceHandle,
-		uintptr(unsafe.Pointer(&pkt)),
+		uintptr(setup),
 		bufPtr,
 		uintptr(n),
 		uintptr(unsafe.Pointer(&transferred)),
@@ -276,13 +368,30 @@ func (t *winTransport) ControlOut(bRequest uint8, wValue, wIndex uint16, data []
 		return fmt.Errorf("winusb: control OUT length %d out of range", len(data))
 	}
 	t.applyControlTimeout(timeoutMs)
+	err := t.controlOutWithType(VendorOut, bRequest, wValue, wIndex, data)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, ErrDeviceGone) {
+		return err
+	}
+	debugLogf("winusb", "ControlOut retry with interface recipient req=0x%02x val=0x%04x idx=0x%04x len=%d", bRequest, wValue, wIndex, len(data))
+	err = t.controlOutWithType(VendorOut|interfaceRecipientBit, bRequest, wValue, wIndex, data)
+	if err != nil {
+		debugLogf("winusb", "ControlOut interface-recipient retry failed: %v", err)
+	}
+	return err
+}
+
+func (t *winTransport) controlOutWithType(reqType uint8, bRequest uint8, wValue, wIndex uint16, data []byte) error {
 	pkt := winusbSetupPacket{
-		RequestType: VendorOut,
+		RequestType: reqType,
 		Request:     bRequest,
 		Value:       wValue,
 		Index:       wIndex,
 		Length:      uint16(len(data)),
 	}
+	setup := *(*uint64)(unsafe.Pointer(&pkt))
 	var dataPtr uintptr
 	if len(data) > 0 {
 		dataPtr = uintptr(unsafe.Pointer(&data[0]))
@@ -290,7 +399,7 @@ func (t *winTransport) ControlOut(bRequest uint8, wValue, wIndex uint16, data []
 	var transferred uint32
 	ret, _, errno := procWinUsbControlTransfer.Call(
 		t.ifaceHandle,
-		uintptr(unsafe.Pointer(&pkt)),
+		uintptr(setup),
 		dataPtr,
 		uintptr(len(data)),
 		uintptr(unsafe.Pointer(&transferred)),
@@ -667,9 +776,9 @@ func winErr(errno error) error {
 		windows.ERROR_NO_SUCH_DEVICE,
 		windows.ERROR_DEV_NOT_EXIST,
 		windows.ERROR_GEN_FAILURE:
-		return ErrDeviceGone
+		return fmt.Errorf("%w (windows errno=%v)", ErrDeviceGone, errno)
 	case windows.ERROR_SEM_TIMEOUT, windows.ERROR_TIMEOUT:
-		return ErrTimeout
+		return fmt.Errorf("%w (windows errno=%v)", ErrTimeout, errno)
 	}
 	return errno
 }
