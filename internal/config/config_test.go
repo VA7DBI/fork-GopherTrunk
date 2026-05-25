@@ -89,9 +89,10 @@ func TestValidate(t *testing.T) {
 		{"band_plan zero spacing", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "p25", P25BandPlan: []P25BandPlanEntryConfig{{ChannelID: 3, BaseHz: 1, SpacingHz: 0}}}}}}, true},
 		{"band_plan zero base", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "p25", P25BandPlan: []P25BandPlanEntryConfig{{ChannelID: 3, BaseHz: 0, SpacingHz: 1}}}}}}, true},
 		// wideband role: pin a dongle to a centre frequency and list
-		// per-repeater carriers inside its IQ bandwidth. Currently
-		// supports DMR Tier II conventional only.
-		{"wideband ok", Config{
+		// per-repeater carriers inside its IQ bandwidth. Stage 2 added
+		// DMR Tier II conventional; Stage 3 added DMR Tier III trunked
+		// control channel.
+		{"wideband T2 ok", Config{
 			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
 				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
 				Channels: []DeviceChannelConfig{
@@ -99,7 +100,44 @@ func TestValidate(t *testing.T) {
 					{FrequencyHz: 453_775_000, System: "regional-t2"},
 				},
 			}}},
-			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "regional-t2", Protocol: "dmr"}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "regional-t2", Protocol: "dmr-tier2"}}},
+		}, false},
+		{"wideband T3 ok", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 453_775_000, System: "regional-t3"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{
+				Name: "regional-t3", Protocol: "dmr",
+				ControlChannels: []uint32{453_775_000},
+			}}},
+		}, false},
+		{"wideband T3 channel not in CC list", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 453_125_000, System: "regional-t3"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{
+				Name: "regional-t3", Protocol: "dmr",
+				ControlChannels: []uint32{453_775_000}, // doesn't include 453_125_000
+			}}},
+		}, true},
+		{"wideband mixed T2 + T3", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 453_125_000, System: "regional-t2"},
+					{FrequencyHz: 453_775_000, System: "regional-t3"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{
+				{Name: "regional-t2", Protocol: "dmr-tier2"},
+				{Name: "regional-t3", Protocol: "dmr", ControlChannels: []uint32{453_775_000}},
+			}},
 		}, false},
 		{"wideband missing serial", Config{
 			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
@@ -108,7 +146,7 @@ func TestValidate(t *testing.T) {
 					{FrequencyHz: 453_125_000, System: "x"},
 				},
 			}}},
-			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr"}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr-tier2"}}},
 		}, true},
 		{"wideband missing center", Config{
 			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
@@ -117,7 +155,7 @@ func TestValidate(t *testing.T) {
 					{FrequencyHz: 453_125_000, System: "x"},
 				},
 			}}},
-			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr"}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr-tier2"}}},
 		}, true},
 		{"wideband missing channels", Config{
 			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
@@ -131,7 +169,7 @@ func TestValidate(t *testing.T) {
 					{FrequencyHz: 460_000_000, System: "x"},
 				},
 			}}},
-			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr"}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr-tier2"}}},
 		}, true},
 		{"wideband unknown system", Config{
 			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
@@ -158,7 +196,7 @@ func TestValidate(t *testing.T) {
 					{FrequencyHz: 453_125_000, System: "x"},
 				},
 			}}},
-			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr"}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr-tier2"}}},
 		}, true},
 		{"wideband bad strategy", Config{
 			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
@@ -167,7 +205,7 @@ func TestValidate(t *testing.T) {
 					{FrequencyHz: 453_125_000, System: "x"},
 				},
 			}}},
-			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr"}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr-tier2"}}},
 		}, true},
 	}
 	for _, tc := range cases {

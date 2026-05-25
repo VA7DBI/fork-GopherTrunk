@@ -77,9 +77,10 @@ Silicon and Intel. Full per-OS recipes at
   [docs/hardware.md](docs/hardware.md).
 - **One dongle, many repeaters** — `role: wideband` pins a single
   SDR to a centre frequency and runs an internal channelizer so
-  one dongle decodes every DMR Tier II conventional repeater that
-  fits inside its IQ bandwidth (e.g. several 12.5 kHz carriers
-  inside a 2.4 MHz IQ window). See
+  one dongle decodes every DMR Tier II conventional repeater AND
+  a DMR Tier III control channel that fit inside its IQ bandwidth
+  (e.g. several 12.5 kHz carriers inside a 2.4 MHz IQ window).
+  Mix T2 and T3 channels on the same dongle. See
   [docs/hardware.md](docs/hardware.md) and
   [samples/dmr-tier2-multichannel/](samples/dmr-tier2-multichannel/).
 - **DSP** — Polyphase channelizer, Kaiser / RRC / Gaussian FIRs,

@@ -11,7 +11,19 @@ import (
 
 	"github.com/MattCheramie/GopherTrunk/internal/events"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
+	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
+
+// t2System / t3System are test helpers that build the trunking.System
+// entries the engine needs for Tier II conventional and Tier III
+// trunked channels respectively.
+func t2System(name string) trunking.System {
+	return trunking.System{Name: name, Protocol: trunking.ProtocolDMRTier2}
+}
+
+func t3System(name string, ccFreq uint32) trunking.System {
+	return trunking.System{Name: name, Protocol: trunking.ProtocolDMR, ControlChannels: []uint32{ccFreq}}
+}
 
 // mockDevice is a synchronous sdr.Device that emits a caller-supplied
 // sequence of IQ chunks, then closes the stream. The test goroutine
@@ -61,7 +73,8 @@ func TestEngineNewRejectsMissingDevice(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
 	if _, err := New(Options{Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 453_500_000,
-		Channels: []ChannelConfig{{FrequencyHz: 453_125_000, SystemName: "x"}}}); err == nil {
+		Channels: []ChannelConfig{{FrequencyHz: 453_125_000, SystemName: "x"}},
+		Systems:  []trunking.System{t2System("x")}}); err == nil {
 		t.Errorf("expected error for missing Device")
 	}
 }
@@ -69,7 +82,8 @@ func TestEngineNewRejectsMissingDevice(t *testing.T) {
 func TestEngineNewRejectsMissingBus(t *testing.T) {
 	dev := newMockDevice(nil)
 	if _, err := New(Options{Device: dev, SampleRateHz: 2_400_000, CenterFreqHz: 453_500_000,
-		Channels: []ChannelConfig{{FrequencyHz: 453_125_000, SystemName: "x"}}}); err == nil {
+		Channels: []ChannelConfig{{FrequencyHz: 453_125_000, SystemName: "x"}},
+		Systems:  []trunking.System{t2System("x")}}); err == nil {
 		t.Errorf("expected error for missing Bus")
 	}
 }
@@ -83,6 +97,50 @@ func TestEngineNewRejectsEmptyChannels(t *testing.T) {
 	}
 }
 
+func TestEngineNewRejectsMissingSystems(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	dev := newMockDevice(nil)
+	_, err := New(Options{
+		Device: dev, Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 453_500_000,
+		Channels: []ChannelConfig{{FrequencyHz: 453_125_000, SystemName: "x"}},
+	})
+	if err == nil {
+		t.Errorf("expected error for missing Systems table")
+	}
+}
+
+func TestEngineNewRejectsUnknownSystem(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	dev := newMockDevice(nil)
+	_, err := New(Options{
+		Device: dev, Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 453_500_000,
+		Channels: []ChannelConfig{{FrequencyHz: 453_125_000, SystemName: "missing"}},
+		Systems:  []trunking.System{t2System("other")},
+	})
+	if err == nil {
+		t.Errorf("expected error for channel referencing unknown system")
+	}
+}
+
+func TestEngineNewRejectsT3ChannelNotInCCList(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	dev := newMockDevice(nil)
+	_, err := New(Options{
+		Device: dev, Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 453_500_000,
+		// Channel freq doesn't match the system's CC list — engine
+		// must reject because a T3 wideband tap MUST sit on a
+		// declared control channel.
+		Channels: []ChannelConfig{{FrequencyHz: 453_125_000, SystemName: "t3sys"}},
+		Systems:  []trunking.System{t3System("t3sys", 453_775_000)},
+	})
+	if err == nil {
+		t.Errorf("expected error for T3 channel not in system.ControlChannels")
+	}
+}
+
 func TestEngineNewRejectsOutOfBandChannel(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
@@ -92,6 +150,7 @@ func TestEngineNewRejectsOutOfBandChannel(t *testing.T) {
 		Channels: []ChannelConfig{
 			{FrequencyHz: 470_000_000, SystemName: "x"}, // > 16 MHz away
 		},
+		Systems: []trunking.System{t2System("x")},
 	})
 	if err == nil {
 		t.Errorf("expected error for out-of-band channel")
@@ -110,6 +169,7 @@ func TestEngineStrategyAuto(t *testing.T) {
 				{FrequencyHz: 453_125_000, SystemName: "x"},
 				{FrequencyHz: 453_775_000, SystemName: "x"},
 			},
+			Systems: []trunking.System{t2System("x")},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -135,6 +195,7 @@ func TestEngineStrategyAuto(t *testing.T) {
 		e, err := New(Options{
 			Device: dev, Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 453_500_000,
 			Channels: channels,
+			Systems:  []trunking.System{t2System("x")},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -163,6 +224,7 @@ func TestEngineStrategyExplicit(t *testing.T) {
 				{FrequencyHz: 453_125_000, SystemName: "x"},
 				{FrequencyHz: 453_775_000, SystemName: "x"},
 			},
+			Systems: []trunking.System{t2System("x")},
 		})
 		if err != nil {
 			t.Fatalf("strategy %q: %v", tc.req, err)
@@ -170,6 +232,39 @@ func TestEngineStrategyExplicit(t *testing.T) {
 		if e.Strategy() != tc.want {
 			t.Errorf("strategy %q: got %q, want %q", tc.req, e.Strategy(), tc.want)
 		}
+	}
+}
+
+func TestEngineMixedT2AndT3Channels(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	dev := newMockDevice(nil)
+	// One wideband dongle covers a T2 repeater cluster AND a T3 CC.
+	// The engine must instantiate the right state machine per
+	// channel based on the referenced system's protocol.
+	e, err := New(Options{
+		Device: dev, Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 453_500_000,
+		Channels: []ChannelConfig{
+			{FrequencyHz: 453_125_000, SystemName: "t2sys"},
+			{FrequencyHz: 453_775_000, SystemName: "t3sys"},
+		},
+		Systems: []trunking.System{
+			t2System("t2sys"),
+			t3System("t3sys", 453_775_000),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tags := e.ChannelProtocolTags()
+	if len(tags) != 2 {
+		t.Fatalf("got %d channel tags, want 2", len(tags))
+	}
+	if tags[453_125_000] != "dmr-tier2" {
+		t.Errorf("freq 453_125_000 tag = %q, want dmr-tier2", tags[453_125_000])
+	}
+	if tags[453_775_000] != "dmr-tier3" {
+		t.Errorf("freq 453_775_000 tag = %q, want dmr-tier3", tags[453_775_000])
 	}
 }
 
@@ -197,6 +292,7 @@ func TestEngineRunSetsCenterFreqAndDrainsStream(t *testing.T) {
 			{FrequencyHz: 453_125_000, SystemName: "regional-t2"},
 			{FrequencyHz: 453_775_000, SystemName: "regional-t2"},
 		},
+		Systems: []trunking.System{t2System("regional-t2")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -223,6 +319,7 @@ func TestEngineRunPropagatesStreamError(t *testing.T) {
 	e, err := New(Options{
 		Device: dev, Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 453_500_000,
 		Channels: []ChannelConfig{{FrequencyHz: 453_125_000, SystemName: "x"}},
+		Systems:  []trunking.System{t2System("x")},
 	})
 	if err != nil {
 		t.Fatal(err)
