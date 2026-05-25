@@ -384,11 +384,12 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 	}
 
 	engine, err := trunking.NewEngine(trunking.EngineOptions{
-		Bus:        d.bus,
-		Log:        log,
-		VoicePool:  d.voicePool,
-		Talkgroups: d.talkgroups,
-		ScanMode:   trunking.ParseScanMode(cfg.Scanner.ScanMode),
+		Bus:         d.bus,
+		Log:         log,
+		VoicePool:   d.voicePool,
+		Talkgroups:  d.talkgroups,
+		ScanMode:    trunking.ParseScanMode(cfg.Scanner.ScanMode),
+		CallTimeout: time.Duration(cfg.Trunking.CallTimeoutMs) * time.Millisecond,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("daemon: engine: %w", err)

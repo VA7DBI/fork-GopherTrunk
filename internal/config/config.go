@@ -285,6 +285,17 @@ type DeviceConfig struct {
 
 type TrunkingConfig struct {
 	Systems []SystemConfig `yaml:"systems"`
+
+	// CallTimeoutMs is the inactivity window after which the engine's
+	// watchdog ends a call (publishes CallEnd with EndReasonTimeout
+	// and releases the bound voice SDR). The watchdog only fires when
+	// no voice frames have been decoded for this long — see
+	// internal/voice/composer for the per-protocol activity gate.
+	// Defaults to 30 000 (30 s) when zero. Negative values are
+	// rejected by Validate; setting it explicitly lets operators tune
+	// teardown on systems whose signaling is consistently clean
+	// (lower) or chatty with long pauses (higher). Issue #356.
+	CallTimeoutMs int `yaml:"call_timeout_ms"`
 }
 
 type SystemConfig struct {
@@ -703,6 +714,9 @@ func (c Config) Validate() error {
 				i, d.Serial, prev)
 		}
 		seenSerials[d.Serial] = i
+	}
+	if c.Trunking.CallTimeoutMs < 0 {
+		return fmt.Errorf("trunking.call_timeout_ms: %d ms must be ≥ 0", c.Trunking.CallTimeoutMs)
 	}
 	for i, s := range c.Trunking.Systems {
 		if s.Name == "" {

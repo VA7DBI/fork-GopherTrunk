@@ -2,6 +2,7 @@ package composer
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/filter"
@@ -57,6 +58,12 @@ func (c *Composer) runDMRVoiceChain(ctx context.Context, serial string, iqCh <-c
 
 	rs, _ := c.sink.(rawFrameSink)
 	voiceDec := dmrvoice.NewDecoder()
+	// superframes counts DMR voice superframes the receiver delivered —
+	// i.e. real voice activity. The touch ticker (below) only refreshes
+	// the engine's LastHeardAt when this counter has advanced since the
+	// previous tick. Without this gate a stalled decoder still kept the
+	// call alive forever via an unconditional 1 s heartbeat (issue #356).
+	var superframes atomic.Uint64
 	rx := dmrrx.New(dmrrx.Options{
 		SampleRateHz: symbolHz,
 		// DMR spec peak deviation per ETSI TS 102 361-1 §6.3 — matches
@@ -64,10 +71,11 @@ func (c *Composer) runDMRVoiceChain(ctx context.Context, serial string, iqCh <-c
 		DeviationHz: 1944.0,
 		ClockGain:   0.025,
 		DibitSink: func(dibits []uint8, baseIdx int) {
-			if rs == nil {
-				return
-			}
 			for _, sf := range voiceDec.Process(dibits, baseIdx) {
+				superframes.Add(1)
+				if rs == nil {
+					continue
+				}
 				for i := range sf.Frames {
 					info, _, err := dmrvoice.DecodeAMBEFrame(sf.Frames[i])
 					if err != nil {
@@ -86,14 +94,17 @@ func (c *Composer) runDMRVoiceChain(ctx context.Context, serial string, iqCh <-c
 
 	touchTicker := time.NewTicker(c.touchEvery)
 	defer touchTicker.Stop()
+	var lastSuperframes uint64
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-touchTicker.C:
-			if c.engine != nil {
+			n := superframes.Load()
+			if n != lastSuperframes && c.engine != nil {
 				c.engine.Touch(serial)
+				lastSuperframes = n
 			}
 		case iq, ok := <-iqCh:
 			if !ok {

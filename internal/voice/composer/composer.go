@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/dsp"
@@ -527,6 +528,16 @@ func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []
 
 	touchTicker := time.NewTicker(c.touchEvery)
 	defer touchTicker.Stop()
+	// pcmWrites counts PCM batches successfully handed to the sink —
+	// i.e. real audio delivery. The touch ticker (below) only refreshes
+	// the engine's LastHeardAt when this counter has advanced since
+	// the previous tick. Without this gate a stalled IQ source still
+	// kept the call alive forever via an unconditional 1 s heartbeat
+	// (issue #356).
+	var (
+		pcmWrites    atomic.Uint64
+		lastPCMWrite uint64
+	)
 
 	// lastSample tracks the most recent PCM sample written so we
 	// can ramp it down to zero when the chain ends. Without this
@@ -560,8 +571,10 @@ func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []
 			emitTail()
 			return
 		case <-touchTicker.C:
-			if c.engine != nil {
+			n := pcmWrites.Load()
+			if n != lastPCMWrite && c.engine != nil {
 				c.engine.Touch(serial)
+				lastPCMWrite = n
 			}
 		case iq, ok := <-iqCh:
 			if !ok {
@@ -600,6 +613,7 @@ func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []
 			if c.sink != nil && len(pcm) > 0 {
 				_ = c.sink.WritePCM(serial, pcm)
 				lastSample = pcm[len(pcm)-1]
+				pcmWrites.Add(1)
 			}
 		}
 	}

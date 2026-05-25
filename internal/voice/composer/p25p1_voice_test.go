@@ -139,3 +139,68 @@ func TestComposerP25Phase1VoiceChainExtractsRawFrames(t *testing.T) {
 
 	waitFor(t, time.Second, func() bool { return eng.touched.Load() > 0 })
 }
+
+// TestComposerP25Phase1TouchGatedOnLDUProgress reproduces the
+// regression behind issue #356: once LDU delivery stops (e.g. the
+// transmitting unit sent a TDU, the carrier dropped, or the C4FM
+// receiver lost lock on simulcast garbage), the chain MUST stop
+// touching the engine so the trunking watchdog can fire and release
+// the voice SDR. Before the fix the chain emitted a 1 s heartbeat
+// unconditionally and the active call lived forever.
+func TestComposerP25Phase1TouchGatedOnLDUProgress(t *testing.T) {
+	const (
+		sampleRate = 48_000.0
+		deviation  = 1800.0
+		ldus       = 6
+	)
+	dibits, _ := buildP25P1VoiceStream(t, ldus)
+	iq := demod.ModulateP25C4FM(dibits, sampleRate, deviation)
+
+	src := newFakeSource()
+	bus := events.NewBus(8)
+	sink := &recordingSink{}
+	eng := &fakeEngine{}
+	c, err := New(Options{
+		Bus:           bus,
+		Devices:       &fakeDevices{src: map[string]IQSource{"VOICE-1": src}},
+		Sink:          sink,
+		Engine:        eng,
+		IQSampleRate:  uint32(sampleRate),
+		PCMSampleRate: 8000,
+		TouchInterval: 30 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	defer c.Close()
+	defer bus.Close()
+
+	bus.Publish(events.Event{
+		Kind: events.KindCallStart,
+		Payload: trunking.CallStart{
+			Grant: trunking.Grant{
+				System: "P25P1Site", Protocol: "p25",
+				GroupID: 42, FrequencyHz: 851_000_000,
+			},
+			DeviceSerial: "VOICE-1",
+			StartedAt:    time.Now().UTC(),
+		},
+	})
+	waitFor(t, 2*time.Second, func() bool { return len(c.ActiveChains()) == 1 })
+
+	// Feed IQ → LDUs decode → frame counter advances → Touch fires.
+	src.SendIQ(iq)
+	waitFor(t, 6*time.Second, func() bool { return eng.touched.Load() >= 1 })
+
+	// Stop feeding IQ. The chain must stop touching after the last LDU.
+	// 10× TouchInterval (300 ms) is well past any in-flight LDU.
+	time.Sleep(300 * time.Millisecond)
+	baseline := eng.touched.Load()
+	time.Sleep(300 * time.Millisecond)
+	if got := eng.touched.Load(); got != baseline {
+		t.Fatalf("expected no further touches after IQ stopped; baseline=%d got=%d", baseline, got)
+	}
+}
