@@ -63,6 +63,14 @@ type Broker struct {
 	subsDropped atomic.Uint64
 
 	streamActive atomic.Bool
+
+	// centerHz / rateHz record the most-recent successful
+	// SetCenterFreq / SetSampleRate values. Used by the spectrum
+	// publisher to stamp frames with the correct frequency context
+	// without forcing every sdr.Device implementation to grow a
+	// CenterFreq() getter. Setters that fail leave these untouched.
+	centerHz atomic.Uint32
+	rateHz   atomic.Uint32
 }
 
 // Subscriber is a secondary observer's handle. C delivers chunk
@@ -136,14 +144,31 @@ func (b *Broker) Info() sdr.Info {
 func (b *Broker) SetCenterFreq(hz uint32) error {
 	b.innerMu.RLock()
 	defer b.innerMu.RUnlock()
-	return b.inner.SetCenterFreq(hz)
+	if err := b.inner.SetCenterFreq(hz); err != nil {
+		return err
+	}
+	b.centerHz.Store(hz)
+	return nil
 }
 
 func (b *Broker) SetSampleRate(hz uint32) error {
 	b.innerMu.RLock()
 	defer b.innerMu.RUnlock()
-	return b.inner.SetSampleRate(hz)
+	if err := b.inner.SetSampleRate(hz); err != nil {
+		return err
+	}
+	b.rateHz.Store(hz)
+	return nil
 }
+
+// CenterHz returns the most-recent value successfully programmed via
+// SetCenterFreq. Zero before the first SetCenterFreq call. Used by
+// the spectrum publisher to stamp frames with frequency context.
+func (b *Broker) CenterHz() uint32 { return b.centerHz.Load() }
+
+// SampleRateHz returns the most-recent value successfully programmed
+// via SetSampleRate. Zero before the first call.
+func (b *Broker) SampleRateHz() uint32 { return b.rateHz.Load() }
 
 func (b *Broker) SetGain(tenthDB int) error {
 	b.innerMu.RLock()

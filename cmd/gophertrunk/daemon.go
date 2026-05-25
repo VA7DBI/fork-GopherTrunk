@@ -839,6 +839,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			TLSCert:        cfg.API.TLSCert,
 			TLSKey:         cfg.API.TLSKey,
 		}
+		if len(d.iqBrokers) > 0 {
+			opts.Spectrum = newSpectrumProvider(d.pool, d.iqBrokers, log)
+		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
 		}
