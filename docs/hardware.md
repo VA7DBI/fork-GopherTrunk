@@ -175,6 +175,13 @@ dropdown, choose the WinUSB driver, click Replace. See
 [`install-windows.md`]({{ '/install-windows.html' | relative_url }})
 for the click-by-click walkthrough.
 
+Airspy R2 / Mini in particular: the official Airspy installer
+typically binds **libusbK**, which is not the in-box WinUSB.sys
+GopherTrunk talks to. If `sdr list` shows the device but
+`gophertrunk -config …` fails on open with `winusb: device rejected
+request (ERROR_GEN_FAILURE …)`, re-bind to WinUSB via Zadig — the
+hardware is reachable but the function driver is mismatched.
+
 ## Verifying the build
 
 ```sh
@@ -202,6 +209,148 @@ tuner type, and the supported gain values:
 
 The `Driver` column reads `rtlsdr`, `hackrf`, `airspy`, or
 `airspyhf` for each row.
+
+## Sharing one dongle across multiple repeaters
+
+A single SDR can monitor several conventional DMR Tier II repeaters as
+long as every carrier falls inside the dongle's IQ bandwidth. The
+dongle is pinned to a centre frequency; an internal channelizer
+extracts one narrow-band IQ stream per repeater and feeds an
+independent T2 decoder for each. No extra hardware is needed beyond
+the one dongle, and there is no per-repeater hardware re-tune.
+
+Add a `role: wideband` entry to `sdr.devices` in your config:
+
+```yaml
+sdr:
+  sample_rate: 2_400_000
+  devices:
+    - serial: "00000003"
+      role: wideband
+      center_freq_hz: 453_500_000
+      channels:
+        - frequency_hz: 453_125_000
+          system: "regional-dmr-t2"
+        - frequency_hz: 453_275_000
+          system: "regional-dmr-t2"
+        - frequency_hz: 453_775_000
+          system: "regional-dmr-t2"
+        - frequency_hz: 454_100_000
+          system: "regional-dmr-t2"
+
+trunking:
+  systems:
+    - name: "regional-dmr-t2"
+      protocol: dmr-tier2
+      # Tier II is conventional, but trunking.System.Validate()
+      # requires a non-empty control_channels list. List the same
+      # repeater carriers - the wideband engine ignores them when
+      # choosing the state machine.
+      control_channels:
+        - 453_125_000
+        - 453_275_000
+        - 453_775_000
+        - 454_100_000
+      talkgroup_file: "/etc/gophertrunk/talkgroups-dmr.csv"
+```
+
+The daemon programs the dongle's tuner to `center_freq_hz` once, opens
+a single IQ stream, and routes one decimated 48 kHz IQ stream per
+configured `channels[].frequency_hz` into a separate DMR state
+machine. Grants and `cc.locked` events fire per repeater frequency
+just like they do for a dedicated dongle.
+
+### Mixing DMR Tier II and Tier III on one dongle
+
+A wideband dongle can host a DMR Tier III control-channel tap
+alongside Tier II conventional carriers. Use `protocol: dmr` for the
+T3 system, list the T3 control frequency under `control_channels`,
+and have one of the dongle's `channels[]` entries point at that
+frequency:
+
+```yaml
+sdr:
+  devices:
+    - serial: "00000003"
+      role: wideband
+      center_freq_hz: 851_500_000
+      channels:
+        - frequency_hz: 851_037_500    # T3 CC
+          system: "regional-dmr-t3"
+        - frequency_hz: 852_125_000    # T2 conventional carrier
+          system: "neighbour-dmr-t2"
+
+trunking:
+  systems:
+    - name: "regional-dmr-t3"
+      protocol: dmr                    # Tier III trunked
+      control_channels: [851_037_500]  # MUST include the wideband channel above
+    - name: "neighbour-dmr-t2"
+      protocol: dmr-tier2              # Tier II conventional
+      control_channels: [852_125_000]
+```
+
+The engine picks the right state machine per channel (Tier III's
+`ControlChannel` for `protocol: dmr`, Tier II's `ConventionalChannel`
+for `protocol: dmr-tier2`).
+
+T3 voice grants are published on the bus and routed to the daemon's
+existing physical voice pool — add a `role: voice` SDR alongside the
+wideband dongle if you want voice decoded. The follow-up work to
+decode T3 voice grants directly on the wideband dongle (via a virtual
+voice pool that allocates a tuner tap per grant) is roadmapped.
+
+### Picking a centre frequency and bandwidth
+
+The usable IQ band is `center_freq_hz ± sample_rate/2` with a 5 %
+guard at each edge. At `sample_rate: 2_400_000` that's ±1.08 MHz of
+usable spectrum either side of the centre. Put the centre frequency
+such that every repeater you care about fits inside that window. The
+config validator rejects out-of-band channels at load time with a
+message that names the offending entry.
+
+### Tuner strategy
+
+`tuner_strategy` chooses how the dongle's wide IQ stream is sliced:
+
+- `auto` (default) — picks `ddc` for ≤ 6 channels, `polyphase` above.
+- `ddc` — one independent NCO mixer + rational resampler per channel.
+  Linear cost in channel count; no constraint on the spacing between
+  repeaters. Best for a handful (≤ 6) of repeaters.
+- `polyphase` — one shared M-channel polyphase channelizer amortises
+  the wide-band filter across all channels; a per-channel fine-tune
+  DDC cleans up the residual. Wins on CPU once you have 7+ channels.
+
+### Limits
+
+- **DMR only.** Wideband supports `protocol: dmr-tier2` (Tier II
+  conventional) and `protocol: dmr` (Tier III trunked control
+  channel). Other protocols (P25, NXDN, TETRA, …) and Tier III
+  voice grants on the wideband dongle itself are not in scope yet —
+  see "Tier III voice" below.
+- **Tier III voice still needs a physical Voice SDR.** When the
+  wideband T3 tap decodes a grant, the daemon's existing voice pool
+  retunes a `role: voice` dongle to follow the call. The wideband
+  dongle decodes the CC; voice rides on the regular pool. A
+  follow-up will add a virtual voice pool that allocates a tuner
+  tap from the wideband dongle for each grant, removing the need
+  for the second SDR.
+- **The wideband dongle is dedicated.** It can't double as a Voice
+  pool member (the daemon needs it pinned to one centre frequency).
+  If you also run a trunked system that allocates voice grants on a
+  separate frequency, add a `role: voice` SDR for it.
+- **DDC-with-real-signal RX limits.** The wideband engine's per-tap
+  DDC (when the SDR sample rate is higher than 48 kHz) uses the same
+  Kaiser anti-alias prototype as the single-channel ccdecoder path,
+  so live captures with the same SNR characteristics that lock on a
+  dedicated dongle also lock here. The in-package end-to-end test
+  exercises the engine wiring at the bank's native per-tap rate
+  (48 kHz) where the resampler is a no-op; full validation at a
+  decimating wideband rate against a TX-side filter cascade that
+  mirrors the RX matched filter is a planned follow-up.
+- **CPU scales with channel count.** Eight DDC taps at 2.4 MS/s is a
+  few percent of one modern x86 core; the polyphase mode lands lower
+  at the same count.
 
 ## USB disconnect recovery
 

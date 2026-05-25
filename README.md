@@ -40,7 +40,7 @@ this exist? Read **[The Story of GopherTrunk](https://gophertrunk.org/story.html
 
 ```sh
 # Linux x86_64 — see https://gophertrunk.org/downloads.html for macOS, Windows, ARM64.
-VERSION=v0.2.1
+VERSION=v0.2.2
 curl -L -o gophertrunk.tar.gz \
   https://github.com/MattCheramie/GopherTrunk/releases/download/${VERSION}/gophertrunk-${VERSION}-linux-amd64.tar.gz
 tar xzf gophertrunk.tar.gz && cd gophertrunk-${VERSION}-linux-amd64
@@ -75,6 +75,14 @@ Silicon and Intel. Full per-OS recipes at
   dongles that drop off the bus and re-enumerate without
   restarting the daemon. See
   [docs/hardware.md](docs/hardware.md).
+- **One dongle, many repeaters** — `role: wideband` pins a single
+  SDR to a centre frequency and runs an internal channelizer so
+  one dongle decodes every DMR Tier II conventional repeater AND
+  a DMR Tier III control channel that fit inside its IQ bandwidth
+  (e.g. several 12.5 kHz carriers inside a 2.4 MHz IQ window).
+  Mix T2 and T3 channels on the same dongle. See
+  [docs/hardware.md](docs/hardware.md) and
+  [samples/dmr-tier2-multichannel/](samples/dmr-tier2-multichannel/).
 - **DSP** — Polyphase channelizer, Kaiser / RRC / Gaussian FIRs,
   FM / C4FM / GFSK / FFSK / DQPSK / π/4-DQPSK / π/8-H-DQPSK
   demods, Mueller-Müller + Gardner clock recovery, LMS + CMA

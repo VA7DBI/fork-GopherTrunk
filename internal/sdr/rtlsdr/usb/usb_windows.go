@@ -774,9 +774,10 @@ func winErr(errno error) error {
 	switch errno {
 	case windows.ERROR_DEVICE_NOT_CONNECTED,
 		windows.ERROR_NO_SUCH_DEVICE,
-		windows.ERROR_DEV_NOT_EXIST,
-		windows.ERROR_GEN_FAILURE:
-		return fmt.Errorf("%w (windows errno=%v)", ErrDeviceGone, errno)
+		windows.ERROR_DEV_NOT_EXIST:
+		return ErrDeviceGone
+	case windows.ERROR_GEN_FAILURE:
+		return fmt.Errorf("winusb: device rejected request (ERROR_GEN_FAILURE 0x1F — firmware NAK / stalled pipe / wrong driver bound; try re-binding to WinUSB via Zadig): %w", errno)
 	case windows.ERROR_SEM_TIMEOUT, windows.ERROR_TIMEOUT:
 		return fmt.Errorf("%w (windows errno=%v)", ErrTimeout, errno)
 	}

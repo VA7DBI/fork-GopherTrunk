@@ -19,6 +19,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/ccdecoder"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/cchunt"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/conventional"
+	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
 	"github.com/MattCheramie/GopherTrunk/internal/storage"
@@ -114,6 +115,7 @@ type Daemon struct {
 	controlSerial     string
 	controlSampleRate uint32
 	convScan          *conventional.Scanner
+	widebandT2        []*widebandt2.Engine
 	metrics           *metrics.Metrics
 	httpAPI           *api.Server
 	grpcAPI           *api.GRPCServer
@@ -384,11 +386,12 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 	}
 
 	engine, err := trunking.NewEngine(trunking.EngineOptions{
-		Bus:        d.bus,
-		Log:        log,
-		VoicePool:  d.voicePool,
-		Talkgroups: d.talkgroups,
-		ScanMode:   trunking.ParseScanMode(cfg.Scanner.ScanMode),
+		Bus:         d.bus,
+		Log:         log,
+		VoicePool:   d.voicePool,
+		Talkgroups:  d.talkgroups,
+		ScanMode:    trunking.ParseScanMode(cfg.Scanner.ScanMode),
+		CallTimeout: time.Duration(cfg.Trunking.CallTimeoutMs) * time.Millisecond,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("daemon: engine: %w", err)
@@ -690,6 +693,47 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 	}
 
+	// Wide-band DMR Tier II engines — one per dongle the operator
+	// pinned to `role: wideband` in config. Each engine fans the
+	// dongle's IQ stream out to N independent T2 receivers + state
+	// machines via internal/dsp/tuner, letting a single SDR cover
+	// every repeater inside its IQ bandwidth (typically a 2.4 MHz
+	// cluster around a chosen centre frequency).
+	if d.pool != nil {
+		for _, devCfg := range cfg.SDR.Devices {
+			if devCfg.Role != "wideband" {
+				continue
+			}
+			entry := d.pool.FindBySerial(devCfg.Serial)
+			if entry == nil {
+				log.Warn("daemon: wideband: dongle with configured serial not in pool",
+					"serial", devCfg.Serial)
+				continue
+			}
+			channels := make([]widebandt2.ChannelConfig, 0, len(devCfg.Channels))
+			for _, ch := range devCfg.Channels {
+				channels = append(channels, widebandt2.ChannelConfig{
+					FrequencyHz: ch.FrequencyHz,
+					SystemName:  ch.System,
+				})
+			}
+			eng, err := widebandt2.New(widebandt2.Options{
+				Log:           log,
+				Bus:           d.bus,
+				Device:        entry.Device,
+				SampleRateHz:  cfg.SDR.SampleRate,
+				CenterFreqHz:  devCfg.CenterFreqHz,
+				TunerStrategy: devCfg.TunerStrategy,
+				Channels:      channels,
+				Systems:       d.systems,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("daemon: widebandt2 %q: %w", devCfg.Serial, err)
+			}
+			d.widebandT2 = append(d.widebandT2, eng)
+		}
+	}
+
 	// Storage / call log / retention — optional.
 	if cfg.Storage.Path != "" {
 		db, err := storage.Open(cfg.Storage.Path)
@@ -933,6 +977,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.convScan != nil {
 		d.spawn(runCtx, "conv-scanner", false, func(ctx context.Context) error {
 			return d.convScan.Run(ctx)
+		})
+	}
+	for i, eng := range d.widebandT2 {
+		eng := eng
+		name := fmt.Sprintf("widebandt2-%d", i)
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			return eng.Run(ctx)
 		})
 	}
 	if d.pool != nil {
