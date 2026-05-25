@@ -7,6 +7,35 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Added
+
+- **`gophertrunk sdr doctor` — per-dongle driver-binding report.**
+  Many Windows 11 users reported their RTL-SDR dongles weren't being
+  recognized despite appearing in Device Manager, mirroring the
+  Linux kernel-driver collision fixed in v0.2.2. Windows has no
+  equivalent of `USBDEVFS_DISCONNECT` (you can't programmatically
+  rebind a USB function driver), so the fix is diagnostic rather
+  than mechanical: a new `sdr doctor` subcommand walks the OS USB
+  tree, reads the bound function driver via SetupAPI
+  (`SPDRP_SERVICE` / `SPDRP_DEVICEDESC`) on Windows or the
+  interface-0 sysfs symlink on Linux, and prints a row per dongle
+  with an actionable next step (run Zadig; pick Interface 0 not
+  the composite parent; re-target WinUSB instead of libusbK;
+  blacklist `dvb_usb_rtl28xxu`; etc.). Read-only — safe to run as
+  a regular user alongside a live daemon.
+- **Smarter `WinUsb_Initialize` error on Windows.** The error now
+  embeds the currently-bound driver name and points the operator at
+  `sdr doctor`, replacing the generic "driver not bound? run Zadig"
+  message that gave the user no insight into what to actually fix.
+- **Windows 11 driver-binding troubleshooting section** in
+  `docs/user-guide-windows.md` § 4.2, covering Core Isolation /
+  Memory Integrity, Smart App Control, Driver Signature Enforcement,
+  Windows Update DVB-driver re-binding, multi-dongle gotchas,
+  composite-device interface selection, libusbK / libusb-win32
+  mistakes, USB Selective Suspend, xHCI controller quirks,
+  antivirus blocking, Windows S mode, and Group Policy device-install
+  restrictions.
+
 ### Fixed
 
 - **airspy**: Defer `SET_SAMPLE_TYPE` from `Open()` to `StreamIQ()`,

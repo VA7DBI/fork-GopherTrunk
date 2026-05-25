@@ -166,7 +166,10 @@ func (w *winEnumerator) Open(d Descriptor) (Transport, error) {
 	ret, _, errno := procWinUsbInitialize.Call(uintptr(handle), uintptr(unsafe.Pointer(&ifaceHandle)))
 	if ret == 0 {
 		windows.CloseHandle(handle)
-		return nil, fmt.Errorf("winusb: WinUsb_Initialize (driver not bound? run Zadig): %w", winErr(errno))
+		svc, descr := lookupBoundDriver(d.Path)
+		return nil, fmt.Errorf(
+			"winusb: WinUsb_Initialize failed for VID_%04X&PID_%04X (current driver: %s%s — expected WinUSB; run Zadig and rebind Interface 0, see `gophertrunk sdr doctor`): %w",
+			d.VID, d.PID, fallbackString(svc, "unknown"), parens(descr), winErr(errno))
 	}
 	return &winTransport{
 		fileHandle:  handle,
