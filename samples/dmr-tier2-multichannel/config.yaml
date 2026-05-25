@@ -1,0 +1,47 @@
+# Cover a cluster of DMR Tier II repeaters with one RTL-SDR.
+#
+# This config monitors four 12.5 kHz conventional DMR repeaters whose
+# carriers all sit inside a single 2.4 MHz IQ window centred at
+# 453.5 MHz. The daemon pins one dongle to that centre, runs an
+# internal channelizer to split the wide stream into four independent
+# narrow-band streams, and decodes each one with its own DMR Tier II
+# state machine. Per-repeater Voice LC Header and Terminator-with-LC
+# bursts produce grant events on the bus just like a dedicated dongle
+# would.
+#
+# Set the dongle's USB serial below to match what `gophertrunk sdr
+# list` reports.
+
+api:
+  http_addr: "127.0.0.1:8080"
+  auth:
+    mode: auto
+
+sdr:
+  sample_rate: 2_400_000
+  devices:
+    - serial: "REPLACE_WITH_SERIAL"
+      role: wideband
+      center_freq_hz: 453_500_000
+      tuner_strategy: auto        # auto | ddc | polyphase
+      gain: "auto"
+      channels:
+        - frequency_hz: 453_125_000
+          system: "regional-dmr-t2"
+        - frequency_hz: 453_275_000
+          system: "regional-dmr-t2"
+        - frequency_hz: 453_775_000
+          system: "regional-dmr-t2"
+        - frequency_hz: 454_100_000
+          system: "regional-dmr-t2"
+
+trunking:
+  systems:
+    - name: "regional-dmr-t2"
+      protocol: dmr
+      # DMR Tier II is conventional - no control channel. The per-
+      # repeater carrier list lives under sdr.devices[].channels above.
+      talkgroup_file: "talkgroups-dmr.csv"
+
+recordings:
+  dir: "recordings/"

@@ -88,6 +88,87 @@ func TestValidate(t *testing.T) {
 		{"band_plan duplicate channel_id", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "p25", P25BandPlan: []P25BandPlanEntryConfig{{ChannelID: 3, BaseHz: 1, SpacingHz: 1}, {ChannelID: 3, BaseHz: 2, SpacingHz: 2}}}}}}, true},
 		{"band_plan zero spacing", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "p25", P25BandPlan: []P25BandPlanEntryConfig{{ChannelID: 3, BaseHz: 1, SpacingHz: 0}}}}}}, true},
 		{"band_plan zero base", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "p25", P25BandPlan: []P25BandPlanEntryConfig{{ChannelID: 3, BaseHz: 0, SpacingHz: 1}}}}}}, true},
+		// wideband role: pin a dongle to a centre frequency and list
+		// per-repeater carriers inside its IQ bandwidth. Currently
+		// supports DMR Tier II conventional only.
+		{"wideband ok", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 453_125_000, System: "regional-t2"},
+					{FrequencyHz: 453_775_000, System: "regional-t2"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "regional-t2", Protocol: "dmr"}}},
+		}, false},
+		{"wideband missing serial", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Role: "wideband", CenterFreqHz: 453_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 453_125_000, System: "x"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr"}}},
+		}, true},
+		{"wideband missing center", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband",
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 453_125_000, System: "x"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr"}}},
+		}, true},
+		{"wideband missing channels", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
+			}}},
+		}, true},
+		{"wideband channel out of band", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 460_000_000, System: "x"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr"}}},
+		}, true},
+		{"wideband unknown system", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 453_125_000, System: "nope"},
+				},
+			}}},
+		}, true},
+		{"wideband non-dmr protocol", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 453_125_000, System: "p25-sys"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "p25-sys", Protocol: "p25"}}},
+		}, true},
+		{"wideband duplicate frequency", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 453_125_000, System: "x"},
+					{FrequencyHz: 453_125_000, System: "x"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr"}}},
+		}, true},
+		{"wideband bad strategy", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000, TunerStrategy: "magic",
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 453_125_000, System: "x"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr"}}},
+		}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

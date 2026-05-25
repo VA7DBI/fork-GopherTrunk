@@ -11,6 +11,13 @@ const (
 	RoleAuto Role = iota
 	RoleControl
 	RoleVoice
+	// RoleWideband pins a dongle to a single configured centre
+	// frequency. Several decoders share the IQ stream — each one is
+	// tapped to a different repeater frequency inside the dongle's
+	// IQ bandwidth via the internal/dsp/tuner package. Used to cover
+	// a cluster of co-band conventional repeaters (e.g. several DMR
+	// Tier II carriers around 453 MHz) with a single SDR.
+	RoleWideband
 )
 
 func (r Role) String() string {
@@ -19,6 +26,8 @@ func (r Role) String() string {
 		return "control"
 	case RoleVoice:
 		return "voice"
+	case RoleWideband:
+		return "wideband"
 	default:
 		return "auto"
 	}
@@ -30,6 +39,8 @@ func ParseRole(s string) Role {
 		return RoleControl
 	case "voice":
 		return RoleVoice
+	case "wideband":
+		return RoleWideband
 	default:
 		return RoleAuto
 	}

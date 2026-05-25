@@ -75,6 +75,13 @@ Silicon and Intel. Full per-OS recipes at
   dongles that drop off the bus and re-enumerate without
   restarting the daemon. See
   [docs/hardware.md](docs/hardware.md).
+- **One dongle, many repeaters** — `role: wideband` pins a single
+  SDR to a centre frequency and runs an internal channelizer so
+  one dongle decodes every DMR Tier II conventional repeater that
+  fits inside its IQ bandwidth (e.g. several 12.5 kHz carriers
+  inside a 2.4 MHz IQ window). See
+  [docs/hardware.md](docs/hardware.md) and
+  [samples/dmr-tier2-multichannel/](samples/dmr-tier2-multichannel/).
 - **DSP** — Polyphase channelizer, Kaiser / RRC / Gaussian FIRs,
   FM / C4FM / GFSK / FFSK / DQPSK / π/4-DQPSK / π/8-H-DQPSK
   demods, Mueller-Müller + Gardner clock recovery, LMS + CMA
