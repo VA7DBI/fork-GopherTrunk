@@ -7,43 +7,205 @@ for tagged releases.
 
 ## [Unreleased]
 
-- **Voice SDR USB disconnect recovery + periodic watchdog.**
-  Following the control-SDR re-acquire path (PR #349), the same
-  recovery now extends to voice dongles and to idle devices. When
-  `VoicePool.Bind`'s `SetCenterFreq` fails — typically because a
-  voice dongle disconnected between calls — the pool's new
-  reacquire hook (wired by the daemon to `sdr.Pool.Reacquire`)
-  re-opens the device by serial, swaps the fresh `Tuner` into the
-  `VoiceDevice`, and retries the tune once before the call drops.
-  Independently, the SDR pool runs a periodic watchdog
-  (`sdr.watchdog_interval_ms`, default 30 s, opt-out via `-1`)
-  that re-enumerates registered drivers, surfaces missing serials
-  via `KindSDRDetached`, and calls `Pool.Reacquire` the moment a
-  previously-missing serial reappears — so the next consumer
-  touches a live handle instead of paying the reacquire round-trip
-  mid-use. The watchdog only acts on the missing → reappeared
-  transition: continuously-present devices are never touched.
-  Issue #345 follow-up.
+## [v0.2.2] — 2026-05-25
 
-- **Control SDR USB disconnect/re-enumerate now recovers in-process
-  without a daemon restart.** PR #348 surfaced the silent-stall failure
-  through the ccdecoder retry loop and escalated to a fatal exit so
-  systemd / docker could restart the process; on a dongle that
-  disconnects repeatedly (the reporter in issue #345 saw multiple
-  drops per day on a NESDR SMArt v5) that meant the daemon kept
-  exiting. The retry loop now first asks the `sdr.Pool` to re-acquire
-  the control device by serial: best-effort close of the dead handle,
-  driver re-enumerate, fresh `Open()` by the new USB index, sample
-  rate + per-device Hint (PPM, gain, bias-tee) re-applied to the new
-  handle, `Device` swapped in place in the `PoolEntry`, and
-  `KindSDRDetached` + `KindSDRAttached` events republished so the API
-  / TUI / web snapshot reflect the swap. `cchunt.Supervisor.SwapTuner`
-  feeds the fresh handle to in-flight hunters by closing any armed
-  retune channels so the next hunt round picks up the new tuner.
-  The existing 1s / 2s / 5s / 10s retry budget still applies — if the
+Operational-recovery + Mt Anakie follow-up release. The reporter in
+issue #345 — a NESDR SMArt v5 dropping off the USB bus multiple
+times per day — was the proving ground for a full USB-disconnect
+recovery suite: the bulk-IN reaper-death channel now surfaces silent
+stalls through the ccdecoder retry loop, control SDRs reacquire by
+serial without a daemon restart, voice SDRs reacquire on grant-time
+tune failure, and a new SDR-pool watchdog re-enumerates registered
+drivers periodically so a missing serial is re-bound the moment it
+reappears. The same Mt Anakie site exposed two more P25 control-
+channel gaps that v0.2.1's BCH + TSBK fixes uncovered: the site
+broadcasts the TDMA `IdentifierUpdate` opcode (0x33 — v0.2.1 only
+wired the VUHF variant 0x34), and grants arrive on channel IDs
+before the matching IDEN_UP TSBK lands, so a pending-grant ring
+(plus a config-driven band-plan seed for sites that never broadcast
+some IDs at all) now drains every grant against the freshly-applied
+slot. P25 calls also surface ALGID / KID end-to-end — log lines,
+TUI, and both web panels render the algorithm name (`0x84
+(AES-256)` / `0x81 (DES-OFB)` / `0xAA (ADP/RC4)`) the instant the
+LDU2 Encryption Sync lands rather than just an opaque `enc=true`
+flag. Web operator-console polish: empty WACN / SystemID / RFSS /
+Site fields in the system detail modal now explain *why* they're
+empty (control-channel hunt state). Repo polish: README trimmed
+from 2,826 → ~210 lines with the long-form Status and Roadmap
+chapters extracted into their own pages, the docs nav surfaces
+previously-orphan pages (launcher, live-edits, DMR encryption,
+release process), and the Dockerfile bumps to `golang:1.25` so
+builds stop silently downloading the newer toolchain at every run.
+
+### Added
+
+- **TDMA `IdentifierUpdate` (TSBK opcode 0x33) wired through the
+  Phase 1 dispatcher (issue #345).** v0.2.1 added the FDMA-
+  flavoured VUHF variant (0x34, channel IDs 2 / 3 / 4 / 6 / 7 /
+  8 / 14 / 15); the Mt Anakie site survey confirmed it broadcasts
+  IDEN_UP for id=10 only as the TDMA variant (0x33, covering ids
+  0 / 1 / 5 / 9 / 11 / 12 / 13), which the dispatcher silently
+  ignored. Every Phase 2 grant on a TDMA id was black-holing with
+  `decode.error stage=no-bandplan`. `ParseIdentifierUpdateTDMA`
+  mirrors the VUHF bit packing (the on-air frequency-field layout
+  per TIA-102.AABF Table 14 is identical; only byte 0's lower
+  nibble differs — channel-type code vs bandwidth code), and
+  channel-type → bandwidth mapping covers the documented Phase 2
+  codes (0x1 → 6.25 kHz, 0x2 → 12.5 kHz, 0x3 → 6.25 kHz). Mt
+  Anakie id=10 + num=176 now resolves to 468.6125 MHz.
+
+- **Per-channel-ID deferred grant queue (issue #345).** Grants
+  that reference a `BandPlan` channel ID before the matching
+  `IdentifierUpdate` TSBK lands are now held in a bounded ring
+  (cap 4 per ID, 5 s TTL) instead of dropping with
+  `decode.error stage=no-bandplan`. When the IDEN_UP arrives the
+  ring drains and re-publishes every queued grant through
+  `publishVoiceGrant` against the freshly-applied slot. Covers
+  the race where IDEN_UP cadence is slower than the first grant
+  after CC lock.
+
+- **Config-driven P25 band-plan seed.** New `p25_band_plan` list
+  on `SystemConfig` with `channel_id` / `base_hz` / `spacing_hz`
+  / `tx_offset_hz` / `bandwidth_hz` fields, validated for range
+  and duplicates. The Phase 1 pipeline factory calls
+  `BandPlan.Apply` for each entry at startup so sites that never
+  broadcast IDEN_UP for a given channel ID can still resolve
+  grants. Over-the-air IDEN_UPs override seeded entries through
+  the same `Apply` path — entries are a floor, not a ceiling.
+
+- **P25 ALGID / KID encryption metadata surfaced end-to-end
+  (closes #353).** Phase 2 was already populating `Grant.ALGID`
+  / `KID` but nothing downstream consumed them; Phase 1 carried
+  them as zero until the LDU2 Encryption Sync arrived after
+  voice acquisition. A new `KindCallEncryption` event lets the
+  voice composer publish ALGID/KID the instant the LDU2 lands;
+  the engine updates the bound `ActiveCall.Grant` via a new
+  `VoicePool.UpdateEncryption` helper and republishes through
+  the events bus. Wire-format additions cover REST/SSE
+  (`GrantDTO`, `CallEncryptionDTO`), gRPC (pb `Grant` message),
+  the TUI client mirror, and the web SPA (`GrantDTO`,
+  `CallRow`, new `CallEncryptionEvent`). A new P25 algorithm-
+  name registry renders `0x84 (AES-256)` / `0x81 (DES-OFB)` /
+  `0xAA (ADP/RC4)` uniformly across the log line, the TUI
+  active-call flag column, and both web panels' pills + detail
+  views. Storage schema already had the columns.
+
+- **SDR-pool periodic watchdog + voice-pool reacquire hook
+  (issue #345).** Following the control-SDR re-acquire path
+  shipped in PR #349, the same recovery now extends to voice
+  dongles and to idle devices. When `VoicePool.Bind`'s
+  `SetCenterFreq` fails — typically because a voice dongle
+  disconnected between calls — the pool's new reacquire hook
+  (wired by the daemon to `sdr.Pool.Reacquire`) re-opens the
+  device by serial, swaps the fresh `Tuner` into the
+  `VoiceDevice`, and retries the tune once before the call
+  drops. Independently, the SDR pool runs a periodic watchdog
+  (`sdr.watchdog_interval_ms`, default 30 s, opt-out via `-1`)
+  that re-enumerates registered drivers, surfaces missing
+  serials via `KindSDRDetached`, and calls `Pool.Reacquire` the
+  moment a previously-missing serial reappears — so the next
+  consumer touches a live handle instead of paying the
+  reacquire round-trip mid-use. The watchdog only acts on the
+  missing → reappeared transition: continuously-present devices
+  are never touched.
+
+- **Empty WACN / SystemID / RFSS / Site fields on the web
+  systems detail modal now explain *why* they're empty (#342).**
+  Those four identity fields populate from decoded P25 status
+  broadcasts (TSBK 0x3A / 0x3B), not config, so they're empty
+  until the control channel is locked and the broadcasts
+  arrive. The detail modal used to show a bare em-dash, leaving
+  operators unable to tell config mistakes from "not yet
+  decoded". The scanner snapshot (`hunting` / `locked` / other)
+  now drives per-field hint copy through a new `DetailField`
+  `emptyHint` prop, pulled from the Systems-panel poll so the
+  hint stays correct without visiting the Scanner page first.
+
+### Fixed
+
+- **Control SDR USB disconnect / re-enumerate now recovers
+  in-process without a daemon restart (issue #345).** PR #348
+  surfaced the silent-stall failure through the ccdecoder retry
+  loop and escalated to a fatal exit so systemd / docker could
+  restart the process; on a dongle that disconnects repeatedly
+  (the reporter in issue #345 saw multiple drops per day on a
+  NESDR SMArt v5) that meant the daemon kept exiting. The retry
+  loop now first asks the `sdr.Pool` to re-acquire the control
+  device by serial: best-effort close of the dead handle,
+  driver re-enumerate, fresh `Open()` by the new USB index,
+  sample rate + per-device Hint (PPM, gain, bias-tee) re-
+  applied to the new handle, `Device` swapped in place in the
+  `PoolEntry`, and `KindSDRDetached` + `KindSDRAttached` events
+  republished so the API / TUI / web snapshot reflect the
+  swap. `cchunt.Supervisor.SwapTuner` feeds the fresh handle to
+  in-flight hunters by closing any armed retune channels so the
+  next hunt round picks up the new tuner. The existing
+  1 s / 2 s / 5 s / 10 s retry budget still applies — if the
   device stays gone after re-enumerate or `Open` fails, retries
-  exhaust and the daemon still escalates to a clean fatal for the
-  supervisor restart path. Issue #345 follow-up.
+  exhaust and the daemon still escalates to a clean fatal for
+  the supervisor restart path.
+
+- **`ccdecoder.StreamIQ` open-time errors now classify as
+  `ErrIQStreamClosed` so the retry loop recovers (issue #345).**
+  After the v0.2.1 retry path shipped, the reporter still saw
+  the daemon's ccdecoder silently exit on a real RTL-SDR USB
+  disconnect: the reaper would die mid-stream returning
+  `ErrIQStreamClosed`, the retry loop would rebuild the decoder
+  against the same dead `Tuner`, the rebuilt `StreamIQ` would
+  fail with `usb: device disconnected` at the control-transfer
+  `ResetBuffer` step, and the retry loop's `errors.Is` against
+  `ErrIQStreamClosed` would miss. Non-context `StreamIQ` open
+  errors are now wrapped as `%w: %w` against
+  `ErrIQStreamClosed` so both shapes (mid-stream EOF and
+  open-time `device disconnected`) classify the same way; the
+  underlying error stays inspectable via `errors.Is` for the
+  root cause.
+
+- **USB bulk-IN reaper death now surfaces to the decoder
+  instead of stalling silently (issue #345).** The shared
+  bulk-IN reaper goroutine on every platform (linux / windows
+  / darwin) used to exit silently when every URB became
+  unrecoverable, leaving the driver's IQ consumer channel
+  neither sending nor closed. ccdecoder's `select` blocked on
+  the dead stream forever, `decoder.pump` stopped running, and
+  every downstream `events.Publish` froze — the daemon went
+  idle at 0% CPU with `gophertrunk_events_total` counters
+  stuck, alive but inert. A new
+  `usb.Transport.StartBulkIn.onStreamDead` callback fires
+  exactly once when the reaper exits without `StopBulkIn`;
+  each hardware driver (purego / airspy / airspyhf / hackrf)
+  wires it into its existing cleanup goroutine via a
+  `streamDead` channel + `sync.Once` so the consumer channel
+  always closes — exactly once — on either ctx-cancel or
+  reaper death. `ccdecoder.Run` then returns
+  `ErrIQStreamClosed` on unexpected EOF, hitting the backoff-
+  driven restart loop above (1 s / 2 s / 5 s / 10 s, with the
+  attempt counter reset after a 60 s healthy run).
+
+### Changed
+
+- **README trimmed from 2,826 → ~210 lines.** The long-form
+  "Status & known gaps" extracted into a new `docs/status.md`,
+  the "Roadmap" into a new `docs/roadmap.md`, and the inline
+  "Recently shipped" log removed because it duplicated
+  `CHANGELOG.md`. Chapters that already live under `docs/` (TUI,
+  Web console, API auth, FEC opt-outs, Repository layout,
+  encyclopedic Quick Start) are now linked rather than
+  duplicated. Nav (`docs/_data/nav.yml`) surfaces previously-
+  orphan pages: launcher, live-edits, DMR encryption, release,
+  and the new status / roadmap pages. Added Jekyll front matter
+  to `launcher.md` and `dmr-encryption.md` so they render under
+  the right group.
+
+- **Dockerfile bumped `golang:1.24` → `golang:1.25`** to match
+  `go.mod`'s Go 1.25.0 / toolchain 1.25.10. Builds were
+  silently downloading the newer toolchain at every run.
+  `CONTRIBUTING.md` bumps "Go 1.24+" → "Go 1.25+" to match.
+  `.gitignore` now excludes `.env` / `.env.*` since
+  contributors occasionally drop streaming credentials there
+  while iterating. A new minimal
+  `.github/pull_request_template.md` covers scope, test plan,
+  breaking changes, and the docs/CHANGELOG checklist.
 
 ## [v0.2.1] — 2026-05-24
 
