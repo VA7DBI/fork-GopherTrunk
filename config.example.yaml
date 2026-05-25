@@ -1,6 +1,9 @@
 # Example GopherTrunk daemon configuration. Copy to ./config.yaml (or
 # whatever path you pass to `gophertrunk run -config`) and adjust to
 # match your hardware + systems.
+#
+# See internal/config/config.go for the authoritative list of accepted
+# keys and their defaults.
 
 log:
   level: info       # debug | info | warn | error

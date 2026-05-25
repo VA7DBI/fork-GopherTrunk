@@ -17,12 +17,16 @@ groups:
         url: /install-windows.html
   - label: Operate
     items:
+      - title: Launcher
+        url: /launcher.html
       - title: Windows user guide
         url: /user-guide-windows.html
       - title: TUI
         url: /tui.html
       - title: Web console
         url: /web.html
+      - title: Live edits
+        url: /live-edits.html
       - title: Import (PDF / CSV)
         url: /import.html
       - title: Hardening
@@ -35,8 +39,16 @@ groups:
         url: /vocoders.html
       - title: Voice calibration
         url: /voice-calibration.html
+      - title: DMR encryption
+        url: /dmr-encryption.html
       - title: Opt-in features
         url: /opt-in-features.html
+      - title: Status
+        url: /status.html
+      - title: Roadmap
+        url: /roadmap.html
+      - title: Cutting a release
+        url: /release.html
   - label: Support
     items:
       - title: Support

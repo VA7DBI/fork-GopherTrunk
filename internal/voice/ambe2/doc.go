@@ -76,8 +76,12 @@
 //     held DTMF keys are click-free. Knox / call-alert indices
 //     (b₁ ∈ [144, 163]) are vendor-specific (Motorola Trbo vs.
 //     Hytera vs. generic) and the public AMBE+2 spec doesn't
-//     document their frequencies; those routes through the
-//     silence branch with a TODO for operators who need them.
+//     document their frequencies; operators with a per-vendor
+//     reference register the (freqA, freqB) pair via
+//     SetKnoxTone (or load a curated table with RegisterPreset)
+//     and the matching tone frames synthesise through the same
+//     dual-tone path as DTMF. Unregistered indices fall through
+//     to the silence branch.
 //
 //  6. Remaining polish: calibration against a DSD-FME or OP25
 //     reference WAV at testdata/ (capture a known DMR voice frame

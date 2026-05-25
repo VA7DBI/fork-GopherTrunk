@@ -49,8 +49,8 @@ type Vocoder interface {
 | Backend                  | Build tag    | Default? | Status                                          |
 | ------------------------ | ------------ | -------- | ----------------------------------------------- |
 | `null` (silence)         | none         | yes      | Always available                                |
-| `imbe` (pure-Go, P25 P1) | none         | yes      | Producing intelligible audio; calibration TODO  |
-| `ambe2` (pure-Go)        | none         | yes      | Producing audio; calibration TODO; dual-tone → silence |
+| `imbe` (pure-Go, P25 P1) | none         | yes      | Producing intelligible audio; level calibration pending reference data ([voice-calibration.md](voice-calibration.md)) |
+| `ambe2` (pure-Go)        | none         | yes      | Producing audio; level calibration pending reference data; DTMF tones synthesise, knox tones via `ambe2.SetKnoxTone` or stay silent |
 | `dvsi` (USB-3000 chip)   | `-tags dvsi` | **no**   | Wire-protocol + Vocoder scaffolding shipping; USB transport stub (returns `ErrNoDevice`) — hardware integration follows in a separate PR |
 
 ### Live-pipeline auto-decode

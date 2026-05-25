@@ -26,11 +26,11 @@ package framing
 // trivially testable).
 //
 // This module ships the PN44 primitive — encoder + descrambler +
-// seed calculation — plus its associated round-trip tests. Wiring
-// the descrambler into the Phase 2 ControlChannel Process adapter
-// is gated on superframe-position tracking; see Figure 7-5 in the
-// spec for the offset table per slot, and the matching wiring TODO
-// in internal/radio/p25/phase2/process.go.
+// seed calculation — plus its associated round-trip tests. The
+// descrambler is wired into the Phase 2 ControlChannel Process
+// adapter via the ScramblerOn / ScramblerProbe modes; see
+// internal/radio/p25/phase2/process.go and PN44SlotOffsetsOutbound
+// below for the per-slot offset table (Figure 7-5 in the spec).
 
 // pn44Mask masks a uint64 to the 44 LSBs.
 const pn44Mask uint64 = (1 << 44) - 1

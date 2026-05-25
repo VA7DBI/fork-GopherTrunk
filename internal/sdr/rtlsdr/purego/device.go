@@ -1,7 +1,6 @@
 package purego
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -178,8 +177,3 @@ func (d *Device) cancelStream() {
 //
 // Compile-time assertion that Device satisfies sdr.Device.
 var _ sdr.Device = (*Device)(nil)
-
-// ensure the unused-import warning stays away when the build skips
-// the streaming code path (it doesn't today; this is a guard for the
-// future).
-var _ = context.TODO

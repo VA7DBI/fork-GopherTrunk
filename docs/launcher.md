@@ -1,3 +1,10 @@
+---
+layout: page
+title: Launcher
+description: Picking TUI / Web / Headless when the daemon starts on a TTY
+nav_group: Operate
+---
+
 # Daemon launcher
 
 When `gophertrunk` (no subcommand) is invoked on an interactive
