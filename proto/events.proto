@@ -59,6 +59,14 @@ message Grant {
   bool   encrypted       = 8;
   bool   emergency       = 9;
   bool   data_call       = 10;
+  // P25 encryption metadata recovered from the in-call signalling
+  // (Phase 1 LDU2 Encryption Sync, Phase 2 MAC EncryptionSync PDU).
+  // Meaningful only when encrypted=true; zero for clear calls and
+  // for encrypted calls whose ALGID/KID has not landed yet
+  // (Phase 1 grants publish before the first LDU2 — the engine
+  // backfills the values via KindCallEncryption).
+  uint32 algorithm_id    = 11;
+  uint32 key_id          = 12;
 }
 
 message CallStart {

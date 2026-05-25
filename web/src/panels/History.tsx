@@ -5,6 +5,7 @@ import { Column, DataTable } from "../components/DataTable";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { DetailField, DetailModal } from "../components/DetailModal";
 import type { CallRow } from "../api/types";
+import { formatP25Algorithm, formatP25KeyID } from "../api/p25Algorithm";
 import {
   selectCanMutate,
   selectClientConfig,
@@ -131,7 +132,20 @@ export function History() {
         header: "",
         render: (r) => (
           <div className="flex flex-wrap gap-1">
-            {r.encrypted && <span className="pill-warn">enc</span>}
+            {r.encrypted && (
+              <span
+                className="pill-warn"
+                title={
+                  r.algorithm_id != null && r.algorithm_id !== 0
+                    ? `${formatP25Algorithm(r.algorithm_id)} key ${formatP25KeyID(r.key_id ?? 0)}`
+                    : "encryption metadata not captured"
+                }
+              >
+                {r.algorithm_id != null && r.algorithm_id !== 0
+                  ? `enc ${formatP25Algorithm(r.algorithm_id)}`
+                  : "enc"}
+              </span>
+            )}
             {r.emergency && <span className="pill-err">emerg</span>}
             {r.data_call && <span className="pill">data</span>}
           </div>
@@ -288,6 +302,28 @@ export function History() {
               value={selected.data_call ? "yes" : "no"}
             />
           </div>
+          {selected.encrypted && (
+            <div className="grid grid-cols-2 gap-3">
+              <DetailField
+                label="Algorithm"
+                mono
+                value={
+                  selected.algorithm_id != null && selected.algorithm_id !== 0
+                    ? formatP25Algorithm(selected.algorithm_id)
+                    : "not captured"
+                }
+              />
+              <DetailField
+                label="Key ID"
+                mono
+                value={
+                  selected.key_id != null && selected.key_id !== 0
+                    ? formatP25KeyID(selected.key_id)
+                    : "not captured"
+                }
+              />
+            </div>
+          )}
           <DetailField
             label="Device"
             mono

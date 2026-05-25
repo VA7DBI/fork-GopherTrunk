@@ -156,6 +156,13 @@ func formatEvent(ev events.Event) string {
 			body = fmt.Sprintf("%-12s system=%s proto=%s tg=%d src=%d freq=%d enc=%t emer=%t",
 				"GRANT", g.System, g.Protocol, g.GroupID, g.SourceID,
 				g.FrequencyHz, g.Encrypted, g.Emergency)
+			// ALGID/KID only meaningful when the grant is encrypted
+			// AND the in-call signalling has surfaced them (Phase 2
+			// at grant time; Phase 1 after the first LDU2).
+			if g.Encrypted && (g.AlgorithmID != 0 || g.KeyID != 0) {
+				body += fmt.Sprintf(" alg=0x%02X key=0x%04X",
+					g.AlgorithmID, g.KeyID)
+			}
 		}
 	case events.KindCallStart:
 		if c, ok := ev.Payload.(trunking.CallStart); ok {
@@ -167,6 +174,17 @@ func formatEvent(ev events.Event) string {
 			body = fmt.Sprintf("%-12s system=%s tg=%d dur=%s reason=%s",
 				"CALL-END", c.Grant.System, c.Grant.GroupID,
 				c.Duration().Round(time.Millisecond), c.Reason)
+		}
+	case events.KindCallEncryption:
+		if c, ok := ev.Payload.(trunking.CallEncryption); ok {
+			// Only log the engine's enriched republish (System set);
+			// the raw composer publish has empty identity fields and
+			// would just be noise.
+			if c.System != "" {
+				body = fmt.Sprintf("%-12s system=%s tg=%d dev=%s alg=0x%02X key=0x%04X",
+					"CALL-ENCRYPT", c.System, c.GroupID, c.DeviceSerial,
+					c.AlgorithmID, c.KeyID)
+			}
 		}
 	case events.KindAffiliation:
 		if a, ok := ev.Payload.(trunking.Affiliation); ok {

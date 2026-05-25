@@ -91,6 +91,8 @@ func eventToDTO(ev events.Event) EventDTO {
 		dto.Payload = callEndToDTO(p)
 	case trunking.Grant:
 		dto.Payload = grantToDTO(p)
+	case trunking.CallEncryption:
+		dto.Payload = callEncryptionToDTO(p)
 	case trunking.Affiliation:
 		dto.Payload = affiliationToDTO(p)
 	case trunking.UnitRegistration:

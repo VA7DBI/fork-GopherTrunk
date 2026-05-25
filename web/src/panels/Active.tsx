@@ -5,6 +5,7 @@ import { Column, DataTable } from "../components/DataTable";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { DetailField, DetailModal } from "../components/DetailModal";
 import type { ActiveCallDTO } from "../api/types";
+import { formatP25Algorithm, formatP25KeyID } from "../api/p25Algorithm";
 import {
   selectCanMutate,
   selectClientConfig,
@@ -103,7 +104,20 @@ export function Active() {
         header: "",
         render: (r) => (
           <div className="flex flex-wrap gap-1">
-            {r.grant.encrypted && <span className="pill-warn">enc</span>}
+            {r.grant.encrypted && (
+              <span
+                className="pill-warn"
+                title={
+                  r.grant.algorithm_id != null
+                    ? `${formatP25Algorithm(r.grant.algorithm_id)} key ${formatP25KeyID(r.grant.key_id ?? 0)}`
+                    : "encryption metadata pending"
+                }
+              >
+                {r.grant.algorithm_id != null
+                  ? `enc ${formatP25Algorithm(r.grant.algorithm_id)}`
+                  : "enc"}
+              </span>
+            )}
             {r.grant.emergency && <span className="pill-err">emerg</span>}
             {r.grant.data_call && <span className="pill">data</span>}
           </div>
@@ -190,6 +204,28 @@ export function Active() {
               value={selected.grant.data_call ? "yes" : "no"}
             />
           </div>
+          {selected.grant.encrypted && (
+            <div className="grid grid-cols-2 gap-3">
+              <DetailField
+                label="Algorithm"
+                mono
+                value={
+                  selected.grant.algorithm_id != null
+                    ? formatP25Algorithm(selected.grant.algorithm_id)
+                    : "pending"
+                }
+              />
+              <DetailField
+                label="Key ID"
+                mono
+                value={
+                  selected.grant.key_id != null
+                    ? formatP25KeyID(selected.grant.key_id)
+                    : "pending"
+                }
+              />
+            </div>
+          )}
           <DetailField
             label="Device"
             mono

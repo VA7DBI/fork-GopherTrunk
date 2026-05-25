@@ -31,12 +31,20 @@ type Call struct {
 	Source         uint32
 	FrequencyHz    uint32
 	Encrypted      bool
-	Emergency      bool
-	PatchedGroups  []uint32
-	StartedAt      time.Time
-	EndedAt        time.Time
-	AudioPath      string // .wav on disk written by the recorder
-	SampleRate     int
+	// AlgorithmID / KeyID surface the P25 encryption parameters when
+	// the in-call signalling has revealed them. Zero on clear calls
+	// and on encrypted calls whose Encryption Sync never arrived
+	// before the call ended. Aggregators that accept the fields can
+	// thread them into their API payload; aggregators that don't will
+	// just ignore them.
+	AlgorithmID   uint8
+	KeyID         uint16
+	Emergency     bool
+	PatchedGroups []uint32
+	StartedAt     time.Time
+	EndedAt       time.Time
+	AudioPath     string // .wav on disk written by the recorder
+	SampleRate    int
 
 	mu      sync.Mutex
 	mp3Data []byte
@@ -70,6 +78,8 @@ func callFromEvent(cc trunking.CallComplete) *Call {
 		Source:        cc.Grant.SourceID,
 		FrequencyHz:   cc.Grant.FrequencyHz,
 		Encrypted:     cc.Grant.Encrypted,
+		AlgorithmID:   cc.Grant.AlgorithmID,
+		KeyID:         cc.Grant.KeyID,
 		Emergency:     cc.Grant.Emergency,
 		PatchedGroups: cc.Grant.PatchedGroups,
 		StartedAt:     cc.StartedAt,

@@ -131,6 +131,10 @@ func (e *Engine) Run(ctx context.Context) error {
 				if p, ok := ev.Payload.(Patch); ok {
 					e.handlePatch(p)
 				}
+			case events.KindCallEncryption:
+				if c, ok := ev.Payload.(CallEncryption); ok {
+					e.handleCallEncryption(c)
+				}
 			}
 		case <-tick.C:
 			e.runWatchdog()
@@ -198,6 +202,56 @@ func (e *Engine) HandleGrant(g Grant) {
 	// 3) Preempt: end victim, allocate freed device.
 	e.endCall(victim, EndReasonPreempted)
 	e.startCall(victim.Device, g, tg)
+}
+
+// handleCallEncryption updates the bound ActiveCall's Grant with the
+// recovered ALGID/KID from an in-call Encryption Sync, then republishes
+// the event with the call's system / protocol / group context so SSE +
+// TUI consumers can patch their live view. Skipped when System is
+// already populated — that's the engine's own re-publish coming back
+// through the subscription. Logged-and-dropped when no active call
+// matches the device serial (e.g. the call already ended).
+func (e *Engine) handleCallEncryption(c CallEncryption) {
+	if c.System != "" {
+		return
+	}
+	// Trunked calls are bound through the voice pool; synthetic calls
+	// (conventional FM scanner) live on the engine. Try both, pool first.
+	g, ok := e.pool.UpdateEncryption(c.DeviceSerial, c.AlgorithmID, c.KeyID)
+	if !ok {
+		e.mu.Lock()
+		if ac, sok := e.synthetic[c.DeviceSerial]; sok {
+			ac.Grant.AlgorithmID = c.AlgorithmID
+			ac.Grant.KeyID = c.KeyID
+			g = ac.Grant
+			ok = true
+		}
+		e.mu.Unlock()
+	}
+	if !ok {
+		e.log.Debug("call encryption update for unknown call",
+			"device", c.DeviceSerial)
+		return
+	}
+	enriched := CallEncryption{
+		DeviceSerial:     c.DeviceSerial,
+		System:           g.System,
+		Protocol:         g.Protocol,
+		GroupID:          g.GroupID,
+		AlgorithmID:      c.AlgorithmID,
+		KeyID:            c.KeyID,
+		MessageIndicator: c.MessageIndicator,
+		At:               c.At,
+	}
+	e.bus.Publish(events.Event{
+		Kind:    events.KindCallEncryption,
+		Payload: enriched,
+	})
+	e.log.Info("call encryption update",
+		"device", c.DeviceSerial,
+		"system", enriched.System,
+		"tg", enriched.GroupID,
+		"alg", c.AlgorithmID, "key", c.KeyID)
 }
 
 // handlePatch applies a patch announcement to the registry: an Add

@@ -78,6 +78,8 @@ type GrantDTO struct {
 	Encrypted     bool   `json:"encrypted,omitempty"`
 	Emergency     bool   `json:"emergency,omitempty"`
 	DataCall      bool   `json:"data_call,omitempty"`
+	AlgorithmID   uint8  `json:"algorithm_id,omitempty"`
+	KeyID         uint16 `json:"key_id,omitempty"`
 }
 
 // ActiveCallDTO mirrors api.ActiveCallDTO.
@@ -99,6 +101,8 @@ type CallRow struct {
 	SourceID       uint32    `json:"source_id"`
 	FrequencyHz    uint32    `json:"frequency_hz"`
 	Encrypted      bool      `json:"encrypted"`
+	AlgorithmID    uint8     `json:"algorithm_id,omitempty"`
+	KeyID          uint16    `json:"key_id,omitempty"`
 	Emergency      bool      `json:"emergency"`
 	DataCall       bool      `json:"data_call"`
 	DeviceSerial   string    `json:"device_serial"`

@@ -425,3 +425,132 @@ type fakeClock struct {
 }
 
 func (c *fakeClock) Now() time.Time { return c.t }
+
+func TestEngineHandleCallEncryptionBackfillsActiveCall(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	pool, _ := mkPool(1)
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 5 * time.Second,
+	})
+
+	// Start a Phase 1 call. ALGID/KID are zero (Phase 1 grant TSBK
+	// doesn't carry them).
+	e.HandleGrant(Grant{
+		System: "MMR", Protocol: "p25",
+		GroupID: 4321, FrequencyHz: 851_000_000,
+		Encrypted: true,
+	})
+
+	actives := e.ActiveCalls()
+	if len(actives) != 1 {
+		t.Fatalf("expected 1 active call, got %d", len(actives))
+	}
+	dev := actives[0].Device.Serial
+	if actives[0].Grant.AlgorithmID != 0 || actives[0].Grant.KeyID != 0 {
+		t.Fatalf("pre-backfill alg/key should be zero, got %v/%v",
+			actives[0].Grant.AlgorithmID, actives[0].Grant.KeyID)
+	}
+
+	// Subscribe BEFORE driving the encryption update so we observe
+	// the enriched republish without racing the event loop.
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	// Composer publishes the raw event (System/Protocol/GroupID empty);
+	// the engine must backfill, enrich, and republish.
+	e.handleCallEncryption(CallEncryption{
+		DeviceSerial: dev,
+		AlgorithmID:  0x84, // AES-256
+		KeyID:        0x1234,
+		At:           time.Now(),
+	})
+
+	// The pool's ActiveCall.Grant should now carry the values so the
+	// next CallEnd payload includes them.
+	updated := e.ActiveCalls()
+	if len(updated) != 1 {
+		t.Fatalf("expected 1 active call after backfill, got %d", len(updated))
+	}
+	if updated[0].Grant.AlgorithmID != 0x84 || updated[0].Grant.KeyID != 0x1234 {
+		t.Errorf("backfill did not land on Grant: alg=0x%X key=0x%X",
+			updated[0].Grant.AlgorithmID, updated[0].Grant.KeyID)
+	}
+
+	// Enriched republish should be on the bus with system / tg filled.
+	select {
+	case ev := <-sub.C:
+		if ev.Kind != events.KindCallEncryption {
+			t.Fatalf("expected KindCallEncryption republish, got %s", ev.Kind)
+		}
+		ce, ok := ev.Payload.(CallEncryption)
+		if !ok {
+			t.Fatalf("payload type = %T", ev.Payload)
+		}
+		if ce.System != "MMR" || ce.Protocol != "p25" || ce.GroupID != 4321 {
+			t.Errorf("enriched payload missing identity fields: %+v", ce)
+		}
+		if ce.AlgorithmID != 0x84 || ce.KeyID != 0x1234 {
+			t.Errorf("enriched payload alg/key = 0x%X/0x%X", ce.AlgorithmID, ce.KeyID)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("never received enriched republish")
+	}
+}
+
+func TestEngineHandleCallEncryptionUnknownDeviceDoesNotPanic(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	pool, _ := mkPool(1)
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 5 * time.Second,
+	})
+
+	// No active call on this device serial. Should silently drop.
+	e.handleCallEncryption(CallEncryption{
+		DeviceSerial: "no-such-device",
+		AlgorithmID:  0x84,
+		KeyID:        0x1234,
+	})
+}
+
+func TestEngineHandleCallEncryptionEnrichedRepublishDoesNotLoop(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	pool, _ := mkPool(1)
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 5 * time.Second,
+	})
+	e.HandleGrant(Grant{
+		System: "MMR", Protocol: "p25",
+		GroupID: 1, FrequencyHz: 851_000_000, Encrypted: true,
+	})
+	dev := e.ActiveCalls()[0].Device.Serial
+
+	// An event with System already set is the engine's own republish
+	// coming back through the subscription. Must be ignored — otherwise
+	// the engine would publish another republish, and so on.
+	sub := bus.Subscribe()
+	defer sub.Close()
+	e.handleCallEncryption(CallEncryption{
+		DeviceSerial: dev,
+		System:       "MMR",
+		AlgorithmID:  0x84,
+		KeyID:        0x1234,
+	})
+	select {
+	case ev := <-sub.C:
+		t.Fatalf("expected no republish for already-enriched event, got %s", ev.Kind)
+	case <-time.After(100 * time.Millisecond):
+		// pass
+	}
+}

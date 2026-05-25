@@ -5,8 +5,10 @@ import (
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/filter"
+	"github.com/MattCheramie/GopherTrunk/internal/events"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
 	p25p1rx "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1/receiver"
+	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
 // p25p1VoiceIntermediateHz is the rate the wideband IQ is decimated to
@@ -48,6 +50,14 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 	lpf := filter.NewFIR(filter.LowpassKaiser(81, cutoff, 8.6))
 
 	rs, _ := c.sink.(rawFrameSink)
+	// lastES is the last Encryption Sync this chain published on the
+	// bus. The voice frame stream carries one ES per LDU2 (every ~180
+	// ms), but ALGID/KID rarely change inside a single call — gate the
+	// publish so we don't fan out the same event a dozen times.
+	var (
+		lastES    phase1.EncryptionSync
+		hasLastES bool
+	)
 	rx := p25p1rx.New(p25p1rx.Options{
 		SampleRateHz: symbolHz,
 		DeviationHz:  p25p1DeviationHz,
@@ -90,6 +100,24 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 				if es, _, lerr := phase1.ParseEncryptionSync(blocks); lerr == nil && es.Encrypted() {
 					c.log.Debug("composer: p25p1 encryption sync",
 						"serial", serial, "alg", es.AlgorithmID, "key", es.KeyID)
+					// Publish on the bus so the trunking engine
+					// backfills the active call's Grant. Skip when
+					// neither ALGID nor KID has changed since the
+					// last publish.
+					if !hasLastES || es.AlgorithmID != lastES.AlgorithmID || es.KeyID != lastES.KeyID || es.MessageIndicator != lastES.MessageIndicator {
+						c.bus.Publish(events.Event{
+							Kind: events.KindCallEncryption,
+							Payload: trunking.CallEncryption{
+								DeviceSerial:     serial,
+								AlgorithmID:      es.AlgorithmID,
+								KeyID:            es.KeyID,
+								MessageIndicator: es.MessageIndicator,
+								At:               time.Now(),
+							},
+						})
+						lastES = es
+						hasLastES = true
+					}
 				}
 			}
 		},

@@ -7,6 +7,7 @@ import { create } from "zustand";
 import type {
   ActiveCallDTO,
   AudioStatusDTO,
+  CallEncryptionEvent,
   DeviceDTO,
   EventDTO,
   Health,
@@ -128,7 +129,33 @@ export const useShared = create<SharedState>((set, get) => ({
       combined.length > cap
         ? combined.slice(combined.length - cap)
         : combined;
-    set({ events: next });
+    // Patch active calls in flight when an encryption-metadata update
+    // arrives. The poll loop in Active.tsx would pick this up within
+    // ~2 s, but patching synchronously avoids the "enc" pill flashing
+    // without its algorithm name for that window.
+    let activeCalls = get().activeCalls;
+    let patched = false;
+    for (const ev of evs) {
+      if (ev.kind !== "call.encryption" || ev.payload == null) continue;
+      const p = ev.payload as CallEncryptionEvent;
+      if (!p.device_serial) continue;
+      const idx = activeCalls.findIndex(
+        (ac) => ac.device_serial === p.device_serial,
+      );
+      if (idx < 0) continue;
+      const ac = activeCalls[idx];
+      activeCalls = activeCalls.slice();
+      activeCalls[idx] = {
+        ...ac,
+        grant: {
+          ...ac.grant,
+          algorithm_id: p.algorithm_id,
+          key_id: p.key_id,
+        },
+      };
+      patched = true;
+    }
+    set(patched ? { events: next, activeCalls } : { events: next });
   },
   setError(msg) {
     set({ lastError: msg });
