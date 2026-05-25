@@ -23,6 +23,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/iqtap"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtltcp"
 	"github.com/MattCheramie/GopherTrunk/internal/storage"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 	"github.com/MattCheramie/GopherTrunk/internal/voice"
@@ -304,7 +305,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 	// fall through gracefully when the pool is empty. The pool is
 	// also constructed when only baseband replay recordings are
 	// configured, so an offline capture can be decoded with no radio.
-	if len(cfg.SDR.Devices) > 0 || len(cfg.Baseband.Replay) > 0 {
+	if len(cfg.SDR.Devices) > 0 || len(cfg.Baseband.Replay) > 0 || len(cfg.SDR.RTLTCP) > 0 {
 		d.pool = sdr.NewPool(log)
 		d.pool.SetBus(d.bus)
 		var hints []sdr.Hint
@@ -343,6 +344,50 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			}
 			sdr.Register(baseband.NewFileDriver(specs))
 			log.Info("baseband replay mounted", "recordings", len(specs))
+		}
+		// Mount rtl_tcp endpoints as virtual tuners. Each entry
+		// becomes one pool device; the driver dials lazily inside
+		// Pool.Open so misconfigured / down hosts surface as
+		// "failed to open" warnings rather than blocking daemon
+		// startup. Per-endpoint Hint carries role / ppm / gain /
+		// bias-tee through the same hint-matcher local USB devices
+		// use.
+		if len(cfg.SDR.RTLTCP) > 0 {
+			rspecs := make([]rtltcp.Spec, 0, len(cfg.SDR.RTLTCP))
+			for _, r := range cfg.SDR.RTLTCP {
+				if r.Addr == "" {
+					log.Warn("daemon: rtl_tcp entry missing addr; skipping")
+					continue
+				}
+				rspecs = append(rspecs, rtltcp.Spec{
+					Addr:           r.Addr,
+					Serial:         r.Serial,
+					Role:           r.Role,
+					ConnectTimeout: time.Duration(r.ConnectTimeoutMs) * time.Millisecond,
+				})
+				if r.Serial != "" {
+					h := sdr.Hint{
+						Serial:  r.Serial,
+						Role:    sdr.ParseRole(r.Role),
+						PPM:     r.PPM,
+						BiasTee: r.BiasTee,
+					}
+					if r.Gain != "" {
+						gain, ok := parseGain(r.Gain)
+						if !ok {
+							log.Warn("daemon: ignoring unparseable rtl_tcp gain",
+								"serial", r.Serial, "gain", r.Gain)
+						} else {
+							h = h.WithGain(gain)
+						}
+					}
+					hints = append(hints, h)
+				}
+			}
+			if len(rspecs) > 0 {
+				sdr.Register(rtltcp.New(rspecs, log))
+				log.Info("rtl_tcp endpoints mounted", "count", len(rspecs))
+			}
 		}
 		if err := d.pool.Open(cfg.SDR.SampleRate, hints); err != nil {
 			log.Warn("daemon: SDR pool open failed", "err", err)

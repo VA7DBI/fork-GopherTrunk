@@ -75,6 +75,16 @@ Silicon and Intel. Full per-OS recipes at
   dongles that drop off the bus and re-enumerate without
   restarting the daemon. See
   [docs/hardware.md](docs/hardware.md).
+- **Remote rtl_tcp SDRs** — Mount any number of `rtl_tcp`
+  endpoints as virtual tuners alongside local USB dongles. The
+  SDR can live on a Raspberry Pi at the antenna while the daemon
+  runs on a beefier host; one entry per remote in `sdr.rtl_tcp`.
+- **Live spectrum / waterfall** — In-browser FFT waterfall served
+  off the same IQ stream the trunking decoder consumes. New
+  `internal/sdr/iqtap` multi-consumer fan-out lets future
+  trunking-adjacent decoders (paging, AIS, ADS-B, ...) tap the
+  same source without disturbing CC decode. `GET /api/v1/spectrum/devices`
+  + `WS /api/v1/spectrum/stream`; web panel under `/spectrum`.
 - **One dongle, many repeaters** — `role: wideband` pins a single
   SDR to a centre frequency and runs an internal channelizer so
   one dongle decodes every DMR Tier II conventional repeater AND

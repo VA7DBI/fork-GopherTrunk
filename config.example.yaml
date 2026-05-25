@@ -172,6 +172,22 @@ sdr:
     #     - frequency_hz: 851_037_500
     #       system: "regional-dmr-t3"
 
+  # rtl_tcp remote SDRs. Each entry mounts a host:port rtl_tcp server
+  # as a virtual tuner alongside any local USB dongles. Use when the
+  # SDR hardware lives on a different host from the daemon (e.g. a
+  # Raspberry Pi at the antenna + a beefier box for decode). rtl_tcp
+  # is plaintext — keep it on trusted networks or behind an SSH /
+  # WireGuard tunnel.
+  #
+  # rtl_tcp:
+  #   - addr: "192.168.1.50:1234"
+  #     serial: "antenna-pi"   # generator fills this from addr if blank
+  #     role: control           # control | voice | auto
+  #     ppm: 0
+  #     gain: "auto"            # "auto" or tenths-of-dB ("496" = 49.6 dB)
+  #     bias_tee: false
+  #     connect_timeout_ms: 3000
+
 trunking:
   # call_timeout_ms: inactivity window after which the engine's
   # watchdog ends a call (publishes CallEnd with EndReasonTimeout

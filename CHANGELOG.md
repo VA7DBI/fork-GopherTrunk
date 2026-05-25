@@ -7,6 +7,22 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Remote `rtl_tcp` SDRs.** A new `rtltcp` driver mounts any number
+  of remote `rtl_tcp` servers as virtual tuners alongside locally-
+  attached USB dongles. The driver speaks the well-known librtlsdr
+  wire protocol (12-byte `RTL0` header, u8 IQ stream, 5-byte command
+  packets) used by SDR++, Gqrx, and OpenWebRX, so any host running
+  `rtl_tcp` can publish its dongle to the daemon. Configure under
+  `sdr.rtl_tcp` in `config.yaml`; each entry carries `addr`,
+  optional `serial`, `role`, `ppm`, `gain`, `bias_tee`, and
+  `connect_timeout_ms`. Pool roles, broker fan-out, baseband
+  recording, and the live spectrum panel all work against remote
+  sources just like local ones. Plaintext on the wire — restrict
+  to trusted networks or wrap with SSH/WireGuard/Tailscale. See
+  [docs/hardware.md](docs/hardware.md).
+
 ### Fixed
 
 - **Wideband DMR receiver loop-gain now matches the single-channel
