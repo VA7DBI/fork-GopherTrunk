@@ -120,6 +120,15 @@ sdr:
       bias_tee: false
 
 trunking:
+  # call_timeout_ms: inactivity window after which the engine's
+  # watchdog ends a call (publishes CallEnd with EndReasonTimeout
+  # and releases the bound voice SDR). The watchdog only fires
+  # when no voice frames have been decoded for this long. Default
+  # 30000 (30 s) when omitted or zero. Lower it on clean systems
+  # for snappier teardown; raise it on chatty systems with long
+  # transmission pauses. Issue #356.
+  call_timeout_ms: 30000
+
   systems:
     - name: "Example-P25"
       protocol: p25

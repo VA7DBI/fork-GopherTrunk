@@ -2,6 +2,7 @@ package composer
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/filter"
@@ -52,17 +53,25 @@ func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, iq
 
 	rs, _ := c.sink.(rawFrameSink)
 	sfDec := p25p2.NewSuperframeDecoder()
+	// voiceSubframes counts P25 Phase 2 voice-bearing subframes the
+	// receiver delivered — i.e. real voice activity. The touch ticker
+	// (below) only refreshes the engine's LastHeardAt when this counter
+	// has advanced since the previous tick. Without this gate a stalled
+	// decoder still kept the call alive forever via an unconditional
+	// 1 s heartbeat (issue #356).
+	var voiceSubframes atomic.Uint64
 	rx := p25p2rx.New(p25p2rx.Options{
 		SampleRateHz: symbolHz,
 		ClockMode:    p25p2rx.ClockGardner,
 		GardnerGain:  p25p2VoiceGardnerGain,
 		DibitSink: func(dibits []uint8, baseIdx int) {
-			if rs == nil {
-				return
-			}
 			for _, sf := range sfDec.Process(dibits, baseIdx) {
 				for _, sub := range sf.Subframes {
 					if !sub.SlotType.IsVoice() {
+						continue
+					}
+					voiceSubframes.Add(1)
+					if rs == nil {
 						continue
 					}
 					frames, _, err := p25p2.ExtractVoiceFrames(sub)
@@ -86,14 +95,17 @@ func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, iq
 
 	touchTicker := time.NewTicker(c.touchEvery)
 	defer touchTicker.Stop()
+	var lastSubframes uint64
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-touchTicker.C:
-			if c.engine != nil {
+			n := voiceSubframes.Load()
+			if n != lastSubframes && c.engine != nil {
 				c.engine.Touch(serial)
+				lastSubframes = n
 			}
 		case iq, ok := <-iqCh:
 			if !ok {

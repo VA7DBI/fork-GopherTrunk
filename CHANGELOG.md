@@ -38,6 +38,23 @@ for tagged releases.
 
 ### Fixed
 
+- **trunking/composer**: Voice chains no longer keep a call alive
+  forever via an unconditional 1 s heartbeat. The four chains
+  (P25 Phase 1, P25 Phase 2, DMR, NBFM) now gate `Engine.Touch` on
+  actual decoder progress — an LDU / superframe / voice subframe /
+  PCM batch — so the 30 s inactivity watchdog can fire and release
+  the bound voice SDR when transmission stops. Before this fix a
+  stalled decoder (simulcast garbage, vocoder hang) refreshed
+  `LastHeardAt` every tick regardless of whether any voice frames
+  were decoded, leaving the active call permanently locked on a
+  single talkgroup and every subsequent grant logging "no voice
+  device available for grant" (issue #356, reporter @KN4MSH).
+- **config**: New `trunking.call_timeout_ms` knob lets operators
+  tune the watchdog timeout (still 30 s by default). Useful on
+  systems with consistently clean signaling (lower for snappier
+  teardown) or chatty channels with long transmission pauses
+  (higher). Issue #356.
+
 - **airspy**: Defer `SET_SAMPLE_TYPE` from `Open()` to `StreamIQ()`,
   matching libairspy's open ordering (`GET_SAMPLERATES` IN first,
   no vendor OUT during open). Fixes Airspy R2 failing to open on

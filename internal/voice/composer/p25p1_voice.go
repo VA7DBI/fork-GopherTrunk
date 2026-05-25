@@ -2,6 +2,7 @@ package composer
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/filter"
@@ -58,19 +59,28 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 		lastES    phase1.EncryptionSync
 		hasLastES bool
 	)
+	// frames counts LDUs delivered by the receiver — i.e. real voice
+	// activity. The touch ticker (below) only refreshes the engine's
+	// LastHeardAt when this counter has advanced since the previous
+	// tick. Without this gate, a stalled decoder still kept the call
+	// alive forever via an unconditional 1 s heartbeat (issue #356).
+	var frames atomic.Uint64
 	rx := p25p1rx.New(p25p1rx.Options{
 		SampleRateHz: symbolHz,
 		DeviationHz:  p25p1DeviationHz,
 		Sink: func(ldu []byte) {
+			// Bump first so the watchdog gate accounts for LDU
+			// delivery even when there's no raw-frame sink.
+			frames.Add(1)
 			if rs == nil {
 				return
 			}
-			frames, _, err := phase1.ExtractVoiceFrames(ldu)
+			fs, _, err := phase1.ExtractVoiceFrames(ldu)
 			if err != nil {
 				c.log.Warn("composer: p25p1 voice extract failed",
 					"serial", serial, "err", err)
 			}
-			for _, f := range frames {
+			for _, f := range fs {
 				if f == nil {
 					continue
 				}
@@ -125,14 +135,17 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 
 	touchTicker := time.NewTicker(c.touchEvery)
 	defer touchTicker.Stop()
+	var lastFrames uint64
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-touchTicker.C:
-			if c.engine != nil {
+			n := frames.Load()
+			if n != lastFrames && c.engine != nil {
 				c.engine.Touch(serial)
+				lastFrames = n
 			}
 		case iq, ok := <-iqCh:
 			if !ok {

@@ -217,7 +217,69 @@ func TestComposerTouchesEngineWhileChainRuns(t *testing.T) {
 	defer teardown()
 
 	publishStartFM(bus, "VOICE-1")
-	waitFor(t, time.Second, func() bool { return eng.touched.Load() >= 2 })
+	// Wait until StreamIQ has been opened so SendIQ doesn't race.
+	waitFor(t, time.Second, func() bool {
+		src.mu.Lock()
+		defer src.mu.Unlock()
+		return len(src.chs) > 0
+	})
+
+	// Touch is gated on actual PCM emission (issue #356) — keep feeding
+	// IQ so the chain produces PCM batches across multiple touch ticks.
+	chunk := make([]complex64, 4096)
+	for i := range chunk {
+		chunk[i] = complex(0.5, 0.5)
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			src.SendIQ(chunk)
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	waitFor(t, 2*time.Second, func() bool { return eng.touched.Load() >= 2 })
+}
+
+// TestComposerStopsTouchingEngineWhenIQStops asserts the activity gate
+// introduced for issue #356: once PCM emission stops (e.g. simulcast
+// garbage, vocoder hang) the chain MUST stop touching the engine so
+// the trunking watchdog can fire and release the voice SDR. Before
+// the fix the touch ticker ran unconditionally and the call lived
+// forever.
+func TestComposerStopsTouchingEngineWhenIQStops(t *testing.T) {
+	src := newFakeSource()
+	_, bus, _, eng, teardown := mkComposer(t, src)
+	defer teardown()
+
+	publishStartFM(bus, "VOICE-1")
+	waitFor(t, time.Second, func() bool {
+		src.mu.Lock()
+		defer src.mu.Unlock()
+		return len(src.chs) > 0
+	})
+
+	// Push enough IQ to establish baseline Touch activity.
+	chunk := make([]complex64, 4096)
+	for i := range chunk {
+		chunk[i] = complex(0.5, 0.5)
+	}
+	src.SendIQ(chunk)
+	waitFor(t, time.Second, func() bool { return eng.touched.Load() >= 1 })
+
+	// Stop feeding IQ; sample the touch count after several touch
+	// intervals (TouchInterval is 30 ms above; 5× ≈ 150 ms is plenty).
+	baseline := eng.touched.Load()
+	time.Sleep(200 * time.Millisecond)
+	if got := eng.touched.Load(); got != baseline {
+		t.Fatalf("expected no further touches after IQ stopped; baseline=%d got=%d", baseline, got)
+	}
 }
 
 func TestComposerStopsChainOnCallEnd(t *testing.T) {
