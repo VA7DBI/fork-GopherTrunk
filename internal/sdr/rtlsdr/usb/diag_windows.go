@@ -30,7 +30,7 @@ type spDevInfoData struct {
 }
 
 var (
-	procSetupDiEnumDeviceInfo            = modSetupAPI.NewProc("SetupDiEnumDeviceInfo")
+	procSetupDiEnumDeviceInfo             = modSetupAPI.NewProc("SetupDiEnumDeviceInfo")
 	procSetupDiGetDeviceRegistryPropertyW = modSetupAPI.NewProc("SetupDiGetDeviceRegistryPropertyW")
 )
 
