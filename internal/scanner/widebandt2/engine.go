@@ -50,6 +50,18 @@ import (
 // down-converter targets.
 const narrowbandRateHz = 48_000.0
 
+// DMR receiver loop-gain + deviation values mirror the per-pipeline
+// settings the single-frequency CC decoder uses, so wideband-
+// channelized streams behave identically to the dedicated-dongle
+// path. ETSI TS 102 361-1 §6.3 pins the peak deviation at 1944 Hz at
+// symbol ±3; T2's harder symbol distribution (mean transition
+// magnitude 1.27 vs T3's 0.90) needs a more conservative loop gain.
+const (
+	deviationHz    = 1944.0
+	clockGainTier2 = 0.015 // matches newDMRTier2Pipeline in ccdecoder
+	clockGainTier3 = 0.025 // matches newDMRTier3Pipeline in ccdecoder
+)
+
 // guardFrac is the fraction of the IQ band the tuner reserves at
 // each edge as a guard against alias roll-off. Mirrors the value
 // the config validator uses to reject out-of-band channels.
@@ -221,10 +233,15 @@ func New(opts Options) (*Engine, error) {
 				p.Process(dibits, baseIdx)
 			}
 		}(processor)
+		clockGain := clockGainTier2
+		if protoTag == "dmr-tier3" {
+			clockGain = clockGainTier3
+		}
 		rcv := receiver.New(receiver.Options{
 			SampleRateHz: narrowbandRateHz,
 			DibitSink:    dibitSink,
-			DeviationHz:  receiver.SymbolRate * 0.405, // ~1944 Hz per ETSI TS 102 361-1 §6.3
+			DeviationHz:  deviationHz,
+			ClockGain:    clockGain,
 		})
 		ec := &engineChannel{
 			freqHz:    ch.FrequencyHz,
