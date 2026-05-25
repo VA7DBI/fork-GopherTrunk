@@ -596,6 +596,16 @@ type APIConfig struct {
 	GRPCAddr       string        `yaml:"grpc_addr"`
 	AllowMutations bool          `yaml:"allow_mutations"`
 	Auth           APIAuthConfig `yaml:"auth"`
+	// Rigctld, when non-empty, exposes the control SDR's tuning over
+	// the Hamlib rigctld TCP wire protocol on this address. Lets
+	// external amateur-radio tooling (Cloudlog, logging programs,
+	// satellite trackers) read and set the daemon's frequency
+	// without learning the GopherTrunk REST API. Defaults to empty
+	// (off). Typical value: "127.0.0.1:4532" (the rigctld default
+	// port). The server is read-only beyond SetFreq; PTT is
+	// always reported as 0. Bind to loopback unless the network
+	// is trusted — the protocol has no authentication.
+	Rigctld string `yaml:"rigctld"`
 	// CORS gates cross-origin browser requests. Off by default
 	// (no Access-Control-* headers emitted). Enable when serving
 	// the bundled web UI from a different origin than the daemon

@@ -100,6 +100,12 @@ Silicon and Intel. Full per-OS recipes at
 - **APIs** — gRPC + HTTP/SSE + WebSocket; optional TLS +
   bearer-token auth on mutations; Prometheus `/metrics`; pure-Go
   SQLite call log; in-process pub/sub event bus.
+- **Hamlib `rigctld` integration** — optional TCP server speaking
+  the standard Hamlib wire protocol so loggers, satellite
+  trackers, and amateur-radio tooling (Cloudlog, GridTracker,
+  PSTRotator, `rigctl(1)`) can read and set the control SDR's
+  frequency. RX-only backend; see
+  [docs/rigctld.md](docs/rigctld.md).
 - **Outbound call streaming** — Broadcastify Calls, RdioScanner,
   OpenMHz, live Icecast / ShoutCast with pre-encoded silence keep-alive.
   Pure-Go MP3 encoder. See `internal/broadcast`.

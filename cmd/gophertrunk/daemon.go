@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/api"
+	"github.com/MattCheramie/GopherTrunk/internal/api/rigctld"
 	"github.com/MattCheramie/GopherTrunk/internal/broadcast"
 	"github.com/MattCheramie/GopherTrunk/internal/config"
 	"github.com/MattCheramie/GopherTrunk/internal/events"
@@ -131,6 +132,7 @@ type Daemon struct {
 	metrics   *metrics.Metrics
 	httpAPI   *api.Server
 	grpcAPI   *api.GRPCServer
+	rigctld   *rigctld.Server
 
 	// startupWarnings collects non-fatal observations from
 	// NewDaemon / preflight (missing talkgroup CSV, SDR enumeration
@@ -949,6 +951,30 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		d.httpAPI = srv
 	}
 
+	// rigctld TCP server — optional. Exposes the control SDR's
+	// frequency to external Hamlib clients (loggers, sat trackers).
+	// Wired only when an SDR is in the pool *and* the operator opted
+	// in via api.rigctld in the YAML; otherwise stays off so a daemon
+	// without a tuner doesn't pretend to be a controllable rig.
+	if cfg.API.Rigctld != "" && d.pool != nil {
+		ctrlEntry := d.pool.FirstByRole(sdr.RoleControl)
+		if ctrlEntry == nil {
+			log.Warn("daemon: rigctld configured but no control SDR in pool; skipping")
+		} else {
+			var rigCtrl rigctld.Controller
+			if br := d.iqBrokers[ctrlEntry.Info.Serial]; br != nil {
+				rigCtrl = brokerRigController{serial: ctrlEntry.Info.Serial, broker: br}
+			} else {
+				rigCtrl = &poolRigController{serial: ctrlEntry.Info.Serial, dev: ctrlEntry.Device}
+			}
+			rs, err := rigctld.New(cfg.API.Rigctld, rigCtrl, log)
+			if err != nil {
+				return nil, fmt.Errorf("daemon: rigctld: %w", err)
+			}
+			d.rigctld = rs
+		}
+	}
+
 	// gRPC — optional.
 	if cfg.API.GRPCAddr != "" {
 		gsrv, err := api.NewGRPCServer(api.GRPCServerOptions{
@@ -1098,6 +1124,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return d.grpcAPI.Run(ctx)
 		})
 	}
+	if d.rigctld != nil {
+		// Non-essential: external loggers / sat-trackers consume
+		// this, but a bind failure (port 4532 already taken by a
+		// real Hamlib daemon, for instance) shouldn't bring down
+		// the trunking pipeline. Log + continue.
+		d.spawn(runCtx, "rigctld", false, func(ctx context.Context) error {
+			return d.rigctld.Run(ctx)
+		})
+	}
 
 	// Conservative readiness: give every spawn a brief grace window
 	// so the HTTP listener has time to bind. Components without an
@@ -1155,6 +1190,9 @@ func (d *Daemon) Close() {
 	d.closeOnce.Do(func() {
 		if d.httpAPI != nil {
 			_ = d.httpAPI.Close()
+		}
+		if d.rigctld != nil {
+			_ = d.rigctld.Close()
 		}
 		if d.grpcAPI != nil {
 			d.grpcAPI.Stop()
@@ -1673,4 +1711,50 @@ func (p *poolDevices) FindBySerial(serial string) composer.IQSource {
 		return nil
 	}
 	return e.Device
+}
+
+// brokerRigController adapts an iqtap.Broker into the rigctld
+// Controller interface. Routing through the broker means SetFreq
+// goes through the same path the ccdecoder uses (so the broker's
+// CenterHz / SampleRateHz stay in sync) AND survives pool.Reacquire
+// because the broker keeps its inner pointer.
+type brokerRigController struct {
+	serial string
+	broker *iqtap.Broker
+}
+
+func (b brokerRigController) Serial() string { return b.serial }
+func (b brokerRigController) Freq() (uint32, error) {
+	return b.broker.CenterHz(), nil
+}
+func (b brokerRigController) SetFreq(hz uint32) error {
+	return b.broker.SetCenterFreq(hz)
+}
+
+// poolRigController is the fallback for tests / scaffolding paths
+// where the broker isn't wired. Talks directly to an sdr.Device. The
+// device interface doesn't expose a CenterFreq getter, so Freq
+// returns the last SetFreq value cached locally (0 before any set).
+type poolRigController struct {
+	serial string
+	dev    sdr.Device
+
+	mu sync.Mutex
+	hz uint32
+}
+
+func (p *poolRigController) Serial() string { return p.serial }
+func (p *poolRigController) Freq() (uint32, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.hz, nil
+}
+func (p *poolRigController) SetFreq(hz uint32) error {
+	if err := p.dev.SetCenterFreq(hz); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.hz = hz
+	p.mu.Unlock()
+	return nil
 }
