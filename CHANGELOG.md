@@ -7,6 +7,22 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Wideband DMR receiver loop-gain now matches the single-channel
+  ccdecoder path.** The Stage 2 / Stage 3 wideband engine was
+  instantiating `dmr/receiver.Receiver` with the default
+  `ClockGain: 0.05`, which the existing ccdecoder pipelines
+  explicitly lowered (0.015 for Tier II, 0.025 for Tier III) because
+  the default doesn't reliably lock the Mueller-Müller clock loop on
+  T2/T3 symbol distributions. The wideband engine now picks the
+  right value per channel based on the system's tier, so wideband-
+  hosted DMR repeaters lock as cleanly as the dedicated-dongle path.
+  Verified by a new in-package end-to-end test in
+  `internal/scanner/widebandt2/engine_e2e_test.go` that feeds
+  synthesized Voice LC Header IQ through the engine and asserts a
+  grant event lands on the bus.
+
 ### Added
 
 - **`role: wideband` SDR devices — one dongle, many DMR Tier II

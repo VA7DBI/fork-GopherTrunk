@@ -337,6 +337,17 @@ message that names the offending entry.
   for the second SDR.
 - **The wideband dongle is dedicated.** It can't double as a Voice
   pool member (the daemon needs it pinned to one centre frequency).
+  If you also run a trunked system that allocates voice grants on a
+  separate frequency, add a `role: voice` SDR for it.
+- **DDC-with-real-signal RX limits.** The wideband engine's per-tap
+  DDC (when the SDR sample rate is higher than 48 kHz) uses the same
+  Kaiser anti-alias prototype as the single-channel ccdecoder path,
+  so live captures with the same SNR characteristics that lock on a
+  dedicated dongle also lock here. The in-package end-to-end test
+  exercises the engine wiring at the bank's native per-tap rate
+  (48 kHz) where the resampler is a no-op; full validation at a
+  decimating wideband rate against a TX-side filter cascade that
+  mirrors the RX matched filter is a planned follow-up.
 - **CPU scales with channel count.** Eight DDC taps at 2.4 MS/s is a
   few percent of one modern x86 core; the polyphase mode lands lower
   at the same count.
