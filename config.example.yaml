@@ -76,6 +76,18 @@ api:
     #   - "null"
     #   - "http://laptop.local:8000"
 
+  # rigctld TCP server. When set, the daemon exposes the control
+  # SDR's tuning over the Hamlib rigctld wire protocol on this
+  # address — external amateur-radio tooling (Cloudlog, GridTracker,
+  # logging programs, satellite trackers) can read and set the
+  # daemon's frequency without learning the GopherTrunk REST API.
+  # Defaults to off (empty); typical value is "127.0.0.1:4532"
+  # (the standard rigctld port). RX-only backend — set_ptt 1 is
+  # rejected. Bind to loopback unless the network is trusted; the
+  # protocol has no authentication.
+  rigctld: ""
+  # rigctld: "127.0.0.1:4532"
+
 metrics:
   enabled: true     # mounts /metrics on the HTTP API
 

@@ -9,6 +9,19 @@ for tagged releases.
 
 ### Added
 
+- **Hamlib `rigctld` TCP server.** Opt-in (`api.rigctld:
+  "127.0.0.1:4532"`) endpoint speaking the standard rigctld wire
+  protocol so external amateur-radio tooling (Cloudlog,
+  GridTracker, PSTRotator, satellite trackers, `rigctl(1)`) can
+  read and set the control SDR's frequency without learning the
+  GopherTrunk REST API. Implements the ~10 commands real clients
+  send (`F` / `f`, `M` / `m`, `V` / `v`, `T` / `t`, `chk_vfo`,
+  `dump_state`, `q`); unknown commands return `RPRT -1` per
+  Hamlib's "unsupported" convention. RX-only backend — `set_ptt 1`
+  is rejected. Tuning routes through the iqtap broker so external
+  retunes stay coherent with the spectrum panel's frequency axis
+  and survive USB-disconnect cycles. See
+  [docs/rigctld.md](docs/rigctld.md).
 - **Remote `rtl_tcp` SDRs.** A new `rtltcp` driver mounts any number
   of remote `rtl_tcp` servers as virtual tuners alongside locally-
   attached USB dongles. The driver speaks the well-known librtlsdr
