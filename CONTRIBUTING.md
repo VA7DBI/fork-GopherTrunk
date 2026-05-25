@@ -82,11 +82,27 @@ existing code; a few items worth calling out:
 | `make integration` | Daemon end-to-end test (no SDR) — exercises the full IQ-replay path |
 | `make integration-cc-<proto>` | Per-protocol "lights up live trunked reception" check (P25 P1 / P25 P2 / DMR / NXDN / dPMR / EDACS / Motorola / LTR / MPT 1327 / TETRA / YSF) |
 | `make test-dvsi` | DVSI hardware backend tests under `-tags dvsi` |
+| `make test-airspy-real` | Opt-in Airspy R2/Mini hardware validation (enumerate → open → tune/sample-rate/gain → first IQ packet) |
+| `make test-airspy-real-bias` | Same as `test-airspy-real` plus real-hardware bias-tee on/off validation |
 | `make vet` | `go vet ./...` |
 | `make cross-build` | Static binaries for Linux / macOS / Windows × amd64 / arm64 |
 
 CI runs `make test`, `make integration`, and `make test-dvsi` on
 every PR. A green CI is required before merge.
+
+Real Airspy validation is intentionally opt-in and never runs in CI.
+The package-level test skips unless `GOPHERTRUNK_AIRSPY_REAL=1` is
+set. Optional overrides:
+
+- `GOPHERTRUNK_AIRSPY_REAL_SERIAL` — match one device by serial.
+- `GOPHERTRUNK_AIRSPY_REAL_CENTER_HZ` — center frequency in Hz
+  (default `144390000`).
+- `GOPHERTRUNK_AIRSPY_REAL_RATE_HZ` — sample rate in Hz
+  (default `2500000`).
+- `GOPHERTRUNK_AIRSPY_REAL_GAIN_TENTH_DB` — gain in 0.1 dB, use
+  `-1` for AGC (default `-1`).
+- `GOPHERTRUNK_AIRSPY_REAL_BIAS_TEE` — set to `1` to also run the
+  real-hardware bias-tee on/off test (leaves bias-tee off on exit).
 
 ## Sending a pull request
 
