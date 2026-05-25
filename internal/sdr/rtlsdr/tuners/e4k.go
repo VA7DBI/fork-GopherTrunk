@@ -118,8 +118,8 @@ func (e *E4000) Gains() []int {
 
 // Init walks the chip's power-on sequence: dummy read to wake the I2C
 // engine, master-reset, clock-input config, AGC defaults, and the
-// "magic init" register flood. Skips DC-offset and IMR calibration
-// (both require hardware sweeps; see file-level TODO).
+// "magic init" register flood. DC-offset and IMR calibration are
+// skipped — both require hardware sweeps and are not yet wired.
 func (e *E4000) Init() error {
 	if e.initDone {
 		return nil

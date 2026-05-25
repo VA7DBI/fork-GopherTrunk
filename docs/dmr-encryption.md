@@ -1,3 +1,10 @@
+---
+layout: page
+title: DMR encryption
+description: Known-key ARC4 / RC4 support, status, and out-of-band decode recipe
+nav_group: Reference
+---
+
 # DMR encryption (ARC4 / RC4 "Enhanced Privacy")
 
 GopherTrunk can be configured with **known decryption keys** for DMR

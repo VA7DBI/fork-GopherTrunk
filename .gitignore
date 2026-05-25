@@ -18,3 +18,7 @@
 .vscode/
 *.swp
 .DS_Store
+# Operator-local env files (not read by the daemon, but contributors
+# occasionally drop secrets here while iterating on streaming creds).
+.env
+.env.*
