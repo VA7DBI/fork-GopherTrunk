@@ -139,7 +139,11 @@ var (
 
 	// ErrDeviceGone is returned by any operation after the device has
 	// been physically removed or the kernel has decided it's dead.
-	// Maps to ENODEV on Linux and ERROR_GEN_FAILURE on Windows.
+	// Maps to ENODEV on Linux and ERROR_DEVICE_NOT_CONNECTED /
+	// ERROR_NO_SUCH_DEVICE / ERROR_DEV_NOT_EXIST on Windows. Note
+	// ERROR_GEN_FAILURE is NOT mapped here — that's a firmware
+	// reject / driver-binding issue, not a physical disconnect
+	// (see winErr in usb_windows.go; issue #270).
 	ErrDeviceGone = errors.New("usb: device disconnected")
 
 	// ErrTimeout is returned when a control transfer didn't complete
