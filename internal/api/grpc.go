@@ -268,6 +268,7 @@ func grantToPB(g trunking.Grant) *apiv1.Grant {
 		FrequencyHz: g.FrequencyHz,
 		ChannelId:   uint32(g.ChannelID), ChannelNumber: uint32(g.ChannelNum),
 		Encrypted: g.Encrypted, Emergency: g.Emergency, DataCall: g.DataCall,
+		AlgorithmId: uint32(g.AlgorithmID), KeyId: uint32(g.KeyID),
 	}
 }
 

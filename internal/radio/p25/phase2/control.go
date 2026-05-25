@@ -8,6 +8,7 @@ import (
 
 	"github.com/MattCheramie/GopherTrunk/internal/events"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/framing"
+	"github.com/MattCheramie/GopherTrunk/internal/radio/p25"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
@@ -592,12 +593,17 @@ func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode, group
 			At:          c.now(),
 		},
 	})
-	c.log.Debug("p25/phase2 grant",
+	args := []any{
 		"system", c.systemName,
 		"opcode", op, "tg", groupID,
 		"src", g.SourceID,
 		"channel_id", g.ChannelID, "channel_num", g.ChannelNumber,
-		"freq_hz", freq, "enc", so.Encrypted(), "emer", so.Emergency())
+		"freq_hz", freq, "enc", so.Encrypted(), "emer", so.Emergency(),
+	}
+	if so.Encrypted() && (algID != 0 || keyID != 0) {
+		args = append(args, "alg", p25.FormatAlgorithm(algID), "key", keyID)
+	}
+	c.log.Debug("p25/phase2 grant", args...)
 }
 
 // publishPatch publishes an events.KindPatch for a vendor patch /

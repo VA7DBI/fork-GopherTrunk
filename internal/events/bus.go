@@ -84,6 +84,18 @@ const (
 	// the reporting radio, the lat/lon fix, and optional speed/heading.
 	// The storage layer persists it; the API + web map surface it.
 	KindLocation Kind = "location"
+	// KindCallEncryption fires when the voice composer recovers an
+	// Encryption Sync from the in-call signalling — e.g. a P25 Phase 1
+	// LDU2 Encryption Sync, where ALGID/KID are only available after
+	// the call has started (the grant TSBK carries only the encrypted
+	// bit). The engine subscribes, backfills the bound ActiveCall's
+	// Grant so downstream consumers (storage, SSE, TUI) see the
+	// real algorithm/key on CallEnd, and republishes the event with
+	// the call's system / protocol / group context so live listeners
+	// (SSE, TUI) can patch the active row in flight. P25 Phase 2 and
+	// any protocol whose grant carries ALGID/KID at grant time does
+	// not need this event — the values are already on the Grant.
+	KindCallEncryption Kind = "call.encryption"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol

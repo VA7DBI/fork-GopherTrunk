@@ -185,3 +185,21 @@ func (p *VoicePool) Touch(serial string, now time.Time) {
 		ac.LastHeardAt = now
 	}
 }
+
+// UpdateEncryption backfills ALGID/KID on the active call bound to
+// serial — used by the engine when an in-call Encryption Sync arrives
+// after the original grant (P25 Phase 1 LDU2). Returns a copy of the
+// updated Grant for the caller to publish in an enriched event, plus
+// ok=true when a matching call was found. The mutation runs under the
+// pool's mutex so it stays consistent with concurrent Touch / Release.
+func (p *VoicePool) UpdateEncryption(serial string, algID uint8, keyID uint16) (Grant, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ac, ok := p.active[serial]
+	if !ok {
+		return Grant{}, false
+	}
+	ac.Grant.AlgorithmID = algID
+	ac.Grant.KeyID = keyID
+	return ac.Grant, true
+}

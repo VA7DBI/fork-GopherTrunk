@@ -56,12 +56,15 @@ func (p *ActivePanel) Update(msg tea.Msg, s *state.SharedState) (Panel, tea.Cmd)
 	}
 	// Refresh on every update — the polling cadence is 1 s. The hash
 	// gate keeps us from rebuilding the bubbles/table on every Update
-	// call when nothing has changed.
+	// call when nothing has changed. AlgorithmID/KeyID participate so
+	// the row repaints when the engine backfills encryption metadata
+	// after an LDU2 lands (P25 Phase 1).
 	h := hashRows(s.ActiveCalls, func(ac client.ActiveCallDTO) string {
-		return fmt.Sprintf("%s|%d|%d|%s|%d|%v|%v",
+		return fmt.Sprintf("%s|%d|%d|%s|%d|%v|%v|%d|%d",
 			ac.DeviceSerial, ac.Grant.GroupID, ac.Grant.SourceID,
 			ac.Grant.System, ac.Grant.FrequencyHz,
-			ac.Grant.Encrypted, ac.Grant.Emergency)
+			ac.Grant.Encrypted, ac.Grant.Emergency,
+			ac.Grant.AlgorithmID, ac.Grant.KeyID)
 	})
 	if h != p.lastHash {
 		p.refresh(s.ActiveCalls)
@@ -82,6 +85,12 @@ func (p *ActivePanel) refresh(calls []client.ActiveCallDTO) {
 		flags := ""
 		if ac.Grant.Encrypted {
 			flags += "E"
+			// Append the ALGID nibble once the LDU2 backfill has
+			// landed so operators can spot AES vs ADP vs DES at a
+			// glance without opening the detail view.
+			if ac.Grant.AlgorithmID != 0 {
+				flags += fmt.Sprintf("(%02X)", ac.Grant.AlgorithmID)
+			}
 		}
 		if ac.Grant.Emergency {
 			flags += "!"
@@ -138,6 +147,6 @@ func activeColumns(w int) []table.Column {
 		{Title: "Sys", Width: sysW},
 		{Title: "Freq", Width: freqW},
 		{Title: "Device", Width: devW},
-		{Title: "E/!", Width: 4},
+		{Title: "E/!", Width: 8},
 	}
 }

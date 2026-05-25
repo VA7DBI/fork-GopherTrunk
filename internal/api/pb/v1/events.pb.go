@@ -335,6 +335,14 @@ type Grant struct {
 	Encrypted     bool                   `protobuf:"varint,8,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
 	Emergency     bool                   `protobuf:"varint,9,opt,name=emergency,proto3" json:"emergency,omitempty"`
 	DataCall      bool                   `protobuf:"varint,10,opt,name=data_call,json=dataCall,proto3" json:"data_call,omitempty"`
+	// P25 encryption metadata recovered from the in-call signalling
+	// (Phase 1 LDU2 Encryption Sync, Phase 2 MAC EncryptionSync PDU).
+	// Meaningful only when encrypted=true; zero for clear calls and
+	// for encrypted calls whose ALGID/KID has not landed yet
+	// (Phase 1 grants publish before the first LDU2 — the engine
+	// backfills the values via KindCallEncryption).
+	AlgorithmId   uint32 `protobuf:"varint,11,opt,name=algorithm_id,json=algorithmId,proto3" json:"algorithm_id,omitempty"`
+	KeyId         uint32 `protobuf:"varint,12,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -437,6 +445,20 @@ func (x *Grant) GetDataCall() bool {
 		return x.DataCall
 	}
 	return false
+}
+
+func (x *Grant) GetAlgorithmId() uint32 {
+	if x != nil {
+		return x.AlgorithmId
+	}
+	return 0
+}
+
+func (x *Grant) GetKeyId() uint32 {
+	if x != nil {
+		return x.KeyId
+	}
+	return 0
 }
 
 type CallStart struct {
@@ -837,7 +859,7 @@ const file_events_proto_rawDesc = "" +
 	"\n" +
 	"AttrsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb5\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xef\x02\n" +
 	"\x05Grant\x12\x16\n" +
 	"\x06system\x18\x01 \x01(\tR\x06system\x12\x1a\n" +
 	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12\x19\n" +
@@ -850,7 +872,9 @@ const file_events_proto_rawDesc = "" +
 	"\tencrypted\x18\b \x01(\bR\tencrypted\x12\x1c\n" +
 	"\temergency\x18\t \x01(\bR\temergency\x12\x1b\n" +
 	"\tdata_call\x18\n" +
-	" \x01(\bR\bdataCall\"\x96\x01\n" +
+	" \x01(\bR\bdataCall\x12!\n" +
+	"\falgorithm_id\x18\v \x01(\rR\valgorithmId\x12\x15\n" +
+	"\x06key_id\x18\f \x01(\rR\x05keyId\"\x96\x01\n" +
 	"\tCallStart\x12+\n" +
 	"\x05grant\x18\x01 \x01(\v2\x15.gophertrunk.v1.GrantR\x05grant\x127\n" +
 	"\ttalkgroup\x18\x02 \x01(\v2\x19.gophertrunk.v1.TalkGroupR\ttalkgroup\x12#\n" +

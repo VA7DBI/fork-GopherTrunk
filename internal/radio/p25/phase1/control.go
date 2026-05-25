@@ -911,6 +911,9 @@ func (c *ControlChannel) publishVoiceGrant(g voiceGrant, nac uint16) {
 		"tg", g.groupID, "src", g.sourceID,
 		"id", g.channelID, "num", g.channelNumber, "freq_hz", freq,
 		"enc", so.Encrypted(), "emer", so.Emergency(), "data", g.dataCall)
+	// ALGID/KID are unavailable at grant time on Phase 1 (the LDU2
+	// Encryption Sync carries them); the engine backfills via
+	// KindCallEncryption once the voice frame lands.
 }
 
 // drainPendingGrants re-publishes every voice grant that arrived for

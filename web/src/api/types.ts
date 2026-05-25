@@ -52,6 +52,11 @@ export interface GrantDTO {
   encrypted?: boolean;
   emergency?: boolean;
   data_call?: boolean;
+  // P25 encryption metadata recovered from the in-call signalling.
+  // Meaningful only when encrypted is true; on Phase 1 they arrive
+  // after the grant via a `call.encryption` SSE event.
+  algorithm_id?: number;
+  key_id?: number;
 }
 
 export interface ActiveCallDTO {
@@ -131,6 +136,8 @@ export interface CallRow {
   source_id?: number;
   frequency_hz: number;
   encrypted?: boolean;
+  algorithm_id?: number;
+  key_id?: number;
   emergency?: boolean;
   data_call?: boolean;
   device_serial?: string;
@@ -139,6 +146,21 @@ export interface CallRow {
   duration_ms?: number;
   end_reason?: string;
   talkgroup_alpha?: string;
+}
+
+// CallEncryptionEvent is the SSE payload published as `call.encryption`
+// when the daemon recovers an Encryption Sync on an active call (P25
+// Phase 1 — Phase 2 carries the values on the original grant). The
+// SPA matches device_serial to the active-call row and patches its
+// algorithm_id / key_id in flight.
+export interface CallEncryptionEvent {
+  device_serial: string;
+  system?: string;
+  protocol?: string;
+  group_id?: number;
+  algorithm_id: number;
+  key_id: number;
+  at: string;
 }
 
 export interface RuntimeDTO {

@@ -128,6 +128,13 @@ type GrantDTO struct {
 	Encrypted     bool   `json:"encrypted,omitempty"`
 	Emergency     bool   `json:"emergency,omitempty"`
 	DataCall      bool   `json:"data_call,omitempty"`
+	// AlgorithmID / KeyID surface the P25 encryption parameters
+	// recovered from the in-call signalling. Zero when Encrypted is
+	// false; also zero on a Phase 1 grant until the LDU2 Encryption
+	// Sync has been parsed and the engine has backfilled the active
+	// call (see KindCallEncryption).
+	AlgorithmID uint8  `json:"algorithm_id,omitempty"`
+	KeyID       uint16 `json:"key_id,omitempty"`
 }
 
 func grantToDTO(g trunking.Grant) GrantDTO {
@@ -137,7 +144,34 @@ func grantToDTO(g trunking.Grant) GrantDTO {
 		FrequencyHz: g.FrequencyHz,
 		ChannelID:   g.ChannelID, ChannelNumber: g.ChannelNum,
 		Encrypted: g.Encrypted, Emergency: g.Emergency,
-		DataCall: g.DataCall,
+		DataCall:    g.DataCall,
+		AlgorithmID: g.AlgorithmID, KeyID: g.KeyID,
+	}
+}
+
+// CallEncryptionDTO mirrors trunking.CallEncryption for SSE / REST
+// consumers. Subscribers patch the matching active-call row with the
+// new ALGID/KID so the UI flips from "enc" to "enc 0x84 (AES-256)"
+// the moment the LDU2 lands.
+type CallEncryptionDTO struct {
+	DeviceSerial string    `json:"device_serial"`
+	System       string    `json:"system,omitempty"`
+	Protocol     string    `json:"protocol,omitempty"`
+	GroupID      uint32    `json:"group_id,omitempty"`
+	AlgorithmID  uint8     `json:"algorithm_id"`
+	KeyID        uint16    `json:"key_id"`
+	At           time.Time `json:"at"`
+}
+
+func callEncryptionToDTO(c trunking.CallEncryption) CallEncryptionDTO {
+	return CallEncryptionDTO{
+		DeviceSerial: c.DeviceSerial,
+		System:       c.System,
+		Protocol:     c.Protocol,
+		GroupID:      c.GroupID,
+		AlgorithmID:  c.AlgorithmID,
+		KeyID:        c.KeyID,
+		At:           c.At,
 	}
 }
 
