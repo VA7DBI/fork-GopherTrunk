@@ -730,6 +730,15 @@ func (c *ControlChannel) dispatchTSBK(t TSBK, nac uint16, metric int) {
 			"tx_offset_hz", u.TxOffsetHz,
 			"bandwidth_hz", u.BandwidthHz)
 		c.drainPendingGrants(u.ChannelID, nac)
+	case OpIdentifierUpdateTDMA:
+		u := ParseIdentifierUpdateTDMA(t.Payload)
+		c.bandPlan.Apply(u)
+		c.log.Debug("p25: identifier update (TDMA)",
+			"nac", nac, "id", u.ChannelID,
+			"base_hz", u.BaseHz, "spacing_hz", u.SpacingHz,
+			"tx_offset_hz", u.TxOffsetHz,
+			"bandwidth_hz", u.BandwidthHz)
+		c.drainPendingGrants(u.ChannelID, nac)
 	case OpGroupVoiceChannelGrant:
 		c.publishGroupGrant(ParseGroupVoiceChannelGrant(t.Payload), nac)
 	case OpGroupVoiceChannelUpdate:

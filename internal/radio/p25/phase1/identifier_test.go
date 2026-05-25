@@ -69,6 +69,63 @@ func TestIdentifierUpdateVUHFRoundTripPositiveOffset(t *testing.T) {
 	}
 }
 
+// TestIdentifierUpdateTDMARoundTripMtAnakieID10 mirrors the VUHF
+// round-trip with the Mt Anakie id=10 fixture from issue #345
+// (TDMA-2 slot, 6.25 kHz channels, base 467.5125 MHz, -10 MHz tx
+// offset). The site's id=10 IDEN_UP arrives as opcode 0x33 — once
+// decoded, grants on (id=10, num=176) resolve to 468.6125 MHz.
+func TestIdentifierUpdateTDMARoundTripMtAnakieID10(t *testing.T) {
+	in := IdentifierUpdate{
+		ChannelID:   10,
+		BandwidthHz: 6_250, // channel type 0x1 → 6.25 kHz
+		SpacingHz:   6_250,
+		TxOffsetHz:  -10_000_000,
+		BaseHz:      467_512_500,
+	}
+	out := ParseIdentifierUpdateTDMA(AssembleIdentifierUpdateTDMA(in))
+	if out != in {
+		t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", out, in)
+	}
+}
+
+func TestIdentifierUpdateTDMARoundTripPositiveOffset(t *testing.T) {
+	// 12.5 kHz TDMA fixture with a positive offset to exercise the
+	// sign bit and the second known channel-type code.
+	in := IdentifierUpdate{
+		ChannelID:   5,
+		BandwidthHz: 12_500, // channel type 0x2 → 12.5 kHz
+		SpacingHz:   12_500,
+		TxOffsetHz:  5_000_000,
+		BaseHz:      420_000_000,
+	}
+	out := ParseIdentifierUpdateTDMA(AssembleIdentifierUpdateTDMA(in))
+	if out != in {
+		t.Errorf("round-trip mismatch: got %+v want %+v", out, in)
+	}
+}
+
+// TestTDMAChannelTypeBandwidthCodes table-checks the channel-type →
+// bandwidth lookup. Codes outside the small documented set fall to 0
+// — the parser still resolves frequency correctly because
+// BandPlan.Frequency does not consult BandwidthHz.
+func TestTDMAChannelTypeBandwidthCodes(t *testing.T) {
+	for _, tc := range []struct {
+		code uint8
+		want uint32
+	}{
+		{0x0, 0}, // reserved
+		{0x1, 6_250},
+		{0x2, 12_500},
+		{0x3, 6_250},
+		{0x4, 0},
+		{0xF, 0},
+	} {
+		if got := tdmaChannelTypeBandwidthHz(tc.code); got != tc.want {
+			t.Errorf("tdmaChannelTypeBandwidthHz(0x%X) = %d, want %d", tc.code, got, tc.want)
+		}
+	}
+}
+
 func TestIdentifierUpdateVUHFUnknownBandwidthCodeMapsToZero(t *testing.T) {
 	// On-air payload with BW code 0 (reserved per TIA-102.AABF Table 16).
 	// Parser must surface BandwidthHz=0 rather than fabricating a value.
