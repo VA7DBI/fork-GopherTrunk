@@ -128,8 +128,9 @@ func tunerNameFor(product string) string {
 }
 
 // Open claims the device at idx and returns an sdr.Device. The
-// returned device defaults to INT16_IQ sample mode and the highest
-// rate the firmware advertises.
+// returned device defaults to INT16_IQ sample mode (applied lazily
+// at StreamIQ time, matching libairspy) and the highest rate the
+// firmware advertises.
 func (d *Driver) Open(idx int) (sdr.Device, error) {
 	d.mu.Lock()
 	cached := d.cached
@@ -165,14 +166,11 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 			TunerName:    tunerNameFor(desc.Product),
 		},
 	}
-	// Pin the device to INT16_IQ — the format the StreamIQ decoder
-	// expects.
-	if err := t.ControlOut(reqSetSampleType, sampleTypeInt16IQ, 0, nil, controlTimeoutMs); err != nil {
-		_ = dev.Close()
-		return nil, fmt.Errorf("airspy: set sample type: %w", err)
-	}
-	// Read the supported-samplerate table so SetSampleRate can match
-	// the requested rate against an index.
+	// Read the supported-samplerate table. This is the first vendor
+	// transfer after claim — matching libairspy's open ordering
+	// (vendor IN first, no SET_SAMPLE_TYPE during open). Some firmware
+	// / Windows driver bindings reject a vendor OUT as the very first
+	// transfer (issue #270).
 	rates, err := dev.fetchSampleRates()
 	if err != nil {
 		// Non-fatal: keep the device usable; SetSampleRate will fall
@@ -196,10 +194,11 @@ type Device struct {
 	t    usb.Transport
 	info sdr.Info
 
-	mu        sync.Mutex
-	closed    bool
-	streaming bool
-	rates     []uint32 // supported sample rates, Hz, descending order
+	mu             sync.Mutex
+	closed         bool
+	streaming      bool
+	sampleTypeSet  bool     // true once SET_SAMPLE_TYPE has been issued
+	rates          []uint32 // supported sample rates, Hz, descending order
 }
 
 // Info implements sdr.Device.
@@ -361,7 +360,24 @@ func (d *Device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 		return nil, errors.New("airspy: stream already active")
 	}
 	d.streaming = true
+	needSampleType := !d.sampleTypeSet
 	d.mu.Unlock()
+
+	// Pin the device to INT16_IQ — the format the StreamIQ decoder
+	// expects. libairspy issues this inside airspy_start_rx rather
+	// than during open; mirroring that ordering avoids a firmware /
+	// Windows-driver NAK on the first vendor OUT (issue #270).
+	if needSampleType {
+		if err := d.t.ControlOut(reqSetSampleType, sampleTypeInt16IQ, 0, nil, controlTimeoutMs); err != nil {
+			d.mu.Lock()
+			d.streaming = false
+			d.mu.Unlock()
+			return nil, fmt.Errorf("airspy: set sample type: %w", err)
+		}
+		d.mu.Lock()
+		d.sampleTypeSet = true
+		d.mu.Unlock()
+	}
 
 	if err := d.setReceiver(receiverModeOn); err != nil {
 		d.mu.Lock()

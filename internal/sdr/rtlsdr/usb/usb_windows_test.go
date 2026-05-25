@@ -3,8 +3,12 @@
 package usb
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestParseDevicePath_RTLSDR(t *testing.T) {
@@ -98,5 +102,34 @@ func TestPlatformEnumeratorIsWinUSB(t *testing.T) {
 	e := DefaultEnumerator()
 	if got, want := e.Name(), "winusb"; got != want {
 		t.Errorf("backend Name() = %q, want %q", got, want)
+	}
+}
+
+func TestWinErr_GenFailureIsNotDeviceGone(t *testing.T) {
+	// ERROR_GEN_FAILURE used to be folded into ErrDeviceGone, which
+	// printed "usb: device disconnected" and misled the issue #270
+	// reporter when their (still-connected) Airspy NAK'd a vendor
+	// request. Keep them distinct.
+	got := winErr(windows.ERROR_GEN_FAILURE)
+	if errors.Is(got, ErrDeviceGone) {
+		t.Errorf("winErr(ERROR_GEN_FAILURE) erroneously folds into ErrDeviceGone: %v", got)
+	}
+	if !errors.Is(got, windows.ERROR_GEN_FAILURE) {
+		t.Errorf("winErr(ERROR_GEN_FAILURE) lost the underlying errno (need errors.Is to find it): %v", got)
+	}
+	if !strings.Contains(got.Error(), "ERROR_GEN_FAILURE") {
+		t.Errorf("winErr(ERROR_GEN_FAILURE) message should name the Win32 code: %q", got.Error())
+	}
+}
+
+func TestWinErr_DisconnectCodesMapToDeviceGone(t *testing.T) {
+	for _, errno := range []windows.Errno{
+		windows.ERROR_DEVICE_NOT_CONNECTED,
+		windows.ERROR_NO_SUCH_DEVICE,
+		windows.ERROR_DEV_NOT_EXIST,
+	} {
+		if got := winErr(errno); !errors.Is(got, ErrDeviceGone) {
+			t.Errorf("winErr(%v) = %v, want ErrDeviceGone", errno, got)
+		}
 	}
 }

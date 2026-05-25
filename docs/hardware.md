@@ -175,6 +175,13 @@ dropdown, choose the WinUSB driver, click Replace. See
 [`install-windows.md`]({{ '/install-windows.html' | relative_url }})
 for the click-by-click walkthrough.
 
+Airspy R2 / Mini in particular: the official Airspy installer
+typically binds **libusbK**, which is not the in-box WinUSB.sys
+GopherTrunk talks to. If `sdr list` shows the device but
+`gophertrunk -config …` fails on open with `winusb: device rejected
+request (ERROR_GEN_FAILURE …)`, re-bind to WinUSB via Zadig — the
+hardware is reachable but the function driver is mismatched.
+
 ## Verifying the build
 
 ```sh
