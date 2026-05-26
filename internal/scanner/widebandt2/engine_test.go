@@ -25,6 +25,17 @@ func t3System(name string, ccFreq uint32) trunking.System {
 	return trunking.System{Name: name, Protocol: trunking.ProtocolDMR, ControlChannels: []uint32{ccFreq}}
 }
 
+// p25Phase1System / p25Phase2System are test helpers for P25 wideband
+// channels — both phases run on declared control channels, just like
+// DMR Tier III.
+func p25Phase1System(name string, ccFreq uint32) trunking.System {
+	return trunking.System{Name: name, Protocol: trunking.ProtocolP25, ControlChannels: []uint32{ccFreq}}
+}
+
+func p25Phase2System(name string, ccFreq uint32) trunking.System {
+	return trunking.System{Name: name, Protocol: trunking.ProtocolP25Phase2, ControlChannels: []uint32{ccFreq}}
+}
+
 // mockDevice is a synchronous sdr.Device that emits a caller-supplied
 // sequence of IQ chunks, then closes the stream. The test goroutine
 // blocks on producing each chunk so the engine's loop is driven
@@ -308,6 +319,90 @@ func TestEngineRunSetsCenterFreqAndDrainsStream(t *testing.T) {
 	}
 	if got := len(e.Channels()); got != 2 {
 		t.Errorf("Channels() len = %d, want 2", got)
+	}
+}
+
+func TestEngineP25Phase1Channel(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	dev := newMockDevice(nil)
+	e, err := New(Options{
+		Device: dev, Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 851_500_000,
+		Channels: []ChannelConfig{{FrequencyHz: 851_037_500, SystemName: "p25-sys"}},
+		Systems:  []trunking.System{p25Phase1System("p25-sys", 851_037_500)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tags := e.ChannelProtocolTags()
+	if tags[851_037_500] != "p25-phase1" {
+		t.Errorf("tag = %q, want p25-phase1", tags[851_037_500])
+	}
+}
+
+func TestEngineP25Phase2Channel(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	dev := newMockDevice(nil)
+	e, err := New(Options{
+		Device: dev, Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 851_500_000,
+		Channels: []ChannelConfig{{FrequencyHz: 851_006_250, SystemName: "p25p2-sys"}},
+		Systems:  []trunking.System{p25Phase2System("p25p2-sys", 851_006_250)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tags := e.ChannelProtocolTags()
+	if tags[851_006_250] != "p25-phase2" {
+		t.Errorf("tag = %q, want p25-phase2", tags[851_006_250])
+	}
+}
+
+func TestEngineRejectsP25ChannelNotInCCList(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	dev := newMockDevice(nil)
+	// CC declared at 851_037_500 but the wideband channel claims
+	// 851_125_000 — must reject so we don't try to decode a TSBK
+	// chain on a voice carrier.
+	_, err := New(Options{
+		Device: dev, Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 851_500_000,
+		Channels: []ChannelConfig{{FrequencyHz: 851_125_000, SystemName: "p25-sys"}},
+		Systems:  []trunking.System{p25Phase1System("p25-sys", 851_037_500)},
+	})
+	if err == nil {
+		t.Fatal("expected error: P25 wideband channel must sit on a declared control channel")
+	}
+}
+
+func TestEngineMixedDMRAndP25Channels(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	dev := newMockDevice(nil)
+	// One wideband dongle hosts a DMR T2 cluster and a P25 Phase 1
+	// control channel at the other end of its IQ band. The dispatcher
+	// must pick the right state machine per channel based on the
+	// referenced system's protocol.
+	e, err := New(Options{
+		Device: dev, Bus: bus, SampleRateHz: 2_400_000, CenterFreqHz: 852_000_000,
+		Channels: []ChannelConfig{
+			{FrequencyHz: 851_037_500, SystemName: "p25-sys"},
+			{FrequencyHz: 852_775_000, SystemName: "t2-sys"},
+		},
+		Systems: []trunking.System{
+			p25Phase1System("p25-sys", 851_037_500),
+			t2System("t2-sys"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tags := e.ChannelProtocolTags()
+	if tags[851_037_500] != "p25-phase1" {
+		t.Errorf("freq 851_037_500 tag = %q, want p25-phase1", tags[851_037_500])
+	}
+	if tags[852_775_000] != "dmr-tier2" {
+		t.Errorf("freq 852_775_000 tag = %q, want dmr-tier2", tags[852_775_000])
 	}
 }
 

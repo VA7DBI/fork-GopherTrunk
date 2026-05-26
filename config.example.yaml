@@ -132,29 +132,40 @@ sdr:
       bias_tee: false
 
     # role: wideband pins one dongle to a centre frequency and lets a
-    # single SDR cover several DMR repeaters that all live inside its
+    # single SDR cover several carriers that all live inside its
     # IQ bandwidth (typically a 2.4 MHz cluster of carriers in the
-    # same band). The list of repeater frequencies is set per-dongle,
+    # same band). The list of channel frequencies is set per-dongle,
     # alongside the trunking.systems entry they decode against. The
     # daemon uses internal/dsp/tuner to extract a separate narrow-
-    # band stream per repeater - no extra hardware needed.
+    # band stream per channel - no extra hardware needed.
     #
     # Each channel references a trunking.systems entry whose protocol
     # determines the state machine:
-    #   protocol: dmr-tier2  → Tier II conventional carrier
-    #   protocol: dmr        → Tier III trunked control channel
-    #                          (frequency_hz must be in the system's
-    #                          control_channels list)
-    # T2 and T3 channels can mix on the same dongle. T3 voice grants
-    # still route to the daemon's physical voice pool; the wideband
-    # dongle decodes the CC, not the voice traffic.
+    #   protocol: dmr-tier2   → Tier II conventional carrier
+    #   protocol: dmr         → DMR Tier III trunked control channel
+    #                           (frequency_hz must be in the system's
+    #                           control_channels list)
+    #   protocol: p25         → P25 Phase 1 trunked control channel
+    #                           (frequency_hz must be in
+    #                           control_channels; respects the
+    #                           system's p25_phase1_demod_mode for
+    #                           C4FM vs CQPSK / LSM simulcast)
+    #   protocol: p25-phase2  → P25 Phase 2 trunked control channel
+    #                           (frequency_hz must be in
+    #                           control_channels; respects the
+    #                           per-system p25_phase2_* mode keys)
+    #
+    # Channels of any supported protocol can mix on the same dongle.
+    # Trunked CC channels (dmr / p25 / p25-phase2) decode the control
+    # channel only; voice grants still route to the daemon's physical
+    # voice pool (a role: voice SDR alongside the wideband dongle).
     #
     # Constraints (validated at load time):
     #   - serial must match a discovered dongle
     #   - every channel frequency_hz must be within
     #     center_freq_hz ± sample_rate/2 with a 5% guard at each edge
     #   - each referenced system must be declared in trunking.systems
-    #     below with protocol: dmr-tier2 or protocol: dmr
+    #     below with one of the supported protocols listed above
     #
     # tuner_strategy:
     #   auto       (default) - ddc for ≤ 6 channels, polyphase above
@@ -183,6 +194,29 @@ sdr:
     #   channels:
     #     - frequency_hz: 851_037_500
     #       system: "regional-dmr-t3"
+    #
+    # P25 Phase 1 control channel on a wideband dongle. The
+    # referenced system carries `protocol: p25` and the
+    # channel's frequency_hz must appear in its control_channels.
+    # Honours `p25_phase1_demod_mode` (c4fm vs cqpsk / LSM) on the
+    # system entry just like a dedicated CC dongle.
+    # - serial: "00000005"
+    #   role: wideband
+    #   center_freq_hz: 851_500_000
+    #   channels:
+    #     - frequency_hz: 851_037_500
+    #       system: "regional-p25"
+    #
+    # P25 Phase 2 control channel on a wideband dongle. The
+    # referenced system carries `protocol: p25-phase2`; the
+    # `p25_phase2_*` mode knobs (trellis / RS / interleave /
+    # scrambler / clock) on the system apply transparently.
+    # - serial: "00000006"
+    #   role: wideband
+    #   center_freq_hz: 851_500_000
+    #   channels:
+    #     - frequency_hz: 851_006_250
+    #       system: "regional-p25-p2"
 
   # rtl_tcp remote SDRs. Each entry mounts a host:port rtl_tcp server
   # as a virtual tuner alongside any local USB dongles. Use when the

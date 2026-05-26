@@ -179,14 +179,56 @@ func TestValidate(t *testing.T) {
 				},
 			}}},
 		}, true},
-		{"wideband non-dmr protocol", Config{
+		// P25 Phase 1 wideband CC tap (parallel to the T3 case above):
+		// channel must sit on one of the system's declared
+		// control_channels because a Phase 1 trunked control channel
+		// IS one.
+		{"wideband P25 Phase 1 ok", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 851_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 851_037_500, System: "regional-p25"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{
+				Name: "regional-p25", Protocol: "p25",
+				ControlChannels: []uint32{851_037_500},
+			}}},
+		}, false},
+		{"wideband P25 Phase 1 channel not in CC list", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 851_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 851_125_000, System: "regional-p25"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{
+				Name: "regional-p25", Protocol: "p25",
+				ControlChannels: []uint32{851_037_500},
+			}}},
+		}, true},
+		{"wideband P25 Phase 2 ok", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 851_500_000,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 851_006_250, System: "regional-p2"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{
+				Name: "regional-p2", Protocol: "p25-phase2",
+				ControlChannels: []uint32{851_006_250},
+			}}},
+		}, false},
+		// Non-trunked protocols are still rejected — wideband doesn't
+		// host NXDN / EDACS / etc. yet.
+		{"wideband unsupported protocol", Config{
 			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
 				Serial: "00000010", Role: "wideband", CenterFreqHz: 453_500_000,
 				Channels: []DeviceChannelConfig{
-					{FrequencyHz: 453_125_000, System: "p25-sys"},
+					{FrequencyHz: 453_125_000, System: "nxdn-sys"},
 				},
 			}}},
-			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "p25-sys", Protocol: "p25"}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "nxdn-sys", Protocol: "nxdn"}}},
 		}, true},
 		{"wideband duplicate frequency", Config{
 			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
