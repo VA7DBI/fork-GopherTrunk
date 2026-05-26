@@ -188,8 +188,12 @@ func (e *Engine) HandleGrant(g Grant) {
 		}
 	}
 
-	// 1) Free device available? Allocate.
-	if free := e.pool.FindFree(); free != nil {
+	// 1) Free device available? Allocate. FindFreeForFrequency skips
+	// virtual voice tuners whose wideband window doesn't cover the
+	// grant — so a P25 voice grant outside the wideband band falls
+	// through to a physical role: voice SDR (when one is configured)
+	// instead of bouncing on a tap that would reject it at Bind time.
+	if free := e.pool.FindFreeForFrequency(g.FrequencyHz); free != nil {
 		e.startCall(free, g, tg)
 		return
 	}

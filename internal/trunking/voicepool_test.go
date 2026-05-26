@@ -106,6 +106,53 @@ func TestPoolReleaseReturnsActiveCall(t *testing.T) {
 	}
 }
 
+// constrainedTuner implements FrequencyChecker by rejecting any
+// frequency outside [lo, hi]. Used to verify FindFreeForFrequency
+// skips it when an out-of-range grant arrives.
+type constrainedTuner struct {
+	lo, hi uint32
+	freqs  []uint32
+}
+
+func (c *constrainedTuner) SetCenterFreq(hz uint32) error {
+	c.freqs = append(c.freqs, hz)
+	return nil
+}
+
+func (c *constrainedTuner) CanTune(hz uint32) bool {
+	return hz >= c.lo && hz <= c.hi
+}
+
+func TestFindFreeForFrequencySkipsConstrainedTuner(t *testing.T) {
+	// Two devices: one constrained (only serves 851 MHz band), one
+	// universal (physical SDR — no FrequencyChecker). For a 900 MHz
+	// grant, FindFreeForFrequency must return the universal one.
+	constrained := &constrainedTuner{lo: 851_000_000, hi: 852_000_000}
+	universal := &fakeVoiceTuner{}
+	p := NewVoicePool([]*VoiceDevice{
+		{Tuner: constrained, Serial: "wb-tap"},
+		{Tuner: universal, Serial: "phys"},
+	})
+	got := p.FindFreeForFrequency(900_000_000)
+	if got == nil || got.Serial != "phys" {
+		t.Errorf("FindFreeForFrequency(900 MHz) = %+v, want phys", got)
+	}
+	// In-range grant takes the first free device (constrained,
+	// because it's listed first).
+	got = p.FindFreeForFrequency(851_500_000)
+	if got == nil || got.Serial != "wb-tap" {
+		t.Errorf("FindFreeForFrequency(851.5 MHz) = %+v, want wb-tap", got)
+	}
+}
+
+func TestFindFreeForFrequencyReturnsNilWhenAllReject(t *testing.T) {
+	constrained := &constrainedTuner{lo: 851_000_000, hi: 852_000_000}
+	p := NewVoicePool([]*VoiceDevice{{Tuner: constrained, Serial: "wb-tap"}})
+	if got := p.FindFreeForFrequency(900_000_000); got != nil {
+		t.Errorf("FindFreeForFrequency on lone out-of-range tuner = %+v, want nil", got)
+	}
+}
+
 func TestLowestPriorityActiveSelectsLeastImportant(t *testing.T) {
 	p, _ := mkPool(3)
 	for i, prio := range []int{2, 7, 5} {
