@@ -30,13 +30,13 @@ func newFakeDevice() *fakeDevice {
 	}
 }
 
-func (f *fakeDevice) Info() sdr.Info                     { return f.info }
-func (f *fakeDevice) SetCenterFreq(uint32) error         { return nil }
-func (f *fakeDevice) SetSampleRate(uint32) error         { return nil }
-func (f *fakeDevice) SetGain(int) error                  { return nil }
-func (f *fakeDevice) SetPPM(int) error                   { return nil }
-func (f *fakeDevice) SetBiasTee(bool) error              { return nil }
-func (f *fakeDevice) Close() error                       { return nil }
+func (f *fakeDevice) Info() sdr.Info             { return f.info }
+func (f *fakeDevice) SetCenterFreq(uint32) error { return nil }
+func (f *fakeDevice) SetSampleRate(uint32) error { return nil }
+func (f *fakeDevice) SetGain(int) error          { return nil }
+func (f *fakeDevice) SetPPM(int) error           { return nil }
+func (f *fakeDevice) SetBiasTee(bool) error      { return nil }
+func (f *fakeDevice) Close() error               { return nil }
 func (f *fakeDevice) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -47,10 +47,10 @@ func (f *fakeDevice) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 func TestNewValidatesInputs(t *testing.T) {
 	broker := iqtap.New(newFakeDevice(), 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	cases := map[string]Options{
-		"missing broker":  {Serial: "x", WidebandCenterHz: 851_000_000, SDRSampleRateHz: 2_400_000},
-		"missing center":  {Serial: "x", Broker: broker, SDRSampleRateHz: 2_400_000},
-		"missing rate":    {Serial: "x", Broker: broker, WidebandCenterHz: 851_000_000},
-		"missing serial":  {Broker: broker, WidebandCenterHz: 851_000_000, SDRSampleRateHz: 2_400_000},
+		"missing broker": {Serial: "x", WidebandCenterHz: 851_000_000, SDRSampleRateHz: 2_400_000},
+		"missing center": {Serial: "x", Broker: broker, SDRSampleRateHz: 2_400_000},
+		"missing rate":   {Serial: "x", Broker: broker, WidebandCenterHz: 851_000_000},
+		"missing serial": {Broker: broker, WidebandCenterHz: 851_000_000, SDRSampleRateHz: 2_400_000},
 	}
 	for name, opts := range cases {
 		t.Run(name, func(t *testing.T) {
