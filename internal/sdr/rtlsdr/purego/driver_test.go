@@ -482,10 +482,10 @@ func TestOpenDevice_WarmupPipeStalledTriggersResetAndRetry(t *testing.T) {
 func TestOpenDevice_BringupPipeStalled_TriggersFullReset(t *testing.T) {
 	m := usb.NewMockTransport()
 	m.Script = []usb.CtrlExchange{
-		warmupUSBSysctlExchange(nil),                  // pass 1: warmup OK
-		warmupUSBSysctlExchange(usb.ErrPipeStalled),   // pass 1: InitBaseband step 0 stalls
-		warmupUSBSysctlExchange(nil),                  // pass 2: warmup OK (post clear-halt)
-		warmupUSBSysctlExchange(usb.ErrTimeout),       // pass 2: terminate early
+		warmupUSBSysctlExchange(nil),                // pass 1: warmup OK
+		warmupUSBSysctlExchange(usb.ErrPipeStalled), // pass 1: InitBaseband step 0 stalls
+		warmupUSBSysctlExchange(nil),                // pass 2: warmup OK (post clear-halt)
+		warmupUSBSysctlExchange(usb.ErrTimeout),     // pass 2: terminate early
 	}
 	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-bringup-pipestalled-retry"}
 	_, err := openDevice(m, desc, 0)
