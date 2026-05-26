@@ -29,6 +29,11 @@ type Engine struct {
 	now        func() time.Time
 	sub        *events.Subscription
 	closeOnce  sync.Once
+	// noVoiceSDROnce gates the actionable "no voice SDR" warning so
+	// it logs once per Engine lifetime instead of once per grant.
+	// Subsequent grants on an empty pool drop at DEBUG. Reset when
+	// the engine is reconstructed (daemon reload / restart).
+	noVoiceSDROnce sync.Once
 
 	// scanMode is read under modeMu so the API cockpit can flip it at
 	// runtime without a daemon restart. HandleGrant takes a snapshot
@@ -191,8 +196,23 @@ func (e *Engine) HandleGrant(g Grant) {
 	// 2) All busy. Look at the lowest-priority active call.
 	victim := e.pool.LowestPriorityActive()
 	if victim == nil {
-		// Shouldn't happen: pool was full but has no actives. Drop.
-		e.log.Warn("voice pool full but no actives", "grant", g.String())
+		// FindFree() and LowestPriorityActive() both nil means the
+		// pool has zero devices — trunking is configured but no
+		// `role: voice` SDR is attached, so every grant is dropped.
+		// Log loudly once with the fix, then DEBUG for the rest of
+		// the daemon's life so we don't spam one WARN per grant.
+		if len(e.pool.Devices()) == 0 {
+			e.noVoiceSDROnce.Do(func() {
+				e.log.Warn("no voice SDR available; voice grants will be dropped — add a role: voice device (see docs/hardware.md)",
+					"grant", g.String())
+			})
+			e.log.Debug("dropping grant: no voice SDR", "grant", g.String())
+			return
+		}
+		// Devices > 0 but no actives recorded — should be
+		// unreachable: a busy device always contributes an active.
+		// Surface as Error so the bug is visible in logs.
+		e.log.Error("voice pool full but no actives (engine bug)", "grant", g.String())
 		return
 	}
 	if !CanPreempt(victim.Grant, victim.Talkgroup, g, tg) {
