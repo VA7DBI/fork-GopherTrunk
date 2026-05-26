@@ -49,6 +49,8 @@ groups:
         url: /voice-calibration.html
       - title: DMR encryption
         url: /dmr-encryption.html
+      - title: POCSAG paging
+        url: /pocsag.html
       - title: Opt-in features
         url: /opt-in-features.html
       - title: Status

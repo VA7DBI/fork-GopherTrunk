@@ -9,6 +9,20 @@ for tagged releases.
 
 ### Added
 
+- **POCSAG paging protocol layer.** First slice of Phase 3 of the
+  trunking-adjacent feature plan (#365). Adds BCH(31,21)
+  encode/decode (corrects up to 2 bit errors per codeword) plus
+  the POCSAG-specific codeword wrapper (sync `0x7CD215D8` + idle
+  `0x7A89C197` recognition, trailing overall-parity check,
+  address/message/function decoding), batch carve-up (sync + 16
+  codewords × 8 frame slots, full-RIC reconstruction from the
+  18-bit address-codeword field + slot index), and the
+  numeric (CCIR 584 extended BCD: 0-9, *, U, space, -, ), ( ) +
+  alphanumeric (7-bit LSB-first ASCII) message decoders. Pure
+  protocol — the DSP wiring (FM demod → bit slicer → sync
+  detector → batch decoder → bus event → SQLite log → web/TUI
+  panel) lands in a focused follow-up PR. See
+  [docs/pocsag.md](docs/pocsag.md).
 - **Spectrum panel: click-to-tune + bookmark markers.** Closes the
   click-to-tune TODO from the bookmarks PR (#368). Clicking
   anywhere on the waterfall canvas now posts the bin's centre
