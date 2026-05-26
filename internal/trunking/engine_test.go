@@ -1,7 +1,10 @@
 package trunking
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -518,6 +521,53 @@ func TestEngineHandleCallEncryptionUnknownDeviceDoesNotPanic(t *testing.T) {
 		AlgorithmID:  0x84,
 		KeyID:        0x1234,
 	})
+}
+
+func TestEngineEmptyVoicePoolWarnsOnceThenDebug(t *testing.T) {
+	// Issue #379: a daemon with trunking systems but zero `role: voice`
+	// SDRs builds an empty VoicePool. Every grant used to log a
+	// misleading "voice pool full but no actives" warning. The engine
+	// now logs one actionable WARN and drops the rest at DEBUG.
+	bus := events.NewBus(8)
+	defer bus.Close()
+	pool, _ := mkPool(0)
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	e, err := NewEngine(EngineOptions{
+		Bus:        bus,
+		Log:        log,
+		VoicePool:  pool,
+		Talkgroups: NewTalkgroupDB(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	g := Grant{System: "X", Protocol: "p25", GroupID: 1, FrequencyHz: 851_000_000}
+	e.HandleGrant(g)
+	e.HandleGrant(g)
+	e.HandleGrant(g)
+
+	out := buf.String()
+	// Misleading legacy message must be gone.
+	if strings.Contains(out, "voice pool full but no actives") {
+		t.Errorf("legacy misleading warning still present:\n%s", out)
+	}
+	// Actionable WARN logged exactly once across three grants.
+	warnCount := strings.Count(out, "level=WARN")
+	if warnCount != 1 {
+		t.Errorf("expected exactly one WARN, got %d:\n%s", warnCount, out)
+	}
+	if !strings.Contains(out, "no voice SDR available") {
+		t.Errorf("expected actionable WARN about missing voice SDR:\n%s", out)
+	}
+	// Every grant drops at DEBUG; the first also emits the one-shot WARN.
+	debugCount := strings.Count(out, `msg="dropping grant: no voice SDR"`)
+	if debugCount != 3 {
+		t.Errorf("expected 3 DEBUG drops (one per grant), got %d:\n%s", debugCount, out)
+	}
 }
 
 func TestEngineHandleCallEncryptionEnrichedRepublishDoesNotLoop(t *testing.T) {

@@ -1092,6 +1092,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		"systems", len(d.systems),
 		"voice_devices", len(d.voicePool.Devices()),
 	)
+	// Catch the single-SDR-control-only setup early: trunking systems
+	// declared but no `role: voice` SDR means every grant will drop at
+	// HandleGrant. Warn once at startup so the operator sees it before
+	// the first grant. Issue #379.
+	if len(d.systems) > 0 && len(d.voicePool.Devices()) == 0 {
+		d.log.Warn("no voice SDR configured but trunking systems are defined; voice grants will be dropped — add a role: voice device (see docs/hardware.md)",
+			"systems", len(d.systems))
+	}
 
 	// Wrap ctx so an essential component error can cancel siblings.
 	runCtx, cancel := context.WithCancel(ctx)
