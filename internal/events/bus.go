@@ -104,6 +104,13 @@ const (
 	KindBookmarkCreated Kind = "bookmark.created"
 	KindBookmarkUpdated Kind = "bookmark.updated"
 	KindBookmarkDeleted Kind = "bookmark.deleted"
+	// KindPagerMessage fires when the POCSAG decoder finishes
+	// reassembling one page (address codeword + 0..N message
+	// codewords, terminated by an idle or next address). Payload
+	// is a storage.PagerMessage carrying RIC + function +
+	// decoded text + per-page bit-error count. Surfaced over SSE /
+	// WS for the live pager panel.
+	KindPagerMessage Kind = "pager.message"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol

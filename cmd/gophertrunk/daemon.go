@@ -102,6 +102,7 @@ type Daemon struct {
 	callLog      *storage.CallLog
 	locationLog  *storage.LocationLog
 	bookmarks    *storage.BookmarkStore
+	pagerLog     *storage.PagerLog
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -845,6 +846,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.bookmarks = bs
 
+		pl, err := storage.NewPagerLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: pager log: %w", err)
+		}
+		d.pagerLog = pl
+
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
 			if err != nil {
@@ -900,6 +908,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.bookmarks != nil {
 			opts.Bookmarks = bookmarkProvider{store: d.bookmarks}
+		}
+		if d.pagerLog != nil {
+			opts.Pager = pagerProvider{log: d.pagerLog}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1045,6 +1056,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.locationLog != nil {
 		d.spawn(runCtx, "locationlog", false, func(ctx context.Context) error {
 			return d.locationLog.Run(ctx)
+		})
+	}
+	if d.pagerLog != nil {
+		d.spawn(runCtx, "pagerlog", false, func(ctx context.Context) error {
+			return d.pagerLog.Run(ctx)
 		})
 	}
 	if d.messageLog != nil {
@@ -1232,6 +1248,9 @@ func (d *Daemon) Close() {
 		}
 		if d.locationLog != nil {
 			_ = d.locationLog.Close()
+		}
+		if d.pagerLog != nil {
+			_ = d.pagerLog.Close()
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
@@ -1811,4 +1830,13 @@ func (p bookmarkProvider) DeleteBookmark(id int64) error {
 	ctx, cancel := p.ctx()
 	defer cancel()
 	return p.store.Delete(ctx, id)
+}
+
+// pagerProvider adapts storage.PagerLog into the api.PagerProvider
+// interface so the api package can stay free of the storage import
+// dependency. Read-only — the decoder writes via the events bus.
+type pagerProvider struct{ log *storage.PagerLog }
+
+func (p pagerProvider) RecentPagerMessages(limit int) ([]storage.PagerMessage, error) {
+	return p.log.Recent(limit)
 }
