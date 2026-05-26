@@ -31,6 +31,8 @@ groups:
         url: /import.html
       - title: Bookmarks
         url: /bookmarks.html
+      - title: CC Activity
+        url: /cc-activity.html
       - title: rigctld integration
         url: /rigctld.html
       - title: Hardening

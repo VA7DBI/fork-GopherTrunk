@@ -8,6 +8,7 @@ import { AudioPlayer } from "./components/AudioPlayer";
 import { InstallPrompt } from "./components/InstallPrompt";
 import { Active } from "./panels/Active";
 import { Bookmarks } from "./panels/Bookmarks";
+import { CCActivity } from "./panels/CCActivity";
 import { Dashboard } from "./panels/Dashboard";
 import { Devices } from "./panels/Devices";
 import { Events } from "./panels/Events";
@@ -33,6 +34,7 @@ const EXTRA_TABS: Tab[] = [
   { to: "/talkgroups", label: "Talkgroups", icon: "☷" },
   { to: "/history", label: "History", icon: "↺" },
   { to: "/events", label: "Events", icon: "≣" },
+  { to: "/cc", label: "CC Activity", icon: "⌁" },
   { to: "/tones", label: "Tones", icon: "♪" },
   { to: "/spectrum", label: "Spectrum", icon: "≈" },
   { to: "/bookmarks", label: "Bookmarks", icon: "★" },
@@ -139,6 +141,7 @@ export function App() {
           <Route path="/talkgroups" element={<Talkgroups />} />
           <Route path="/history" element={<History />} />
           <Route path="/events" element={<Events />} />
+          <Route path="/cc" element={<CCActivity />} />
           <Route path="/tones" element={<Tones />} />
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/devices" element={<Devices />} />
