@@ -1026,9 +1026,13 @@ func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, system
 		case "dmr-tier2", "dmr_tier2", "dmr-t2", "dmrtier2":
 			// Tier II conventional - channel freq is a repeater carrier,
 			// no relationship to system.ControlChannels required.
-		case "dmr":
-			// Tier III trunked - the wideband channel MUST be one of
-			// the system's declared control channels.
+		case "dmr", "p25", "p25-phase2", "p25_phase2", "p25p2":
+			// Trunked control-channel protocols — the wideband channel
+			// MUST be one of the system's declared control channels.
+			// Tier III DMR's CSBK chain, P25 Phase 1's TSBK chain, and
+			// P25 Phase 2's H-DQPSK MAC chain all run on a frequency
+			// the system advertises in control_channels; voice grants
+			// hop elsewhere.
 			matched := false
 			for _, cc := range sys.ControlChannels {
 				if cc == ch.FrequencyHz {
@@ -1039,13 +1043,14 @@ func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, system
 			if !matched {
 				return fmt.Errorf(
 					"sdr.devices[%d].channels[%d]: frequency_hz %d does not match any of system %q's "+
-						"control_channels %v (wideband T3 channels must sit on a declared control channel)",
-					idx, j, ch.FrequencyHz, ch.System, sys.ControlChannels)
+						"control_channels %v (wideband %s channels must sit on a declared control channel)",
+					idx, j, ch.FrequencyHz, ch.System, sys.ControlChannels, sys.Protocol)
 			}
 		default:
 			return fmt.Errorf(
-				"sdr.devices[%d].channels[%d]: system %q has protocol %q; wideband currently supports dmr-tier2 "+
-					"(Tier II conventional) and dmr (Tier III trunked control channel)",
+				"sdr.devices[%d].channels[%d]: system %q has protocol %q; wideband currently supports "+
+					"dmr-tier2 (Tier II conventional), dmr (Tier III trunked control channel), "+
+					"p25 (Phase 1 trunked control channel), and p25-phase2 (Phase 2 trunked control channel)",
 				idx, j, ch.System, sys.Protocol)
 		}
 		offset := float64(ch.FrequencyHz) - float64(d.CenterFreqHz)

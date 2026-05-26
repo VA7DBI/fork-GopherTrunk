@@ -295,6 +295,41 @@ The engine picks the right state machine per channel (Tier III's
 `ControlChannel` for `protocol: dmr`, Tier II's `ConventionalChannel`
 for `protocol: dmr-tier2`).
 
+### P25 trunked control channel on a wideband dongle
+
+A wideband dongle can also host a P25 control channel — Phase 1 (C4FM
+or CQPSK / LSM simulcast) or Phase 2 (H-DQPSK TDMA). The configuration
+mirrors the DMR Tier III case: the wideband channel sits on the
+system's declared `control_channels`, and the engine decodes the TSBK
+(Phase 1) or MAC PDU (Phase 2) chain inline. Voice grants ride on the
+existing physical voice pool — see the "Limits" section below.
+
+```yaml
+sdr:
+  devices:
+    - serial: "00000003"
+      role: wideband
+      center_freq_hz: 851_500_000
+      channels:
+        - frequency_hz: 851_037_500       # P25 Phase 1 CC
+          system: "regional-p25"
+
+trunking:
+  systems:
+    - name: "regional-p25"
+      protocol: p25                       # Phase 1
+      control_channels: [851_037_500]     # MUST include the wideband channel above
+      # On a simulcast site whose CC is transmitted as Linear
+      # Simulcast Modulation rather than C4FM, opt in to the
+      # linear-CQPSK demod path:
+      # p25_phase1_demod_mode: cqpsk
+```
+
+For P25 Phase 2 use `protocol: p25-phase2`; the same per-system
+`p25_phase2_*` knobs (trellis / RS / interleave / scrambler / clock
+mode) that apply to a dedicated CC SDR apply to the wideband channel
+too — see the trunking systems section of `config.example.yaml`.
+
 T3 voice grants are published on the bus and routed to the daemon's
 existing physical voice pool — add a `role: voice` SDR alongside the
 wideband dongle if you want voice decoded. The follow-up work to
@@ -324,14 +359,17 @@ message that names the offending entry.
 
 ### Limits
 
-- **DMR only.** Wideband supports `protocol: dmr-tier2` (Tier II
-  conventional) and `protocol: dmr` (Tier III trunked control
-  channel). Other protocols (P25, NXDN, TETRA, …) and Tier III
-  voice grants on the wideband dongle itself are not in scope yet —
-  see "Tier III voice" below.
-- **Tier III voice still needs a physical Voice SDR.** When the
-  wideband T3 tap decodes a grant, the daemon's existing voice pool
-  retunes a `role: voice` dongle to follow the call. The wideband
+- **DMR + P25.** Wideband supports `protocol: dmr-tier2` (Tier II
+  conventional), `protocol: dmr` (Tier III trunked control channel),
+  `protocol: p25` (P25 Phase 1 trunked control channel — C4FM and
+  CQPSK / LSM simulcast), and `protocol: p25-phase2` (P25 Phase 2
+  H-DQPSK trunked control channel). Other protocols (NXDN, TETRA,
+  …) and trunked **voice** grants on the wideband dongle itself are
+  not in scope yet — see "Trunked voice" below.
+- **Trunked voice still needs a physical Voice SDR.** When a
+  wideband trunked CC tap (DMR T3, P25 Phase 1, P25 Phase 2)
+  decodes a grant, the daemon's existing voice pool retunes a
+  `role: voice` dongle to follow the call. The wideband
   dongle decodes the CC; voice rides on the regular pool. A
   follow-up will add a virtual voice pool that allocates a tuner
   tap from the wideband dongle for each grant, removing the need

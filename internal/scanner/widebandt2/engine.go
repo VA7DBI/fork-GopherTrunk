@@ -1,11 +1,11 @@
-// Package widebandt2 monitors several DMR repeaters with a single SDR
-// dongle. The dongle is pinned to a configured centre frequency; an
-// internal/dsp/tuner.Bank extracts one narrow-band IQ stream per
-// repeater carrier inside the dongle's IQ band; each stream feeds a
-// DMR receiver and a per-channel state machine that publishes
-// cc.locked / grant events on the bus.
+// Package widebandt2 monitors several trunked / conventional carriers
+// with a single SDR dongle. The dongle is pinned to a configured centre
+// frequency; an internal/dsp/tuner.Bank extracts one narrow-band IQ
+// stream per channel inside the dongle's IQ band; each stream feeds a
+// protocol-specific receiver and per-channel state machine that
+// publishes cc.locked / grant events on the bus.
 //
-// Two DMR variants are supported as channel state machines:
+// Supported channel state machines:
 //
 //   - DMR Tier II conventional (config protocol "dmr-tier2"). Each
 //     channel is a per-repeater carrier; the state machine
@@ -14,12 +14,24 @@
 //   - DMR Tier III trunked control channel (config protocol "dmr").
 //     The channel frequency must match one of the system's
 //     control_channels; the state machine (radio/dmr/tier3) emits
-//     grants from the CSBK chain. The published grants flow through
-//     the trunking engine's existing voice-pool allocator, which
-//     binds them to a physical role: voice dongle. Voice grants are
-//     not (yet) decoded by the wideband dongle itself — that needs
-//     a per-call narrow-band composer chain which is roadmapped as
-//     a follow-up.
+//     grants from the CSBK chain.
+//
+//   - P25 Phase 1 trunked control channel (config protocol "p25").
+//     The channel frequency must match one of the system's
+//     control_channels; the state machine (radio/p25/phase1) emits
+//     grants from the TSBK chain. C4FM vs CQPSK / LSM is selected
+//     via the system's p25_phase1_demod_mode key.
+//
+//   - P25 Phase 2 trunked control channel (config protocol
+//     "p25-phase2"). The channel frequency must match one of the
+//     system's control_channels; the state machine
+//     (radio/p25/phase2) consumes superframes assembled by the
+//     receiver and emits grants from the MAC PDU chain.
+//
+// Published grants flow through the trunking engine's existing
+// voice-pool allocator, which binds them to a physical role: voice
+// dongle. Voice grants are not (yet) decoded by the wideband dongle
+// itself — that's the "virtual voice pool" follow-up.
 //
 // One Engine owns one wideband SDR. Multiple wideband dongles each
 // get their own Engine; they run independently and share only the
@@ -36,9 +48,14 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/tuner"
 	"github.com/MattCheramie/GopherTrunk/internal/events"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/dmr"
-	"github.com/MattCheramie/GopherTrunk/internal/radio/dmr/receiver"
+	dmrrx "github.com/MattCheramie/GopherTrunk/internal/radio/dmr/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/dmr/tier2"
 	"github.com/MattCheramie/GopherTrunk/internal/radio/dmr/tier3"
+	"github.com/MattCheramie/GopherTrunk/internal/radio/framing"
+	p25phase1 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
+	p25phase1rx "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1/receiver"
+	p25phase2 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase2"
+	p25phase2rx "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase2/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
@@ -50,16 +67,28 @@ import (
 // down-converter targets.
 const narrowbandRateHz = 48_000.0
 
-// DMR receiver loop-gain + deviation values mirror the per-pipeline
-// settings the single-frequency CC decoder uses, so wideband-
-// channelized streams behave identically to the dedicated-dongle
-// path. ETSI TS 102 361-1 §6.3 pins the peak deviation at 1944 Hz at
-// symbol ±3; T2's harder symbol distribution (mean transition
-// magnitude 1.27 vs T3's 0.90) needs a more conservative loop gain.
+// Per-protocol receiver constants mirror the per-pipeline settings the
+// single-frequency CC decoder uses, so wideband-channelized streams
+// behave identically to the dedicated-dongle path.
+//
+// DMR (ETSI TS 102 361-1 §6.3): peak deviation 1944 Hz at symbol ±3.
+// T2's harder symbol distribution (mean transition magnitude 1.27 vs
+// T3's 0.90) needs a more conservative loop gain.
+//
+// P25 Phase 1 (TIA-102.BAAA-A): nominal peak deviation 1800 Hz at
+// symbol ±3. Only consulted on the C4FM path; the CQPSK / LSM path
+// is amplitude-invariant after the matched filter.
+//
+// P25 Phase 2 (TIA-102.BBAC): H-DQPSK at 6000 symbols/s. The
+// pipeline factory's tuned Gardner gain (0.005) matches PR #154's
+// observation that π/4-DQPSK family signals slip differently than
+// C4FM at the receiver's default gain.
 const (
-	deviationHz    = 1944.0
-	clockGainTier2 = 0.015 // matches newDMRTier2Pipeline in ccdecoder
-	clockGainTier3 = 0.025 // matches newDMRTier3Pipeline in ccdecoder
+	dmrDeviationHz       = 1944.0
+	dmrClockGainTier2    = 0.015 // matches newDMRTier2Pipeline in ccdecoder
+	dmrClockGainTier3    = 0.025 // matches newDMRTier3Pipeline in ccdecoder
+	p25Phase1DeviationHz = 1800.0
+	p25Phase2GardnerGain = 0.005
 )
 
 // guardFrac is the fraction of the IQ band the tuner reserves at
@@ -141,20 +170,33 @@ type Engine struct {
 	strategyTag string
 }
 
-// channelProcessor is the per-channel dibit consumer. Tier II's
-// ConventionalChannel and Tier III's ControlChannel both expose
+// channelProcessor is the per-channel dibit consumer. DMR Tier II's
+// ConventionalChannel, DMR Tier III's ControlChannel, P25 Phase 1's
+// ControlChannel and P25 Phase 2's ControlChannel all expose
 // Process(dibits []uint8, baseIdx int) int with the same semantics, so
-// the engine treats them uniformly.
+// the engine treats them uniformly. (Phase 2's ControlChannel also
+// exposes IngestSuperframe; the build function wires the receiver's
+// DibitSink through a SuperframeDecoder before calling Process so the
+// engine still only sees a dibit-shaped processor.)
 type channelProcessor interface {
 	Process(dibits []uint8, baseIdx int) int
+}
+
+// narrowbandReceiver consumes the per-channel narrowband IQ stream.
+// Every protocol's receiver (DMR, P25 Phase 1, P25 Phase 2) implements
+// Process([]complex64) — the engine doesn't care which one it holds,
+// only that the receiver's DibitSink is already wired to the channel's
+// channelProcessor at construction.
+type narrowbandReceiver interface {
+	Process(iq []complex64)
 }
 
 type engineChannel struct {
 	freqHz    uint32
 	sysName   string
-	protoTag  string // "dmr-tier2" or "dmr-tier3"
+	protoTag  string // e.g. "dmr-tier2", "dmr-tier3", "p25-phase1", "p25-phase2"
 	processor channelProcessor
-	receiver  *receiver.Receiver
+	receiver  narrowbandReceiver
 }
 
 // New constructs an Engine. The device is not opened or streamed
@@ -218,37 +260,9 @@ func New(opts Options) (*Engine, error) {
 				ch.FrequencyHz, ch.SystemName)
 		}
 		offset := float64(ch.FrequencyHz) - float64(opts.CenterFreqHz)
-		processor, protoTag, err := buildProcessor(sys, ch.FrequencyHz, opts.Bus, log, opts.Now)
+		ec, err := buildChannel(sys, ch, opts.Bus, log, opts.Now)
 		if err != nil {
 			return nil, err
-		}
-		// DibitSink hands the receiver's dibits to the
-		// per-channel state machine's Process adapter. Both
-		// tier2.ConventionalChannel and tier3.ControlChannel
-		// satisfy channelProcessor; the adapter buffers across
-		// calls, runs sync detection, frames bursts, and emits
-		// cc.locked / grant events on the bus.
-		dibitSink := func(p channelProcessor) dmr.DibitSink {
-			return func(dibits []uint8, baseIdx int) {
-				p.Process(dibits, baseIdx)
-			}
-		}(processor)
-		clockGain := clockGainTier2
-		if protoTag == "dmr-tier3" {
-			clockGain = clockGainTier3
-		}
-		rcv := receiver.New(receiver.Options{
-			SampleRateHz: narrowbandRateHz,
-			DibitSink:    dibitSink,
-			DeviationHz:  deviationHz,
-			ClockGain:    clockGain,
-		})
-		ec := &engineChannel{
-			freqHz:    ch.FrequencyHz,
-			sysName:   ch.SystemName,
-			protoTag:  protoTag,
-			processor: processor,
-			receiver:  rcv,
 		}
 		sink := func(ec *engineChannel) tuner.SinkFunc {
 			return func(out []complex64) {
@@ -267,23 +281,22 @@ func New(opts Options) (*Engine, error) {
 	return engine, nil
 }
 
-// buildProcessor instantiates the right DMR state machine for a
-// channel: Tier III ControlChannel for protocol "dmr" (the channel
-// frequency must be one of the system's control_channels), Tier II
-// ConventionalChannel for protocol "dmr-tier2".
-func buildProcessor(sys trunking.System, freqHz uint32, bus *events.Bus, log *slog.Logger, now func() time.Time) (channelProcessor, string, error) {
+// buildChannel instantiates the right per-protocol receiver and state
+// machine for a wideband channel. Trunked control-channel protocols
+// (DMR Tier III, P25 Phase 1, P25 Phase 2) require the channel
+// frequency to match one of the system's declared control_channels;
+// DMR Tier II is conventional and accepts any per-repeater carrier.
+//
+// The returned engineChannel has its receiver's DibitSink already wired
+// to the per-channel state machine — the caller just pumps IQ into
+// receiver.Process and the bus picks up cc.locked / grant events as
+// the protocol's framer locks on.
+func buildChannel(sys trunking.System, ch ChannelConfig, bus *events.Bus, log *slog.Logger, now func() time.Time) (*engineChannel, error) {
+	freqHz := ch.FrequencyHz
 	switch sys.Protocol {
 	case trunking.ProtocolDMR:
-		matched := false
-		for _, cc := range sys.ControlChannels {
-			if cc == freqHz {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return nil, "", fmt.Errorf("widebandt2: channel freq=%d on system %q (protocol dmr / Tier III) "+
-				"must match one of the system's control_channels %v", freqHz, sys.Name, sys.ControlChannels)
+		if err := requireControlChannel(sys, freqHz, "dmr / Tier III"); err != nil {
+			return nil, err
 		}
 		cc := tier3.New(tier3.Options{
 			Bus:         bus,
@@ -292,7 +305,14 @@ func buildProcessor(sys trunking.System, freqHz uint32, bus *events.Bus, log *sl
 			FrequencyHz: freqHz,
 			Now:         now,
 		})
-		return cc, "dmr-tier3", nil
+		rx := dmrrx.New(dmrrx.Options{
+			SampleRateHz: narrowbandRateHz,
+			DibitSink:    dmr.DibitSink(func(d []uint8, b int) { cc.Process(d, b) }),
+			DeviationHz:  dmrDeviationHz,
+			ClockGain:    dmrClockGainTier3,
+		})
+		return &engineChannel{freqHz: freqHz, sysName: sys.Name, protoTag: "dmr-tier3", processor: cc, receiver: rx}, nil
+
 	case trunking.ProtocolDMRTier2:
 		cc := tier2.New(tier2.Options{
 			Bus:         bus,
@@ -301,11 +321,148 @@ func buildProcessor(sys trunking.System, freqHz uint32, bus *events.Bus, log *sl
 			FrequencyHz: freqHz,
 			Now:         now,
 		})
-		return cc, "dmr-tier2", nil
+		rx := dmrrx.New(dmrrx.Options{
+			SampleRateHz: narrowbandRateHz,
+			DibitSink:    dmr.DibitSink(func(d []uint8, b int) { cc.Process(d, b) }),
+			DeviationHz:  dmrDeviationHz,
+			ClockGain:    dmrClockGainTier2,
+		})
+		return &engineChannel{freqHz: freqHz, sysName: sys.Name, protoTag: "dmr-tier2", processor: cc, receiver: rx}, nil
+
+	case trunking.ProtocolP25:
+		if err := requireControlChannel(sys, freqHz, "p25 / Phase 1"); err != nil {
+			return nil, err
+		}
+		demodMode, ok := p25phase1rx.ParseDemodMode(sys.P25Phase1DemodMode)
+		if !ok {
+			log.Warn("widebandt2: unrecognised p25_phase1_demod_mode; falling back to c4fm",
+				"system", sys.Name, "value", sys.P25Phase1DemodMode)
+		}
+		// C4FM has only two physical rotations (identity, polarity
+		// flip); the CQPSK / LSM path has the full four-fold QPSK
+		// ambiguity. Mirrors the ccdecoder pipeline.
+		rotations := p25phase1.RotationsAll
+		if demodMode == p25phase1rx.DemodC4FM {
+			rotations = p25phase1.RotationsC4FM
+		}
+		var bandPlan *p25phase1.BandPlan
+		if len(sys.P25BandPlan) > 0 {
+			bandPlan = &p25phase1.BandPlan{}
+			for _, e := range sys.P25BandPlan {
+				bandPlan.Apply(p25phase1.IdentifierUpdate{
+					ChannelID:   e.ChannelID,
+					BaseHz:      e.BaseHz,
+					SpacingHz:   e.SpacingHz,
+					TxOffsetHz:  e.TxOffsetHz,
+					BandwidthHz: e.BandwidthHz,
+				})
+			}
+		}
+		cc := p25phase1.New(p25phase1.Options{
+			Bus:         bus,
+			Log:         log.With("system", sys.Name, "freq_hz", freqHz, "phase", 1),
+			SystemName:  sys.Name,
+			FrequencyHz: freqHz,
+			BandPlan:    bandPlan,
+			Rotations:   rotations,
+		})
+		rx := p25phase1rx.New(p25phase1rx.Options{
+			SampleRateHz: narrowbandRateHz,
+			DeviationHz:  p25Phase1DeviationHz,
+			DemodMode:    demodMode,
+			DibitSink: p25phase1.DibitSink(func(d []uint8, b int) {
+				cc.Process(d, b)
+			}),
+		})
+		return &engineChannel{freqHz: freqHz, sysName: sys.Name, protoTag: "p25-phase1", processor: cc, receiver: rx}, nil
+
+	case trunking.ProtocolP25Phase2:
+		if err := requireControlChannel(sys, freqHz, "p25-phase2 / Phase 2"); err != nil {
+			return nil, err
+		}
+		cc := p25phase2.New(p25phase2.Options{
+			Bus:         bus,
+			Log:         log.With("system", sys.Name, "freq_hz", freqHz, "phase", 2),
+			SystemName:  sys.Name,
+			FrequencyHz: freqHz,
+		})
+		applyP25Phase2Modes(cc, sys, log)
+		clockMode, ok := p25phase2rx.ParseClockMode(sys.P25Phase2ClockMode)
+		if !ok {
+			log.Warn("widebandt2: unrecognised p25_phase2_clock_mode; falling back to gardner",
+				"system", sys.Name, "value", sys.P25Phase2ClockMode)
+		}
+		sfDec := p25phase2.NewSuperframeDecoder()
+		rx := p25phase2rx.New(p25phase2rx.Options{
+			SampleRateHz: narrowbandRateHz,
+			DibitSink: p25phase2.DibitSink(func(d []uint8, b int) {
+				for _, sf := range sfDec.Process(d, b) {
+					cc.IngestSuperframe(sf)
+				}
+			}),
+			ClockMode:   clockMode,
+			GardnerGain: p25Phase2GardnerGain,
+		})
+		return &engineChannel{freqHz: freqHz, sysName: sys.Name, protoTag: "p25-phase2", processor: cc, receiver: rx}, nil
+
 	default:
-		return nil, "", fmt.Errorf("widebandt2: system %q has protocol %q; wideband only supports dmr-tier2 and dmr",
+		return nil, fmt.Errorf(
+			"widebandt2: system %q has protocol %q; wideband supports dmr-tier2, dmr, p25, and p25-phase2",
 			sys.Name, sys.Protocol.String())
 	}
+}
+
+// requireControlChannel rejects a wideband channel that doesn't sit on
+// one of the system's declared control_channels. Used by every trunked
+// protocol case in buildChannel — the protocol's state machine only
+// makes sense on a CC frequency, and the config validator already
+// enforces the same rule at load time.
+func requireControlChannel(sys trunking.System, freqHz uint32, label string) error {
+	for _, cc := range sys.ControlChannels {
+		if cc == freqHz {
+			return nil
+		}
+	}
+	return fmt.Errorf("widebandt2: channel freq=%d on system %q (protocol %s) "+
+		"must match one of the system's control_channels %v",
+		freqHz, sys.Name, label, sys.ControlChannels)
+}
+
+// applyP25Phase2Modes mirrors newP25Phase2Pipeline's per-system mode
+// wiring (trellis / RS / interleave / scrambler) so a wideband Phase 2
+// CC tap decodes traffic identically to the dedicated ccdecoder path.
+func applyP25Phase2Modes(cc *p25phase2.ControlChannel, sys trunking.System, log *slog.Logger) {
+	trellisMode, ok := p25phase2.ParseTrellisMode(sys.P25Phase2TrellisMode)
+	if !ok {
+		log.Warn("widebandt2: unrecognised p25_phase2_trellis_mode; falling back to on",
+			"system", sys.Name, "value", sys.P25Phase2TrellisMode)
+	}
+	cc.SetTrellisMode(trellisMode)
+	rsMode, rsOK := p25phase2.ParseRSMode(sys.P25Phase2RSMode)
+	if !rsOK {
+		log.Warn("widebandt2: unrecognised p25_phase2_rs_mode; falling back to off",
+			"system", sys.Name, "value", sys.P25Phase2RSMode)
+	}
+	cc.SetRSMode(rsMode)
+	interleaveMode, ilOK := p25phase2.ParseInterleaveMode(sys.P25Phase2InterleaveMode)
+	if !ilOK {
+		log.Warn("widebandt2: unrecognised p25_phase2_interleave_mode; falling back to off",
+			"system", sys.Name, "value", sys.P25Phase2InterleaveMode)
+	}
+	cc.SetInterleaveMode(interleaveMode)
+	scramblerMode, scrOK := p25phase2.ParseScramblerMode(sys.P25Phase2ScramblerMode)
+	if !scrOK {
+		log.Warn("widebandt2: unrecognised p25_phase2_scrambler_mode; falling back to off",
+			"system", sys.Name, "value", sys.P25Phase2ScramblerMode)
+	}
+	if scramblerMode == p25phase2.ScramblerProbe && rsMode != p25phase2.RSOn {
+		log.Warn("widebandt2: p25_phase2_scrambler_mode=probe requires p25_phase2_rs_mode=on; descrambler will degrade to offset 0",
+			"system", sys.Name)
+	}
+	cc.SetScramblerMode(scramblerMode)
+	cc.SetScramblerSeed(framing.PN44SeedFromIdentity(
+		sys.WACN, sys.SystemID, uint16(sys.Site),
+	))
 }
 
 // Channels returns the per-channel frequencies the engine is
@@ -320,9 +477,9 @@ func (e *Engine) Channels() []uint32 {
 }
 
 // ChannelProtocolTags returns a frequency → protocol-tag map for the
-// channels this engine drives ("dmr-tier2" or "dmr-tier3"). Used by
-// the daemon's startup log and by tests to verify the dispatcher
-// picked the right state machine per channel.
+// channels this engine drives ("dmr-tier2", "dmr-tier3", "p25-phase1",
+// or "p25-phase2"). Used by the daemon's startup log and by tests to
+// verify the dispatcher picked the right state machine per channel.
 func (e *Engine) ChannelProtocolTags() map[uint32]string {
 	out := make(map[uint32]string, len(e.channels))
 	for _, c := range e.channels {
