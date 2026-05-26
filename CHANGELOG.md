@@ -9,6 +9,21 @@ for tagged releases.
 
 ### Added
 
+- **POCSAG syncer + page assembler + bus event + SQLite log +
+  web panel.** Second slice of Phase 3 (#365), building on the
+  protocol layer landed in #372. The new `pocsag.Syncer`
+  consumes a packed bit stream, locks on the POCSAG sync
+  codeword (with polarity-inverse fallback so a flipped FM
+  demod still works), carves batches, decodes through
+  BCH(31,21), and reassembles pages by correlating address +
+  message codewords. Pages publish on a new
+  `events.KindPagerMessage` bus event; a new SQLite `pager_log`
+  table persists them; `GET /api/v1/pager/messages?limit=N`
+  returns the most recent rows; `/pagers` web panel renders the
+  live list (received time, RIC, function code, encoding, body,
+  bit-error count). DSP wiring (FM demod → bit slicer →
+  `Syncer.Push`) is the remaining piece and lands in a focused
+  follow-up PR. See [docs/pocsag.md](docs/pocsag.md).
 - **POCSAG paging protocol layer.** First slice of Phase 3 of the
   trunking-adjacent feature plan (#365). Adds BCH(31,21)
   encode/decode (corrects up to 2 bit errors per codeword) plus

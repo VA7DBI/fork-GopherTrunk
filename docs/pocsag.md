@@ -41,21 +41,44 @@ focused follow-up PR.
 ## What's pending
 
 - **DSP integration.** The FM-demodulated bit stream → POCSAG
-  syncer → batch decoder pipeline (the equivalent of the existing
-  P25 / DMR per-protocol `Process(stream, baseIdx)` adapters)
-  lands in a follow-up PR. The protocol layer is ready to consume
-  packed bits the moment the DSP layer exists.
-- **Bus event + storage.** Once the DSP wiring exists, a new
-  `events.KindPagerMessage` plus a `pager_log` SQLite table (mirroring
-  `call_log` / `location_log`) ship alongside.
-- **Web + TUI panel.** Renders the live pager message stream with
-  RIC, function, and decoded text columns. Will subscribe to the
-  same SSE stream the rest of the panels use.
+  syncer pipeline (the equivalent of the existing P25 / DMR
+  per-protocol `Process(stream, baseIdx)` adapters) lands in a
+  focused follow-up PR. The syncer is ready to consume packed
+  bits the moment the DSP layer exists. Path: iqtap broker
+  subscriber → narrowband DDC at the configured POCSAG frequency
+  → quadrature FM demod (`internal/dsp/demod/fm.go`) → Gardner
+  symbol timing recovery (`internal/dsp/sync/gardner.go`) → bit
+  slicer → `Syncer.Push(bit)`.
 - **FLEX.** A separate, higher-rate (1600 / 3200 / 6400 sps)
   Motorola pager protocol that shares the operator workflow but
   needs its own FEC (Reed-Muller + two-of-three majority decoder)
   and frame structure. Documented as a planned follow-up; the
   framework added here is the foundation.
+
+## What's shipped now
+
+- **Syncer + page assembler** — `pocsag.Syncer` consumes a bit
+  stream (one bit per byte), locks on the sync codeword (with
+  polarity-inverse fallback so a flipped FM demod still works),
+  carves out batches, decodes each codeword through BCH(31,21),
+  and reassembles pages by correlating address codewords with
+  the message codewords that follow them. Idle codewords +
+  uncorrectable codewords + the next address terminate an
+  in-progress page.
+- **Bus event** — `events.KindPagerMessage` payload is a
+  `storage.PagerMessage` carrying RIC, function code, encoding
+  ("numeric" | "alpha"), decoded text, and total BCH bit-error
+  count.
+- **SQLite persistence** — `storage.PagerLog` subscribes to the
+  bus event and writes to a new `pager_log` table (mirrors
+  `call_log` / `location_log`). Retention sweeper can be extended
+  later when growth becomes a concern.
+- **REST endpoint** — `GET /api/v1/pager/messages?limit=N`
+  returns the most recent N pages (default 200, max 5000),
+  newest first.
+- **Web panel** — `/pagers` renders the live page list:
+  Received / RIC / Function / Encoding / Body / BER columns,
+  polled every 5 s. Non-zero BER is highlighted yellow.
 
 ## Testing
 

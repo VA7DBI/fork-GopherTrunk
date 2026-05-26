@@ -268,6 +268,11 @@ type Server struct {
 	// over the iqtap broker + internal/dsp/diag.
 	diag DiagProvider
 
+	// pager is the optional provider backing /api/v1/pager/...
+	// routes (pager log). nil disables the routes. Implemented
+	// by the daemon over the SQLite-backed storage.PagerLog.
+	pager PagerProvider
+
 	mu     sync.Mutex
 	srv    *http.Server
 	closed bool
@@ -456,6 +461,11 @@ type ServerOptions struct {
 	// the iqtap broker + internal/dsp/diag; nil keeps the route
 	// returning 503.
 	Diag DiagProvider
+	// Pager, when non-nil, enables the
+	// GET /api/v1/pager/messages route serving recent decoded
+	// POCSAG (and eventually FLEX) pager messages. Wired by the
+	// daemon over the SQLite-backed storage.PagerLog.
+	Pager PagerProvider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -550,6 +560,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		spectrum:       opts.Spectrum,
 		bookmarks:      opts.Bookmarks,
 		diag:           opts.Diag,
+		pager:          opts.Pager,
 	}, nil
 }
 
@@ -738,6 +749,10 @@ func (s *Server) routes() *http.ServeMux {
 	// Read-only; the daemon doesn't expose any way to inject IQ
 	// via this path. Returns 503 when no SDR is in the pool.
 	mux.HandleFunc("GET /api/v1/diag/iq", s.handleDiagStream)
+
+	// Pager log — recent POCSAG (and eventually FLEX) messages.
+	// Read-only; the decoder writes via the events bus → PagerLog.
+	mux.HandleFunc("GET /api/v1/pager/messages", s.handlePagerMessages)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes
