@@ -111,6 +111,14 @@ const (
 	// decoded text + per-page bit-error count. Surfaced over SSE /
 	// WS for the live pager panel.
 	KindPagerMessage Kind = "pager.message"
+	// KindAPRSPacket fires when the APRS decoder finishes one
+	// frame off the air — UI frame decoded, info field parsed
+	// into the appropriate APRS sub-type (position, message,
+	// status, bulletin, status, etc.). Payload is a
+	// storage.APRSPacket carrying source + destination + path +
+	// decoded sub-payload. Surfaced over SSE / WS for the live
+	// APRS panel.
+	KindAPRSPacket Kind = "aprs.packet"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol

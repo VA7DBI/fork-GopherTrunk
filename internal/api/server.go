@@ -273,6 +273,12 @@ type Server struct {
 	// by the daemon over the SQLite-backed storage.PagerLog.
 	pager PagerProvider
 
+	// aprs is the optional provider backing /api/v1/aprs/...
+	// routes (APRS / AX.25 packet log). nil disables the routes.
+	// Implemented by the daemon over the SQLite-backed
+	// storage.APRSLog.
+	aprs APRSProvider
+
 	mu     sync.Mutex
 	srv    *http.Server
 	closed bool
@@ -466,6 +472,11 @@ type ServerOptions struct {
 	// POCSAG (and eventually FLEX) pager messages. Wired by the
 	// daemon over the SQLite-backed storage.PagerLog.
 	Pager PagerProvider
+	// APRS, when non-nil, enables the
+	// GET /api/v1/aprs/packets route serving recent decoded
+	// APRS / AX.25 packets. Wired by the daemon over the SQLite-
+	// backed storage.APRSLog.
+	APRS APRSProvider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -561,6 +572,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		bookmarks:      opts.Bookmarks,
 		diag:           opts.Diag,
 		pager:          opts.Pager,
+		aprs:           opts.APRS,
 	}, nil
 }
 
@@ -753,6 +765,10 @@ func (s *Server) routes() *http.ServeMux {
 	// Pager log — recent POCSAG (and eventually FLEX) messages.
 	// Read-only; the decoder writes via the events bus → PagerLog.
 	mux.HandleFunc("GET /api/v1/pager/messages", s.handlePagerMessages)
+
+	// APRS / AX.25 packet log — recent decoded packets. Read-only;
+	// the decoder writes via the events bus → APRSLog.
+	mux.HandleFunc("GET /api/v1/aprs/packets", s.handleAPRSPackets)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes

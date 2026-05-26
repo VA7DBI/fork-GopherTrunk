@@ -105,6 +105,7 @@ type Daemon struct {
 	locationLog  *storage.LocationLog
 	bookmarks    *storage.BookmarkStore
 	pagerLog     *storage.PagerLog
+	aprsLog      *storage.APRSLog
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -909,6 +910,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.pagerLog = pl
 
+		al, err := storage.NewAPRSLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: aprs log: %w", err)
+		}
+		d.aprsLog = al
+
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
 			if err != nil {
@@ -967,6 +975,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.pagerLog != nil {
 			opts.Pager = pagerProvider{log: d.pagerLog}
+		}
+		if d.aprsLog != nil {
+			opts.APRS = aprsProvider{log: d.aprsLog}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1125,6 +1136,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.pagerLog != nil {
 		d.spawn(runCtx, "pagerlog", false, func(ctx context.Context) error {
 			return d.pagerLog.Run(ctx)
+		})
+	}
+	if d.aprsLog != nil {
+		d.spawn(runCtx, "aprslog", false, func(ctx context.Context) error {
+			return d.aprsLog.Run(ctx)
 		})
 	}
 	if d.messageLog != nil {
@@ -1347,6 +1363,9 @@ func (d *Daemon) Close() {
 		}
 		if d.pagerLog != nil {
 			_ = d.pagerLog.Close()
+		}
+		if d.aprsLog != nil {
+			_ = d.aprsLog.Close()
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
@@ -1954,4 +1973,13 @@ func (p pagerProvider) RecentPagerMessages(limit int) ([]storage.PagerMessage, e
 type pocsagSpec struct {
 	serial string
 	freq   uint32
+}
+
+// aprsProvider adapts storage.APRSLog into api.APRSProvider so the
+// api package stays free of the storage import dependency. Read-only
+// — the decoder writes via the events bus.
+type aprsProvider struct{ log *storage.APRSLog }
+
+func (a aprsProvider) RecentAPRSPackets(limit int) ([]storage.APRSPacket, error) {
+	return a.log.Recent(limit)
 }

@@ -43,6 +43,10 @@ vi.mock("./api/pagers", () => ({
     n >= 0 && n <= 3 ? String.fromCharCode(65 + n) : "?",
 }));
 
+vi.mock("./api/aprs", () => ({
+  fetchAPRSPackets: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("./api/bookmarks", () => ({
   bookmarks: {
     list: vi.fn().mockResolvedValue([]),
@@ -164,6 +168,7 @@ const ROUTES = [
   "/cc",
   "/tones",
   "/pagers",
+  "/aprs",
   "/metrics",
   "/devices",
   "/settings",

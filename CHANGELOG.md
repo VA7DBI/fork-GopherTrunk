@@ -9,6 +9,16 @@ for tagged releases.
 
 ### Added
 
+- **APRS bus event + SQLite log + REST + web panel.** Second
+  slice of Phase 5 (#365), building on the protocol layer from
+  #381. New `events.KindAPRSPacket` bus event, `aprs_log`
+  SQLite table, `storage.APRSLog` bus subscriber (mirrors
+  `PagerLog`), `GET /api/v1/aprs/packets?limit=N` REST endpoint,
+  and `/aprs` web panel rendering the live packet list (received
+  time, src → dst + path, type, body, lat/lon, CRC-OK flag with
+  yellow highlight on CRC failure). DSP wiring (Bell-202 AFSK
+  demod → HDLC de-stuff → AX.25 framer → packet decoder → bus)
+  is the remaining piece and lands in a focused follow-up PR.
 - **POCSAG DSP receiver + daemon wiring.** Third slice of Phase 3
   (#365). New `internal/radio/pager/pocsag/receiver` package wires
   the FM demod → rational resampler → integrator-and-slicer → bit
