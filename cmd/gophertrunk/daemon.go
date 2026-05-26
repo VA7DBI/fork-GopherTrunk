@@ -101,6 +101,7 @@ type Daemon struct {
 	db           *storage.DB
 	callLog      *storage.CallLog
 	locationLog  *storage.LocationLog
+	bookmarks    *storage.BookmarkStore
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -837,6 +838,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.locationLog = ll
 
+		bs, err := storage.NewBookmarkStore(db, d.bus)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: bookmarks: %w", err)
+		}
+		d.bookmarks = bs
+
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
 			if err != nil {
@@ -888,6 +896,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if len(d.iqBrokers) > 0 {
 			opts.Spectrum = newSpectrumProvider(d.pool, d.iqBrokers, log)
+		}
+		if d.bookmarks != nil {
+			opts.Bookmarks = bookmarkProvider{store: d.bookmarks}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1757,4 +1768,46 @@ func (p *poolRigController) SetFreq(hz uint32) error {
 	p.hz = hz
 	p.mu.Unlock()
 	return nil
+}
+
+// bookmarkProvider adapts the storage.BookmarkStore into the
+// api.BookmarkProvider interface, attaching a fresh request-scoped
+// context to each call. The handlers don't carry a context all the
+// way through today (the existing patterns use background-scoped
+// queries with their own timeouts); a 5-second cap keeps a wedged
+// DB write from pinning a handler forever.
+type bookmarkProvider struct{ store *storage.BookmarkStore }
+
+func (p bookmarkProvider) ctx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Second)
+}
+
+func (p bookmarkProvider) ListBookmarks() ([]storage.Bookmark, error) {
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return p.store.List(ctx)
+}
+
+func (p bookmarkProvider) GetBookmark(id int64) (storage.Bookmark, error) {
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return p.store.Get(ctx, id)
+}
+
+func (p bookmarkProvider) CreateBookmark(b storage.Bookmark) (storage.Bookmark, error) {
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return p.store.Create(ctx, b)
+}
+
+func (p bookmarkProvider) UpdateBookmark(b storage.Bookmark) (storage.Bookmark, error) {
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return p.store.Update(ctx, b)
+}
+
+func (p bookmarkProvider) DeleteBookmark(id int64) error {
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return p.store.Delete(ctx, id)
 }

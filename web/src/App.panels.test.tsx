@@ -28,6 +28,15 @@ vi.mock("./api/spectrum", () => ({
   ),
 }));
 
+vi.mock("./api/bookmarks", () => ({
+  bookmarks: {
+    list: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+    update: vi.fn(),
+    remove: vi.fn(),
+  },
+}));
+
 vi.mock("./api/client", () => {
   // Defined inside the factory: vi.mock is hoisted above module scope.
   const ok = (value: unknown) => vi.fn().mockResolvedValue(value);
@@ -131,6 +140,7 @@ const ROUTES = [
   "/active",
   "/scanner",
   "/spectrum",
+  "/bookmarks",
   "/systems",
   "/talkgroups",
   "/history",

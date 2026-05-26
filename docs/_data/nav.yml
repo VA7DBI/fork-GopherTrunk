@@ -29,6 +29,8 @@ groups:
         url: /live-edits.html
       - title: Import (PDF / CSV)
         url: /import.html
+      - title: Bookmarks
+        url: /bookmarks.html
       - title: rigctld integration
         url: /rigctld.html
       - title: Hardening

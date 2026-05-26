@@ -257,6 +257,11 @@ type Server struct {
 	// over its iqtap broker map.
 	spectrum SpectrumProvider
 
+	// bookmarks is the optional provider backing /api/v1/bookmarks/...
+	// routes. nil disables the routes (503). Implemented by the
+	// daemon over storage.BookmarkStore.
+	bookmarks BookmarkProvider
+
 	mu     sync.Mutex
 	srv    *http.Server
 	closed bool
@@ -433,6 +438,12 @@ type ServerOptions struct {
 	// routes returning 503 so a build without SDRs doesn't pretend
 	// to have a waterfall.
 	Spectrum SpectrumProvider
+	// Bookmarks, when non-nil, enables the
+	// GET/POST/PATCH/DELETE /api/v1/bookmarks routes for operator-
+	// managed conventional channel bookmarks. nil keeps the routes
+	// returning 503. Wired by the daemon over the SQLite-backed
+	// storage.BookmarkStore.
+	Bookmarks BookmarkProvider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -525,6 +536,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		cors:           opts.CORS,
 		audioPub:       opts.AudioPublisher,
 		spectrum:       opts.Spectrum,
+		bookmarks:      opts.Bookmarks,
 	}, nil
 }
 
@@ -699,6 +711,14 @@ func (s *Server) routes() *http.ServeMux {
 	// the broker map wasn't wired).
 	mux.HandleFunc("GET /api/v1/spectrum/devices", s.handleSpectrumDevices)
 	mux.HandleFunc("GET /api/v1/spectrum/stream", s.handleSpectrumStream)
+
+	// Bookmarks / frequency manager. Read endpoint is always open;
+	// create / update / delete are gated behind allow_mutations
+	// like every other write route.
+	mux.HandleFunc("GET /api/v1/bookmarks", s.handleListBookmarks)
+	mux.HandleFunc("POST /api/v1/bookmarks", s.gate(s.handleCreateBookmark))
+	mux.HandleFunc("PATCH /api/v1/bookmarks/{id}", s.gate(s.handleUpdateBookmark))
+	mux.HandleFunc("DELETE /api/v1/bookmarks/{id}", s.gate(s.handleDeleteBookmark))
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes

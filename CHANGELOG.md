@@ -9,6 +9,17 @@ for tagged releases.
 
 ### Added
 
+- **Bookmarks / frequency manager.** UI-managed conventional
+  channel list (marine VHF, NOAA weather, FRS/GMRS, repeater
+  outputs, public-safety conventional fall-backs) backed by a new
+  `bookmarks` table in the daemon's SQLite database. Each row
+  carries name, frequency, mode, optional CTCSS / DCS, freeform
+  notes, and an operator-defined group tag. REST endpoints under
+  `/api/v1/bookmarks` (read open; create / update / delete gated
+  the same as every other write route); web panel at
+  `/bookmarks`. Mutations publish `bookmark.{created,updated,
+  deleted}` events on the bus so SSE / WS subscribers refresh
+  without polling.
 - **Hamlib `rigctld` TCP server.** Opt-in (`api.rigctld:
   "127.0.0.1:4532"`) endpoint speaking the standard rigctld wire
   protocol so external amateur-radio tooling (Cloudlog,
