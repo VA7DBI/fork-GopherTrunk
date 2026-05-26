@@ -9,6 +9,18 @@ for tagged releases.
 
 ### Added
 
+- **Constellation viewer.** New web panel at `/constellation` that
+  renders a live 2D scatter of decimated IQ samples (2 ksps
+  default). Brighter dots = newer samples; reference rings at
+  |z|=0.5 and |z|=1.0; per-frame dBFS energy banner. Identifies
+  signal shape visually — PSK clusters, FSK arcs, AM rotation,
+  noise circles, DC bias, frequency-offset spirals — without
+  launching a separate SDR receiver alongside GopherTrunk. Builds
+  on the iqtap broker (PR #365) so multiple subscribers share the
+  same SDR's IQ stream without disturbing decode.
+  `internal/dsp/diag` adds a pure-Go stride decimator + per-frame
+  energy estimator; `WS /api/v1/diag/iq?device=...&rate=2000`
+  exposes it. See [docs/constellation.md](docs/constellation.md).
 - **CC Activity panel.** New web panel at `/cc` that filters the
   events stream down to control-channel chatter: voice grants,
   affiliations, registrations, patches / dynamic regroups, talker

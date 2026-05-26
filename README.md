@@ -89,6 +89,12 @@ Silicon and Intel. Full per-OS recipes at
   channel chatter (grants, affiliations, registrations, patches,
   talker aliases, CC lock / loss). Pure filter over the events
   stream with per-row payload rendering; web panel at `/cc`.
+- **Constellation viewer** — live IQ scatter visualization that
+  taps the same broker the trunking decoder reads. Useful for
+  identifying signal shape (PSK / QPSK / FSK / C4FM / AM /
+  noise), spotting frequency offset, and checking demod /
+  equalizer health. Decimated to 2 ksps for the wire; canvas
+  scatter with energy banner. Web panel at `/constellation`.
 - **Bookmarks / frequency manager** — UI-managed conventional
   channel list (marine VHF, NOAA weather, FRS/GMRS, repeater
   outputs, public-safety fall-back channels) stored in the
