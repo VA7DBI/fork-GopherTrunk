@@ -128,6 +128,19 @@ for tagged releases.
 
 ### Fixed
 
+- **RTL-SDR cold-boot stall on Windows now self-recovers.** Clone
+  dongles (and some power-marginal hubs) latch the first
+  USB_SYSCTL=0x09 vendor-OUT write, then NAK the byte-identical
+  second write in `init baseband` step 0 with `ERROR_GEN_FAILURE
+  (0x1F)`. The Linux equivalent (`EPIPE`) was already covered by the
+  bring-up reset+retry envelope; the Windows path wasn't because (a)
+  `ERROR_GEN_FAILURE` wasn't classified as resetable, and (b) the
+  WinUSB `Transport.Reset()` was a no-op. WinUSB now clears the
+  control-pipe halt via `WinUsb_ResetPipe(0)` (USB
+  `CLEAR_FEATURE(ENDPOINT_HALT)`), the new `usb.ErrPipeStalled`
+  sentinel keys the existing retry envelope, and a clone-dongle hint
+  pointing at Zadig / port choice / `gophertrunk sdr doctor` is
+  appended when the second attempt still fails.
 - **Wideband DMR receiver loop-gain now matches the single-channel
   ccdecoder path.** The Stage 2 / Stage 3 wideband engine was
   instantiating `dmr/receiver.Receiver` with the default

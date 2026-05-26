@@ -266,21 +266,24 @@ func runBringup(demod *rtl2832u.Demod) (tuners.Tuner, error) {
 	return tuner, nil
 }
 
-// isBringupResetable reports whether err is one of the three error
+// isBringupResetable reports whether err is one of the four error
 // classes a USB port reset is the right hammer for during open-time
 // bring-up: EPIPE (Linux/USBDEVFS cold-boot stall, the librtlsdr "dummy
 // write probe" case), ErrDeviceGone (the chip dropped off the bus
-// mid-bringup), or ErrTimeout (Windows/WinUSB cold-boot — same root
-// cause as the Linux EPIPE, but WinUsb_ControlTransfer surfaces it as
-// ERROR_SEM_TIMEOUT instead of stalling the pipe). The retry is bounded
-// to one reset per Open so even if a reset is wasted on a non-cold-boot
-// timeout the cost is capped at ~200ms before the original error
-// surfaces. Other errors (ErrClosed, validation failures) stay
-// non-resetable.
+// mid-bringup), ErrTimeout (Windows/WinUSB cold-boot — same root cause
+// as the Linux EPIPE, but WinUsb_ControlTransfer surfaces it as
+// ERROR_SEM_TIMEOUT instead of stalling the pipe), or ErrPipeStalled
+// (Windows/WinUSB clone-dongle cold-boot — the chip latches the first
+// USB_SYSCTL write and then NAKs the next identical write with
+// ERROR_GEN_FAILURE). The retry is bounded to one reset
+// per Open so even if a reset is wasted on a non-cold-boot stall the
+// cost is capped at ~200ms before the original error surfaces. Other
+// errors (ErrClosed, validation failures) stay non-resetable.
 func isBringupResetable(err error) bool {
 	return errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, usb.ErrDeviceGone) ||
-		errors.Is(err, usb.ErrTimeout)
+		errors.Is(err, usb.ErrTimeout) ||
+		errors.Is(err, usb.ErrPipeStalled)
 }
 
 // claimBusyHint returns a parenthesized, space-prefixed remediation
@@ -331,6 +334,15 @@ func tunerBringupHint(err error) string {
 		return " (hint: USB control transfer timed out — common causes:" +
 			" on Windows, the WinUSB driver is not bound to the device (re-run Zadig and select the RTL-SDR);" +
 			" on any OS, marginal USB power, a flaky cable/hub, or another process already holding the device." +
+			" See https://mattcheramie.github.io/GopherTrunk/install-linux.html#troubleshooting)"
+	}
+	if errors.Is(err, usb.ErrPipeStalled) {
+		return " (hint: the dongle's USB control pipe stalled on cold boot" +
+			" (Windows ERROR_GEN_FAILURE) — common with clone dongles or" +
+			" marginal USB power. If the automatic retry didn't recover," +
+			" re-run Zadig to confirm WinUSB is bound to interface 0," +
+			" try a different USB port (avoid hubs), and re-plug the device." +
+			" Run `gophertrunk sdr doctor` to inspect the current driver binding." +
 			" See https://mattcheramie.github.io/GopherTrunk/install-linux.html#troubleshooting)"
 	}
 	return ""

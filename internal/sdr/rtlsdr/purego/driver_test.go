@@ -379,6 +379,11 @@ func TestTunerBringupHint(t *testing.T) {
 			err:     fmt.Errorf("wrap: %w", usb.ErrTimeout),
 			wantSub: []string{"Zadig", "install-linux.html#troubleshooting"},
 		},
+		{
+			name:    "ErrPipeStalled_through_wrap",
+			err:     fmt.Errorf("winusb: device rejected request: %w", usb.ErrPipeStalled),
+			wantSub: []string{"control pipe stalled", "Zadig", "sdr doctor", "install-linux.html#troubleshooting"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -433,6 +438,97 @@ func TestOpenDevice_WarmupTimeoutTriggersResetAndRetry(t *testing.T) {
 	}
 	if m.ClaimCalls != 2 {
 		t.Errorf("ClaimCalls = %d, want 2 (initial claim + post-reset re-claim)", m.ClaimCalls)
+	}
+}
+
+// The WinUSB cold-boot stall surfaces as ErrPipeStalled (mapped from
+// ERROR_GEN_FAILURE). The bring-up envelope must treat it as resetable
+// so WinUsb_ResetPipe(0) clears the control pipe halt and the retry
+// pass succeeds — matching the Linux EPIPE recovery path.
+func TestOpenDevice_WarmupPipeStalledTriggersResetAndRetry(t *testing.T) {
+	m := usb.NewMockTransport()
+	m.Script = []usb.CtrlExchange{
+		warmupUSBSysctlExchange(usb.ErrPipeStalled),
+		warmupUSBSysctlExchange(nil),
+		{
+			In:       false,
+			BRequest: 0,
+			WValue:   0x2000,
+			WIndex:   uint16(1)<<8 | 0x10,
+			Data:     []byte{0x09},
+			Err:      usb.ErrClosed,
+		},
+	}
+	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-warmup-pipestalled-retry"}
+	_, err := openDevice(m, desc, 0)
+	if err == nil {
+		t.Fatal("openDevice succeeded; expected init-baseband terminator to fail the test")
+	}
+	if !strings.Contains(err.Error(), "init baseband") {
+		t.Errorf("err = %v, want substring \"init baseband\" (proves warmup retry succeeded and InitBaseband ran)", err)
+	}
+	if m.ResetCalls != 1 {
+		t.Errorf("ResetCalls = %d, want 1 (ErrPipeStalled on warmup must trigger one clear-halt)", m.ResetCalls)
+	}
+	if m.ClaimCalls != 2 {
+		t.Errorf("ClaimCalls = %d, want 2 (initial claim + post-reset re-claim)", m.ClaimCalls)
+	}
+}
+
+// The cold-boot symptom that prompted the fix — warmup succeeds, then
+// the byte-identical first InitBaseband write stalls with
+// ERROR_GEN_FAILURE / ErrPipeStalled. The bring-up envelope must reset
+// and retry the whole flow.
+func TestOpenDevice_BringupPipeStalled_TriggersFullReset(t *testing.T) {
+	m := usb.NewMockTransport()
+	m.Script = []usb.CtrlExchange{
+		warmupUSBSysctlExchange(nil),                  // pass 1: warmup OK
+		warmupUSBSysctlExchange(usb.ErrPipeStalled),   // pass 1: InitBaseband step 0 stalls
+		warmupUSBSysctlExchange(nil),                  // pass 2: warmup OK (post clear-halt)
+		warmupUSBSysctlExchange(usb.ErrTimeout),       // pass 2: terminate early
+	}
+	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-bringup-pipestalled-retry"}
+	_, err := openDevice(m, desc, 0)
+	if err == nil {
+		t.Fatal("openDevice succeeded; expected init-baseband terminator to fail the test")
+	}
+	if !strings.Contains(err.Error(), "init baseband") {
+		t.Errorf("err = %v, want substring \"init baseband\" (proves the retry reached InitBaseband)", err)
+	}
+	if m.ResetCalls != 1 {
+		t.Errorf("ResetCalls = %d, want 1 (one clear-halt between the two bring-up attempts)", m.ResetCalls)
+	}
+	if m.ClaimCalls != 2 {
+		t.Errorf("ClaimCalls = %d, want 2 (initial claim + post-reset re-claim)", m.ClaimCalls)
+	}
+}
+
+// When ErrPipeStalled recurs on the retry pass, the surfaced error
+// must carry the clone-dongle / Zadig hint.
+func TestOpenDevice_BringupPipeStalledTwice_ReturnsHintError(t *testing.T) {
+	m := usb.NewMockTransport()
+	m.Script = []usb.CtrlExchange{
+		warmupUSBSysctlExchange(nil),
+		warmupUSBSysctlExchange(usb.ErrPipeStalled),
+		warmupUSBSysctlExchange(nil),
+		warmupUSBSysctlExchange(usb.ErrPipeStalled),
+	}
+	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-bringup-pipestalled-fail"}
+	_, err := openDevice(m, desc, 0)
+	if err == nil {
+		t.Fatal("openDevice succeeded; expected ErrPipeStalled-twice to fail open")
+	}
+	if !errors.Is(err, usb.ErrPipeStalled) {
+		t.Errorf("err = %v, want errors.Is(err, usb.ErrPipeStalled)", err)
+	}
+	if !strings.Contains(err.Error(), "control pipe stalled") {
+		t.Errorf("err = %v, want substring \"control pipe stalled\" (proves the clone-dongle hint was appended)", err)
+	}
+	if !strings.Contains(err.Error(), "Zadig") {
+		t.Errorf("err = %v, want substring \"Zadig\"", err)
+	}
+	if m.ResetCalls != 1 {
+		t.Errorf("ResetCalls = %d, want 1 (envelope is one-shot, not a loop)", m.ResetCalls)
 	}
 }
 
