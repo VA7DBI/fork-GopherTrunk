@@ -32,20 +32,20 @@ const p25p2VoiceGardnerGain = 0.005
 // vocoder (voice.DefaultVocoderForProtocol), so WriteRawFrame here
 // decodes each 7-byte frame to PCM and into the call's WAV — unlike the
 // DMR chain, whose pre-FEC frames the vocoder cannot consume.
-func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, iqCh <-chan []complex64, done chan<- struct{}) {
+func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, iqCh <-chan []complex64, iqHz uint32, done chan<- struct{}) {
 	defer close(done)
 
-	decim := int(c.iqHz) / p25p2VoiceIntermediateHz
+	decim := int(iqHz) / p25p2VoiceIntermediateHz
 	if decim < 1 {
 		decim = 1
 	}
-	symbolHz := float64(c.iqHz) / float64(decim)
+	symbolHz := float64(iqHz) / float64(decim)
 
 	// Front-end LPF: doubles as the anti-aliasing filter for the
 	// decimation, so it is only needed when the IQ is actually
 	// decimated (decim == 1 only in tests that feed IQ already at the
 	// intermediate rate).
-	cutoff := float64(c.bw) / float64(c.iqHz)
+	cutoff := float64(c.bw) / float64(iqHz)
 	if cutoff > 0.45 {
 		cutoff = 0.45
 	}

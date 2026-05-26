@@ -86,6 +86,38 @@ func (p *VoicePool) FindFree() *VoiceDevice {
 	return nil
 }
 
+// FrequencyChecker is implemented by Tuners that can serve only a
+// limited range of centre frequencies — e.g. a virtual voice tuner
+// backed by a wideband DDC tap can only follow grants inside the
+// wideband dongle's IQ window. FindFreeForFrequency consults this
+// interface to skip incapable tuners; physical SDRs that don't
+// implement it are treated as universally tunable.
+type FrequencyChecker interface {
+	CanTune(hz uint32) bool
+}
+
+// FindFreeForFrequency returns the first free device whose Tuner
+// either doesn't implement FrequencyChecker (physical SDR — accepted
+// unconditionally) or reports CanTune(hz)=true (virtual tuner whose
+// wideband window covers the target). Order matches the device list,
+// so the daemon's preference (physical voice SDRs first, virtual
+// taps after) is preserved. Returns nil when every free device
+// rejects the target — the engine then falls back to preemption.
+func (p *VoicePool) FindFreeForFrequency(hz uint32) *VoiceDevice {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, d := range p.devices {
+		if _, busy := p.active[d.Serial]; busy {
+			continue
+		}
+		if fc, ok := d.Tuner.(FrequencyChecker); ok && !fc.CanTune(hz) {
+			continue
+		}
+		return d
+	}
+	return nil
+}
+
 // LowestPriorityActive returns the active call with the lowest priority
 // among all devices, or nil if no calls are active. Used by the engine
 // when deciding which call to preempt.

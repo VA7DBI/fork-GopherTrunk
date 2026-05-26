@@ -27,6 +27,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/iqtap"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtltcp"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/wbvoice"
 	"github.com/MattCheramie/GopherTrunk/internal/storage"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 	"github.com/MattCheramie/GopherTrunk/internal/voice"
@@ -124,6 +125,14 @@ type Daemon struct {
 	controlSampleRate uint32
 	convScan          *conventional.Scanner
 	widebandT2        []*widebandt2.Engine
+	// virtualVoiceTuners holds one VirtualTuner per voice tap on a
+	// wideband dongle. Each implements both trunking.Tuner (the voice
+	// pool calls SetCenterFreq on bind) and composer.IQSource (the
+	// composer reads decimated 48 kHz IQ during the call). Wired up
+	// alongside each wideband Engine in NewDaemon; surfaced into the
+	// voice pool via collectVoiceDevices and into the composer via
+	// poolDevices.virtualMap. See internal/sdr/wbvoice.
+	virtualVoiceTuners []*wbvoice.VirtualTuner
 	// pocsagReceivers holds one POCSAG receiver per configured
 	// paging.pocsag entry. Each subscribes to the iqtap broker
 	// for its assigned SDR and publishes pages onto the events
@@ -599,7 +608,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		comp, err := composer.New(composer.Options{
 			Bus:           d.bus,
-			Devices:       &poolDevices{pool: d.pool},
+			Devices:       &poolDevices{pool: d.pool, rateHz: cfg.SDR.SampleRate, virtualMap: d.virtualVoiceMap()},
 			Sink:          sink,
 			Engine:        d.engine,
 			Log:           log,
@@ -839,6 +848,41 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 				return nil, fmt.Errorf("daemon: widebandt2 %q: %w", devCfg.Serial, err)
 			}
 			d.widebandT2 = append(d.widebandT2, eng)
+			// Spin up virtual voice tuners on this wideband dongle so
+			// trunked voice grants whose frequency lands inside the
+			// IQ window can be followed without retuning a separate
+			// physical role: voice SDR. The taps subscribe to the
+			// dongle's iqtap broker on each StreamIQ call, run a
+			// single-tap DDC, and emit 48 kHz IQ to the composer.
+			// Out-of-window grants surface ErrOutOfBand and fall
+			// back to a physical voice SDR (when present) via the
+			// voice pool's bind retry.
+			taps := devCfg.VoiceTaps
+			if taps < 0 {
+				taps = 0
+			}
+			br := d.iqBrokers[entry.Info.Serial]
+			if br == nil && taps > 0 {
+				log.Warn("daemon: wideband: voice_taps requested but no iqtap broker; virtual voice disabled",
+					"serial", devCfg.Serial, "voice_taps", taps)
+				taps = 0
+			}
+			for i := 0; i < taps; i++ {
+				vt, err := wbvoice.New(wbvoice.Options{
+					Serial:           fmt.Sprintf("wb:%s:tap-%d", entry.Info.Serial, i),
+					Broker:           br,
+					WidebandCenterHz: devCfg.CenterFreqHz,
+					SDRSampleRateHz:  cfg.SDR.SampleRate,
+					Log:              log,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("daemon: wbvoice %q tap %d: %w", devCfg.Serial, i, err)
+				}
+				d.virtualVoiceTuners = append(d.virtualVoiceTuners, vt)
+				log.Info("daemon: wideband: virtual voice tap registered",
+					"wideband_serial", entry.Info.Serial,
+					"tap_serial", vt.Serial())
+			}
 		}
 	}
 
@@ -1563,17 +1607,41 @@ func (d *Daemon) spawn(ctx context.Context, name string, essential bool, fn func
 }
 
 func (d *Daemon) collectVoiceDevices() []*trunking.VoiceDevice {
-	if d.pool == nil {
-		return nil
-	}
 	var voices []*trunking.VoiceDevice
-	for _, e := range d.pool.AllByRole(sdr.RoleVoice) {
+	if d.pool != nil {
+		for _, e := range d.pool.AllByRole(sdr.RoleVoice) {
+			voices = append(voices, &trunking.VoiceDevice{
+				Tuner:  e.Device,
+				Serial: e.Info.Serial,
+			})
+		}
+	}
+	// Append virtual voice tuners after physical ones so the engine's
+	// FindFree prefers a physical SDR when both are free. Out-of-
+	// window grants still surface ErrOutOfBand on virtual tuners and
+	// fall through to the next free device via the engine's bind
+	// retry — see engine.HandleGrant.
+	for _, vt := range d.virtualVoiceTuners {
 		voices = append(voices, &trunking.VoiceDevice{
-			Tuner:  e.Device,
-			Serial: e.Info.Serial,
+			Tuner:  vt,
+			Serial: vt.Serial(),
 		})
 	}
 	return voices
+}
+
+// virtualVoiceMap builds the serial → IQSource map the composer's
+// poolDevices uses to resolve a virtual tuner. Returns nil when no
+// virtual tuners are configured so the lookup is a no-op.
+func (d *Daemon) virtualVoiceMap() map[string]composer.IQSource {
+	if len(d.virtualVoiceTuners) == 0 {
+		return nil
+	}
+	out := make(map[string]composer.IQSource, len(d.virtualVoiceTuners))
+	for _, vt := range d.virtualVoiceTuners {
+		out[vt.Serial()] = vt
+	}
+	return out
 }
 
 func retentionInterval(s string) (time.Duration, error) {
@@ -1855,11 +1923,24 @@ func (a audioCockpit) BackendEnabled() bool {
 	return a.player.Stats().Enabled
 }
 
-// poolDevices adapts *sdr.Pool to composer.Devices. The composer only
-// needs StreamIQ; sdr.Device satisfies that subset directly.
-type poolDevices struct{ pool *sdr.Pool }
+// poolDevices adapts *sdr.Pool to composer.Devices. The composer
+// needs StreamIQ + SampleRateHz; sdr.Device only satisfies the
+// former, so physical entries are wrapped in deviceWithRate that
+// reports the daemon-wide rate. Virtual voice tuners (wideband-
+// derived) already implement both interface methods directly and
+// take precedence — that's how a P25 grant on the same SDR as the
+// wideband CC tap gets followed without retuning a physical voice
+// SDR.
+type poolDevices struct {
+	pool       *sdr.Pool
+	rateHz     uint32
+	virtualMap map[string]composer.IQSource
+}
 
 func (p *poolDevices) FindBySerial(serial string) composer.IQSource {
+	if src, ok := p.virtualMap[serial]; ok {
+		return src
+	}
 	if p.pool == nil {
 		return nil
 	}
@@ -1867,8 +1948,19 @@ func (p *poolDevices) FindBySerial(serial string) composer.IQSource {
 	if e == nil {
 		return nil
 	}
-	return e.Device
+	return deviceWithRate{Device: e.Device, rate: p.rateHz}
 }
+
+// deviceWithRate makes an sdr.Device satisfy composer.IQSource by
+// stamping the daemon-wide configured sample rate onto it. Physical
+// SDRs share one rate (cfg.SDR.SampleRate); the composer uses it
+// to size each call's decimator.
+type deviceWithRate struct {
+	sdr.Device
+	rate uint32
+}
+
+func (d deviceWithRate) SampleRateHz() uint32 { return d.rate }
 
 // brokerRigController adapts an iqtap.Broker into the rigctld
 // Controller interface. Routing through the broker means SetFreq

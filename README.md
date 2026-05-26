@@ -112,13 +112,21 @@ Silicon and Intel. Full per-OS recipes at
   outputs, public-safety fall-back channels) stored in the
   daemon's SQLite database. Edit / create / delete from the web
   panel under `/bookmarks`; REST at `/api/v1/bookmarks`.
-- **One dongle, many repeaters** — `role: wideband` pins a single
+- **One dongle, many carriers** — `role: wideband` pins a single
   SDR to a centre frequency and runs an internal channelizer so
-  one dongle decodes every DMR Tier II conventional repeater AND
-  a DMR Tier III control channel that fit inside its IQ bandwidth
-  (e.g. several 12.5 kHz carriers inside a 2.4 MHz IQ window).
-  Mix T2 and T3 channels on the same dongle. See
-  [docs/hardware.md](docs/hardware.md) and
+  one dongle decodes every DMR Tier II conventional repeater, DMR
+  Tier III control channel, P25 Phase 1 control channel, AND P25
+  Phase 2 control channel that fit inside its IQ bandwidth (e.g.
+  several 12.5 kHz carriers inside a 2.4 MHz IQ window). Mix
+  protocols on the same dongle.
+- **One dongle, control + voice** — with `voice_taps: N` on a
+  wideband entry, the daemon allocates per-grant DDC tuners from
+  the dongle's IQ stream so trunked voice grants (DMR T3, P25
+  Phase 1, P25 Phase 2) decode inline on the same SDR that's
+  already hosting the control channel — no separate `role: voice`
+  dongle needed for grants inside the wideband window. Out-of-
+  window grants spill over to a physical voice SDR when present.
+  See [docs/hardware.md](docs/hardware.md) and
   [samples/dmr-tier2-multichannel/](samples/dmr-tier2-multichannel/).
 - **DSP** — Polyphase channelizer, Kaiser / RRC / Gaussian FIRs,
   FM / C4FM / GFSK / FFSK / DQPSK / π/4-DQPSK / π/8-H-DQPSK

@@ -91,6 +91,46 @@ func TestEngineStartsCallOnGrant(t *testing.T) {
 	}
 }
 
+// TestEngineSkipsOutOfBandVirtualTunerInFavorOfPhysical covers the
+// Phase B fallback: when a wideband virtual voice tuner can't serve
+// a grant (frequency outside its IQ window) and a physical voice
+// SDR is also free, the engine binds the physical one instead of
+// dropping. Exercises voicepool.FindFreeForFrequency end-to-end.
+func TestEngineSkipsOutOfBandVirtualTunerInFavorOfPhysical(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	// Wideband tap listed first (preferred for in-band grants); a
+	// physical tuner second (catches the spillover).
+	virtual := &constrainedTuner{lo: 851_000_000, hi: 852_000_000}
+	physical := &fakeVoiceTuner{}
+	pool := NewVoicePool([]*VoiceDevice{
+		{Tuner: virtual, Serial: "wb:00000003:tap-0"},
+		{Tuner: physical, Serial: "phys-voice"},
+	})
+	e, err := NewEngine(EngineOptions{
+		Bus: bus, VoicePool: pool, Talkgroups: NewTalkgroupDB(),
+		CallTimeout: 1 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Out-of-window grant (900 MHz). Should land on the physical
+	// tuner without erroring.
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 1, FrequencyHz: 900_000_000})
+
+	calls := e.ActiveCalls()
+	if len(calls) != 1 || calls[0].Device.Serial != "phys-voice" {
+		t.Fatalf("expected one call on phys-voice, got %+v", calls)
+	}
+	if len(virtual.freqs) != 0 {
+		t.Errorf("virtual tuner should not have been retuned, got %v", virtual.freqs)
+	}
+	if len(physical.tuned()) != 1 || physical.tuned()[0] != 900_000_000 {
+		t.Errorf("physical tuner = %v, want [900_000_000]", physical.tuned())
+	}
+}
+
 func TestEngineTalkgroupForDevice(t *testing.T) {
 	e, _, bus, _ := mkEngine(t, 1)
 	defer bus.Close()

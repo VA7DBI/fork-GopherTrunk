@@ -37,20 +37,20 @@ type rawFrameSink interface {
 // to its 49-bit vocoder payload before being written. Vocoder decode
 // to PCM is still out of scope — the .raw sidecar carries the
 // post-FEC frames for out-of-band decode (issue #276).
-func (c *Composer) runDMRVoiceChain(ctx context.Context, serial string, iqCh <-chan []complex64, done chan<- struct{}) {
+func (c *Composer) runDMRVoiceChain(ctx context.Context, serial string, iqCh <-chan []complex64, iqHz uint32, done chan<- struct{}) {
 	defer close(done)
 
-	decim := int(c.iqHz) / dmrVoiceIntermediateHz
+	decim := int(iqHz) / dmrVoiceIntermediateHz
 	if decim < 1 {
 		decim = 1
 	}
-	symbolHz := float64(c.iqHz) / float64(decim)
+	symbolHz := float64(iqHz) / float64(decim)
 
 	// Front-end LPF: doubles as the anti-aliasing filter for the
 	// decimation, so it is only needed when the IQ is actually
 	// decimated (the live multi-MS/s path; decim == 1 only in tests
 	// that feed IQ already at the intermediate rate).
-	cutoff := float64(c.bw) / float64(c.iqHz)
+	cutoff := float64(c.bw) / float64(iqHz)
 	if cutoff > 0.45 {
 		cutoff = 0.45
 	}
