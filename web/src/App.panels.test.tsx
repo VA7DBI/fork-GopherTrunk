@@ -28,6 +28,15 @@ vi.mock("./api/spectrum", () => ({
   ),
 }));
 
+vi.mock("./api/diag", () => ({
+  openIQStream: vi.fn(
+    (_cfg: unknown, opts: { onStatus?: (s: string) => void }) => {
+      opts.onStatus?.("closed");
+      return { close: vi.fn() };
+    },
+  ),
+}));
+
 vi.mock("./api/bookmarks", () => ({
   bookmarks: {
     list: vi.fn().mockResolvedValue([]),
@@ -140,6 +149,7 @@ const ROUTES = [
   "/active",
   "/scanner",
   "/spectrum",
+  "/constellation",
   "/bookmarks",
   "/systems",
   "/talkgroups",

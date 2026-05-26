@@ -262,6 +262,12 @@ type Server struct {
 	// daemon over storage.BookmarkStore.
 	bookmarks BookmarkProvider
 
+	// diag is the optional provider backing /api/v1/diag/...
+	// routes (decimated-IQ stream for the Constellation panel).
+	// nil disables the routes (503). Implemented by the daemon
+	// over the iqtap broker + internal/dsp/diag.
+	diag DiagProvider
+
 	mu     sync.Mutex
 	srv    *http.Server
 	closed bool
@@ -444,6 +450,12 @@ type ServerOptions struct {
 	// returning 503. Wired by the daemon over the SQLite-backed
 	// storage.BookmarkStore.
 	Bookmarks BookmarkProvider
+	// Diag, when non-nil, enables the
+	// WS /api/v1/diag/iq decimated-IQ live stream that backs the
+	// web Constellation panel. The daemon implements this over
+	// the iqtap broker + internal/dsp/diag; nil keeps the route
+	// returning 503.
+	Diag DiagProvider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -537,6 +549,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		audioPub:       opts.AudioPublisher,
 		spectrum:       opts.Spectrum,
 		bookmarks:      opts.Bookmarks,
+		diag:           opts.Diag,
 	}, nil
 }
 
@@ -719,6 +732,11 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/bookmarks", s.gate(s.handleCreateBookmark))
 	mux.HandleFunc("PATCH /api/v1/bookmarks/{id}", s.gate(s.handleUpdateBookmark))
 	mux.HandleFunc("DELETE /api/v1/bookmarks/{id}", s.gate(s.handleDeleteBookmark))
+
+	// Diagnostic IQ stream — feeds the web Constellation panel.
+	// Read-only; the daemon doesn't expose any way to inject IQ
+	// via this path. Returns 503 when no SDR is in the pool.
+	mux.HandleFunc("GET /api/v1/diag/iq", s.handleDiagStream)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes
