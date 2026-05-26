@@ -21,6 +21,8 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/cchunt"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/conventional"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
+
+	pocsagrx "github.com/MattCheramie/GopherTrunk/internal/radio/pager/pocsag/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/iqtap"
@@ -102,6 +104,7 @@ type Daemon struct {
 	callLog      *storage.CallLog
 	locationLog  *storage.LocationLog
 	bookmarks    *storage.BookmarkStore
+	pagerLog     *storage.PagerLog
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -120,6 +123,16 @@ type Daemon struct {
 	controlSampleRate uint32
 	convScan          *conventional.Scanner
 	widebandT2        []*widebandt2.Engine
+	// pocsagReceivers holds one POCSAG receiver per configured
+	// paging.pocsag entry. Each subscribes to the iqtap broker
+	// for its assigned SDR and publishes pages onto the events
+	// bus on KindPagerMessage. See internal/radio/pager/pocsag/
+	// receiver. Pinned (not auto-discovered): the receiver tunes
+	// the SDR directly to its paging frequency, so the operator
+	// has to dedicate a dongle to it. Multi-channel-from-one-SDR
+	// is a planned follow-up.
+	pocsagReceivers []*pocsagrx.Receiver
+	pocsagSpecs     []pocsagSpec // index-aligned with pocsagReceivers
 	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
 	// Primary consumers (CC decoder, conventional scanner) stream IQ
 	// through the broker so secondary observers (live spectrum,
@@ -400,7 +413,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			d.pool = nil
 		} else {
 			d.wrapBasebandRecorders(cfg, log)
-			d.wrapIQBrokers(log)
+			d.wrapIQBrokers(cfg, log)
 		}
 	} else if len(cfg.Trunking.Systems) > 0 {
 		// Trunked systems configured but no SDR devices listed —
@@ -800,10 +813,21 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 					SystemName:  ch.System,
 				})
 			}
+			// Route IQ + tuning through the iqtap broker so the live
+			// spectrum view (and any other secondary observer) can
+			// Subscribe to chunk copies. Without the broker indirection
+			// the engine's StreamIQ would bypass the fan-out goroutine
+			// and its SetCenterFreq would skip the broker's centerHz
+			// cache, leaving spectrum frames empty and stamped at 0.
+			// Mirrors the CC decoder wiring above.
+			var iqDev sdr.Device = entry.Device
+			if br := d.iqBrokers[entry.Info.Serial]; br != nil {
+				iqDev = br
+			}
 			eng, err := widebandt2.New(widebandt2.Options{
 				Log:           log,
 				Bus:           d.bus,
-				Device:        entry.Device,
+				Device:        iqDev,
 				SampleRateHz:  cfg.SDR.SampleRate,
 				CenterFreqHz:  devCfg.CenterFreqHz,
 				TunerStrategy: devCfg.TunerStrategy,
@@ -815,6 +839,39 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			}
 			d.widebandT2 = append(d.widebandT2, eng)
 		}
+	}
+
+	// POCSAG paging receivers — one per configured paging.pocsag
+	// entry. Constructed here; the run loop spawns them with the
+	// iqtap broker subscription. Per-entry validation lives in
+	// the receiver.New constructor; entries that fail validation
+	// surface as a startup warning and are skipped (their slot
+	// is preserved as nil to keep slice indexing simple).
+	for _, pc := range cfg.Paging.POCSAG {
+		spec := pocsagSpec{serial: pc.Serial, freq: pc.FrequencyHz}
+		if pc.Serial == "" || pc.FrequencyHz == 0 {
+			d.addWarning(fmt.Sprintf(
+				"paging.pocsag: entry missing serial or frequency_hz (serial=%q freq=%d) — skipped",
+				pc.Serial, pc.FrequencyHz))
+			d.pocsagReceivers = append(d.pocsagReceivers, nil)
+			d.pocsagSpecs = append(d.pocsagSpecs, spec)
+			continue
+		}
+		rcv, err := pocsagrx.New(pocsagrx.Options{
+			InputRateHz: cfg.SDR.SampleRate,
+			BaudHz:      pc.BaudHz,
+			SourceName:  pc.Serial,
+			Bus:         d.bus,
+			Log:         log,
+		})
+		if err != nil {
+			d.addWarning(fmt.Sprintf("paging.pocsag[%s]: %v — skipped", pc.Serial, err))
+			d.pocsagReceivers = append(d.pocsagReceivers, nil)
+			d.pocsagSpecs = append(d.pocsagSpecs, spec)
+			continue
+		}
+		d.pocsagReceivers = append(d.pocsagReceivers, rcv)
+		d.pocsagSpecs = append(d.pocsagSpecs, spec)
 	}
 
 	// Storage / call log / retention — optional.
@@ -844,6 +901,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			return nil, fmt.Errorf("daemon: bookmarks: %w", err)
 		}
 		d.bookmarks = bs
+
+		pl, err := storage.NewPagerLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: pager log: %w", err)
+		}
+		d.pagerLog = pl
 
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
@@ -900,6 +964,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.bookmarks != nil {
 			opts.Bookmarks = bookmarkProvider{store: d.bookmarks}
+		}
+		if d.pagerLog != nil {
+			opts.Pager = pagerProvider{log: d.pagerLog}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1025,6 +1092,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		"systems", len(d.systems),
 		"voice_devices", len(d.voicePool.Devices()),
 	)
+	// Catch the single-SDR-control-only setup early: trunking systems
+	// declared but no `role: voice` SDR means every grant will drop at
+	// HandleGrant. Warn once at startup so the operator sees it before
+	// the first grant. Issue #379.
+	if len(d.systems) > 0 && len(d.voicePool.Devices()) == 0 {
+		d.log.Warn("no voice SDR configured but trunking systems are defined; voice grants will be dropped — add a role: voice device (see docs/hardware.md)",
+			"systems", len(d.systems))
+	}
 
 	// Wrap ctx so an essential component error can cancel siblings.
 	runCtx, cancel := context.WithCancel(ctx)
@@ -1045,6 +1120,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.locationLog != nil {
 		d.spawn(runCtx, "locationlog", false, func(ctx context.Context) error {
 			return d.locationLog.Run(ctx)
+		})
+	}
+	if d.pagerLog != nil {
+		d.spawn(runCtx, "pagerlog", false, func(ctx context.Context) error {
+			return d.pagerLog.Run(ctx)
 		})
 	}
 	if d.messageLog != nil {
@@ -1105,6 +1185,38 @@ func (d *Daemon) Run(ctx context.Context) error {
 		name := fmt.Sprintf("widebandt2-%d", i)
 		d.spawn(runCtx, name, false, func(ctx context.Context) error {
 			return eng.Run(ctx)
+		})
+	}
+	// POCSAG paging receivers — one per configured paging.pocsag
+	// entry. Each subscribes to its assigned SDR's iqtap broker
+	// and runs the FM-demod → bit-slicer → syncer pipeline,
+	// publishing pages onto the events bus where the PagerLog
+	// subscriber persists them and the web /pagers panel renders
+	// them. Non-essential: a misconfigured paging frequency or a
+	// missing SDR is logged but doesn't bring down the trunking
+	// pipeline.
+	for i, rcv := range d.pocsagReceivers {
+		if rcv == nil {
+			continue // skipped at construction; warning already logged
+		}
+		rcv := rcv
+		spec := d.pocsagSpecs[i]
+		name := fmt.Sprintf("pocsag-%s-%d", spec.serial, spec.freq)
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			br := d.iqBrokers[spec.serial]
+			if br == nil {
+				d.log.Warn("pocsag: SDR not found, skipping receiver",
+					"serial", spec.serial, "freq_hz", spec.freq)
+				return nil
+			}
+			if err := br.SetCenterFreq(spec.freq); err != nil {
+				d.log.Warn("pocsag: SetCenterFreq failed",
+					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
+				return nil
+			}
+			sub := br.Subscribe()
+			defer sub.Close()
+			return rcv.Process(ctx, sub.C)
 		})
 	}
 	if d.pool != nil {
@@ -1232,6 +1344,9 @@ func (d *Daemon) Close() {
 		}
 		if d.locationLog != nil {
 			_ = d.locationLog.Close()
+		}
+		if d.pagerLog != nil {
+			_ = d.pagerLog.Close()
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
@@ -1614,13 +1729,24 @@ func (d *Daemon) wrapBasebandRecorders(cfg config.Config, log *slog.Logger) {
 // device, not a RecordingDevice — baseband recording stops across a
 // USB-disconnect cycle, which is an existing behavior the broker
 // inherits rather than fixes.
-func (d *Daemon) wrapIQBrokers(log *slog.Logger) {
+func (d *Daemon) wrapIQBrokers(cfg config.Config, log *slog.Logger) {
 	if d.pool == nil {
 		return
 	}
+	rate := cfg.SDR.SampleRate
+	if rate == 0 {
+		rate = sdr.DefaultSampleRateHz
+	}
 	d.iqBrokers = make(map[string]*iqtap.Broker, len(d.pool.Entries()))
 	for _, e := range d.pool.Entries() {
-		d.iqBrokers[e.Info.Serial] = iqtap.New(e.Device, 0, log)
+		br := iqtap.New(e.Device, 0, log)
+		// pool.Open already programmed cfg.SDR.SampleRate on the raw
+		// device before we wrapped it, so Broker.SetSampleRate's cache
+		// path never ran. Seed it directly so spectrum frame stamps
+		// (and any other SampleRateHz reader) anchor at the right rate
+		// from the first frame instead of 0.
+		br.Seed(0, rate)
+		d.iqBrokers[e.Info.Serial] = br
 	}
 }
 
@@ -1811,4 +1937,21 @@ func (p bookmarkProvider) DeleteBookmark(id int64) error {
 	ctx, cancel := p.ctx()
 	defer cancel()
 	return p.store.Delete(ctx, id)
+}
+
+// pagerProvider adapts storage.PagerLog into the api.PagerProvider
+// interface so the api package can stay free of the storage import
+// dependency. Read-only — the decoder writes via the events bus.
+type pagerProvider struct{ log *storage.PagerLog }
+
+func (p pagerProvider) RecentPagerMessages(limit int) ([]storage.PagerMessage, error) {
+	return p.log.Recent(limit)
+}
+
+// pocsagSpec captures the broker-side wiring info for one configured
+// POCSAG paging channel. Index-aligned with Daemon.pocsagReceivers so
+// the Run loop can spawn each receiver without re-walking the YAML.
+type pocsagSpec struct {
+	serial string
+	freq   uint32
 }

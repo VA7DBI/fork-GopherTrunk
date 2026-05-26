@@ -37,6 +37,12 @@ vi.mock("./api/diag", () => ({
   ),
 }));
 
+vi.mock("./api/pagers", () => ({
+  fetchPagerMessages: vi.fn().mockResolvedValue([]),
+  functionLabel: (n: number) =>
+    n >= 0 && n <= 3 ? String.fromCharCode(65 + n) : "?",
+}));
+
 vi.mock("./api/bookmarks", () => ({
   bookmarks: {
     list: vi.fn().mockResolvedValue([]),
@@ -157,6 +163,7 @@ const ROUTES = [
   "/events",
   "/cc",
   "/tones",
+  "/pagers",
   "/metrics",
   "/devices",
   "/settings",

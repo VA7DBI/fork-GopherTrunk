@@ -157,6 +157,58 @@ func TestSpectrumProviderOpenStreamProducesFrames(t *testing.T) {
 	}
 }
 
+// Regression: when only the broker's Seed is used to populate the
+// rate cache (no SetSampleRate call ever made through the broker —
+// matches the daemon's wrapIQBrokers path for the wideband-only
+// config), frames must still stamp the correct SampleRateHz instead
+// of 0. Locks the wideband-T2 spectrum-view bug fix.
+func TestSpectrumProviderFramesIncludeSampleRateAfterSeed(t *testing.T) {
+	dev := newStreamingFake("dev-seeded")
+	br := iqtap.New(dev, 0, nil)
+	// Seeded (not SetSampleRate'd) — the pool already programmed the
+	// raw device before the broker wrapped it.
+	br.Seed(0, 2_400_000)
+	// Center is programmed through the broker by whoever owns tuning
+	// (wideband T2 engine in production).
+	_ = br.SetCenterFreq(453_525_000)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	prim, err := br.StreamIQ(ctx)
+	if err != nil {
+		t.Fatalf("broker StreamIQ: %v", err)
+	}
+	go func() {
+		for range prim {
+		}
+	}()
+
+	p := &spectrumProvider{
+		brokers: map[string]*iqtap.Broker{"dev-seeded": br},
+		log:     slog.New(slog.DiscardHandler),
+	}
+	frames, cleanup, err := p.OpenStream(ctx, "dev-seeded", 64, 50)
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	defer cleanup()
+
+	select {
+	case f, ok := <-frames:
+		if !ok {
+			t.Fatal("frame channel closed prematurely")
+		}
+		if f.SampleRateHz != 2_400_000 {
+			t.Errorf("SampleRateHz = %d, want 2_400_000 (seed must populate cache)", f.SampleRateHz)
+		}
+		if f.CenterHz != 453_525_000 {
+			t.Errorf("CenterHz = %d, want 453_525_000", f.CenterHz)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no frame within 2s")
+	}
+}
+
 func TestSpectrumProviderOpenStreamBadFFTSize(t *testing.T) {
 	dev := newStreamingFake("dev-bad")
 	br := iqtap.New(dev, 0, nil)

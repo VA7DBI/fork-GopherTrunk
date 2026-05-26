@@ -16,6 +16,7 @@ import { Events } from "./panels/Events";
 import { History } from "./panels/History";
 import { Import } from "./panels/Import";
 import { Metrics } from "./panels/Metrics";
+import { Pagers } from "./panels/Pagers";
 import { Scanner } from "./panels/Scanner";
 import { Settings } from "./panels/Settings";
 import { Spectrum } from "./panels/Spectrum";
@@ -37,6 +38,7 @@ const EXTRA_TABS: Tab[] = [
   { to: "/events", label: "Events", icon: "≣" },
   { to: "/cc", label: "CC Activity", icon: "⌁" },
   { to: "/tones", label: "Tones", icon: "♪" },
+  { to: "/pagers", label: "Pagers", icon: "✉" },
   { to: "/spectrum", label: "Spectrum", icon: "≈" },
   { to: "/constellation", label: "Constellation", icon: "✦" },
   { to: "/bookmarks", label: "Bookmarks", icon: "★" },
@@ -146,6 +148,7 @@ export function App() {
           <Route path="/events" element={<Events />} />
           <Route path="/cc" element={<CCActivity />} />
           <Route path="/tones" element={<Tones />} />
+          <Route path="/pagers" element={<Pagers />} />
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/devices" element={<Devices />} />
           <Route path="/settings" element={<Settings />} />

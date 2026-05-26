@@ -9,6 +9,51 @@ for tagged releases.
 
 ### Added
 
+- **POCSAG DSP receiver + daemon wiring.** Third slice of Phase 3
+  (#365). New `internal/radio/pager/pocsag/receiver` package wires
+  the FM demod → rational resampler → integrator-and-slicer → bit
+  syncer pipeline together so a tuned SDR's IQ stream now flows
+  end-to-end into the pager bus event. New `paging.pocsag` YAML
+  section pins SDRs to paging frequencies (`serial` +
+  `frequency_hz` + optional `baud_hz`). The daemon retunes the
+  SDR on startup, subscribes to the iqtap broker, and runs one
+  receiver per configured entry as a non-essential spawn (so a
+  misconfigured paging frequency doesn't bring down the trunking
+  pipeline). Synthetic-IQ end-to-end test is skipped pending
+  real captured fixtures; receiver API surface (Options
+  validation, ctx cancel, nil input) is unit-tested. See
+  [docs/pocsag.md](docs/pocsag.md) for the configuration knob and
+  what's pending (timing-recovery tuning against real fixtures,
+  multi-channel-from-one-SDR DDC, FLEX).
+- **POCSAG syncer + page assembler + bus event + SQLite log +
+  web panel.** Second slice of Phase 3 (#365), building on the
+  protocol layer landed in #372. The new `pocsag.Syncer`
+  consumes a packed bit stream, locks on the POCSAG sync
+  codeword (with polarity-inverse fallback so a flipped FM
+  demod still works), carves batches, decodes through
+  BCH(31,21), and reassembles pages by correlating address +
+  message codewords. Pages publish on a new
+  `events.KindPagerMessage` bus event; a new SQLite `pager_log`
+  table persists them; `GET /api/v1/pager/messages?limit=N`
+  returns the most recent rows; `/pagers` web panel renders the
+  live list (received time, RIC, function code, encoding, body,
+  bit-error count). DSP wiring (FM demod → bit slicer →
+  `Syncer.Push`) is the remaining piece and lands in a focused
+  follow-up PR. See [docs/pocsag.md](docs/pocsag.md).
+- **POCSAG paging protocol layer.** First slice of Phase 3 of the
+  trunking-adjacent feature plan (#365). Adds BCH(31,21)
+  encode/decode (corrects up to 2 bit errors per codeword) plus
+  the POCSAG-specific codeword wrapper (sync `0x7CD215D8` + idle
+  `0x7A89C197` recognition, trailing overall-parity check,
+  address/message/function decoding), batch carve-up (sync + 16
+  codewords × 8 frame slots, full-RIC reconstruction from the
+  18-bit address-codeword field + slot index), and the
+  numeric (CCIR 584 extended BCD: 0-9, *, U, space, -, ), ( ) +
+  alphanumeric (7-bit LSB-first ASCII) message decoders. Pure
+  protocol — the DSP wiring (FM demod → bit slicer → sync
+  detector → batch decoder → bus event → SQLite log → web/TUI
+  panel) lands in a focused follow-up PR. See
+  [docs/pocsag.md](docs/pocsag.md).
 - **Spectrum panel: click-to-tune + bookmark markers.** Closes the
   click-to-tune TODO from the bookmarks PR (#368). Clicking
   anywhere on the waterfall canvas now posts the bin's centre
@@ -83,6 +128,19 @@ for tagged releases.
 
 ### Fixed
 
+- **RTL-SDR cold-boot stall on Windows now self-recovers.** Clone
+  dongles (and some power-marginal hubs) latch the first
+  USB_SYSCTL=0x09 vendor-OUT write, then NAK the byte-identical
+  second write in `init baseband` step 0 with `ERROR_GEN_FAILURE
+  (0x1F)`. The Linux equivalent (`EPIPE`) was already covered by the
+  bring-up reset+retry envelope; the Windows path wasn't because (a)
+  `ERROR_GEN_FAILURE` wasn't classified as resetable, and (b) the
+  WinUSB `Transport.Reset()` was a no-op. WinUSB now clears the
+  control-pipe halt via `WinUsb_ResetPipe(0)` (USB
+  `CLEAR_FEATURE(ENDPOINT_HALT)`), the new `usb.ErrPipeStalled`
+  sentinel keys the existing retry envelope, and a clone-dongle hint
+  pointing at Zadig / port choice / `gophertrunk sdr doctor` is
+  appended when the second attempt still fails.
 - **Wideband DMR receiver loop-gain now matches the single-channel
   ccdecoder path.** The Stage 2 / Stage 3 wideband engine was
   instantiating `dmr/receiver.Receiver` with the default

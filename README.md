@@ -65,6 +65,12 @@ Silicon and Intel. Full per-OS recipes at
   Motorola Type II / SmartZone, EDACS / GE-Marc, LTR, MPT 1327,
   dPMR Mode 3, TETRA TMO. Amateur-radio: D-STAR and Yaesu System
   Fusion.
+- **POCSAG paging** — protocol layer for the dominant wireline
+  FSK pager protocol (CCIR 584): BCH(31,21) FEC, batch carve-up,
+  numeric (5 BCD/codeword) + alphanumeric (7-bit packed ASCII)
+  decoders. Foundation for fire / EMS dispatch text alongside
+  the trunked-voice pipeline; DSP wiring follows in the next PR.
+  See [docs/pocsag.md](docs/pocsag.md).
 - **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25
   Phase 2 / DMR) vocoders in Go, no DVSI / mbelib dependency.
   Per-call WAV + raw-frame sidecars; live PCM playback via direct

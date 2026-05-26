@@ -527,13 +527,21 @@ func (t *winTransport) ClaimInterface(num int) error {
 func (t *winTransport) ReleaseInterface(int) error { return nil }
 
 func (t *winTransport) Reset() error {
-	// WinUSB has no equivalent of libusb_reset_device — issuing a USB
-	// port-reset requires IOCTL_USB_CYCLE_PORT on the parent hub, which
-	// is brittle and rarely needed. Return nil so callers treat it as
-	// a best-effort no-op (matches the Linux backend's behavior on
-	// kernels that don't expose USBDEVFS_RESET).
+	// WinUSB has no equivalent of libusb_reset_device — a full USB
+	// port-reset would require IOCTL_USB_CYCLE_PORT on the parent hub,
+	// which is brittle and almost never the right hammer. What the
+	// bring-up retry envelope actually needs is a clear-halt on the
+	// default control endpoint: that's exactly what WinUsb_ResetPipe
+	// emits (USB CLEAR_FEATURE(ENDPOINT_HALT)). Pipe ID 0 is the
+	// default control endpoint. Recovers the clone-dongle cold-boot
+	// stall surfaced as ERROR_GEN_FAILURE on the second USB_SYSCTL=0x09
+	// write, without disturbing the bulk-IN pipe.
 	if t.closed.Load() {
 		return ErrClosed
+	}
+	ret, _, errno := procWinUsbResetPipe.Call(t.ifaceHandle, 0)
+	if ret == 0 {
+		return fmt.Errorf("winusb: WinUsb_ResetPipe(control): %w", winErr(errno))
 	}
 	return nil
 }
@@ -871,6 +879,16 @@ func parseDevicePath(p string) (vid, pid uint16, serial string) {
 // winErr maps Windows error codes to the package's sentinel errors;
 // unmapped errors come through wrapped as-is so callers can still
 // inspect the underlying code via errors.As(*windows.Errno).
+//
+// ERROR_GEN_FAILURE (0x1F) is deliberately NOT folded into
+// ErrDeviceGone: it commonly means the device firmware NAK'd the
+// request, the pipe stalled, or the wrong function driver is bound
+// (e.g. libusbK rather than in-box WinUSB.sys). Conflating it with
+// physical disconnect actively misled the issue #270 reporter.
+// Instead it wraps both ErrPipeStalled (so the bring-up retry envelope
+// in purego/driver.go treats it as resetable, matching the Linux EPIPE
+// path) and the underlying windows.Errno (so existing call-sites that
+// inspect the Win32 code via errors.Is still work).
 func winErr(errno error) error {
 	if errno == nil {
 		return nil
@@ -881,7 +899,7 @@ func winErr(errno error) error {
 		windows.ERROR_DEV_NOT_EXIST:
 		return ErrDeviceGone
 	case windows.ERROR_GEN_FAILURE:
-		return fmt.Errorf("winusb: device rejected request (ERROR_GEN_FAILURE 0x1F — firmware NAK / stalled pipe / wrong driver bound; try re-binding to WinUSB via Zadig): %w", errno)
+		return fmt.Errorf("winusb: device rejected request (ERROR_GEN_FAILURE 0x1F — firmware NAK / stalled pipe / wrong driver bound; try re-binding to WinUSB via Zadig): %w (errno: %w)", ErrPipeStalled, errno)
 	case windows.ERROR_SEM_TIMEOUT, windows.ERROR_TIMEOUT:
 		return fmt.Errorf("%w (windows errno=%v)", ErrTimeout, errno)
 	}

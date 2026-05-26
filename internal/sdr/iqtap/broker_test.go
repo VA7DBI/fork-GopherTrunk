@@ -481,3 +481,54 @@ func TestBrokerSetterPassThroughs(t *testing.T) {
 		t.Errorf("close count = %d, want 1", got)
 	}
 }
+
+func TestBrokerSeedPopulatesCacheWithoutInnerCall(t *testing.T) {
+	dev := newFakeDevice("dev-seed")
+	b := New(dev, 0, nil)
+
+	b.Seed(0, 2_048_000)
+
+	if got := b.SampleRateHz(); got != 2_048_000 {
+		t.Errorf("SampleRateHz after Seed = %d, want 2_048_000", got)
+	}
+	if got := b.CenterHz(); got != 0 {
+		t.Errorf("CenterHz after Seed(0, ...) = %d, want 0 (untouched)", got)
+	}
+	if got := dev.sampleRate.Load(); got != 0 {
+		t.Errorf("inner SetSampleRate was called: dev.sampleRate = %d, want 0", got)
+	}
+	if got := dev.centerFreq.Load(); got != 0 {
+		t.Errorf("inner SetCenterFreq was called: dev.centerFreq = %d, want 0", got)
+	}
+}
+
+func TestBrokerSeedZeroLeavesFieldsUnchanged(t *testing.T) {
+	dev := newFakeDevice("dev-seed-zero")
+	b := New(dev, 0, nil)
+
+	if err := b.SetCenterFreq(100_000_000); err != nil {
+		t.Fatalf("SetCenterFreq: %v", err)
+	}
+	if err := b.SetSampleRate(2_400_000); err != nil {
+		t.Fatalf("SetSampleRate: %v", err)
+	}
+
+	b.Seed(0, 0)
+
+	if got := b.CenterHz(); got != 100_000_000 {
+		t.Errorf("CenterHz after Seed(0,0) = %d, want 100_000_000", got)
+	}
+	if got := b.SampleRateHz(); got != 2_400_000 {
+		t.Errorf("SampleRateHz after Seed(0,0) = %d, want 2_400_000", got)
+	}
+
+	// Now seed only the rate to a new value; center must remain
+	// unchanged because the new value's zero arg is a sentinel.
+	b.Seed(0, 1_024_000)
+	if got := b.CenterHz(); got != 100_000_000 {
+		t.Errorf("CenterHz after Seed(0, 1_024_000) = %d, want 100_000_000 (untouched)", got)
+	}
+	if got := b.SampleRateHz(); got != 1_024_000 {
+		t.Errorf("SampleRateHz after Seed(0, 1_024_000) = %d, want 1_024_000", got)
+	}
+}

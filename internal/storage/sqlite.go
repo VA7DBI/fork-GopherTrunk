@@ -128,6 +128,24 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 
 CREATE INDEX IF NOT EXISTS idx_bookmarks_freq  ON bookmarks(freq_hz);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_group ON bookmarks(grouping, name);
+
+-- POCSAG pager messages persisted from the decoder pipeline. Each
+-- row is one fully-reassembled page (address codeword + N message
+-- codewords). The function field is the 2-bit code from the
+-- address codeword (A/B/C/D); encoding distinguishes numeric vs.
+-- alphanumeric.
+CREATE TABLE IF NOT EXISTS pager_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at INTEGER NOT NULL,            -- unix nanoseconds
+    ric         INTEGER NOT NULL,            -- 21-bit address
+    func        INTEGER NOT NULL,            -- 0..3 (A..D)
+    encoding    TEXT    NOT NULL DEFAULT '', -- "numeric" | "alpha"
+    body        TEXT    NOT NULL DEFAULT '',
+    corrected   INTEGER NOT NULL DEFAULT 0   -- total BCH bit-error count
+);
+
+CREATE INDEX IF NOT EXISTS idx_pager_log_time ON pager_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_pager_log_ric  ON pager_log(ric, received_at);
 `
 
 func (d *DB) migrate() error {
