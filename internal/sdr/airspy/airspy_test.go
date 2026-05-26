@@ -17,9 +17,8 @@ func withDevice(t *testing.T) (*Device, *usb.MockTransport) {
 }
 
 func TestDriverEnumerateOpenSetsSampleType(t *testing.T) {
-	// On Open the driver pins INT16_IQ and reads the samplerate table
-	// (count first, then list). Provide both calls in the OpenFunc'd
-	// transport.
+	// On Open the driver reads the samplerate table (count first, then
+	// list). SET_SAMPLE_TYPE is deferred until StreamIQ starts.
 	openCalled := false
 	enum := &usb.MockEnumerator{
 		Devices: []usb.Descriptor{
@@ -35,7 +34,6 @@ func TestDriverEnumerateOpenSetsSampleType(t *testing.T) {
 			binary.LittleEndian.PutUint32(list[4:8], 2_500_000)
 			mt.Script = []usb.CtrlExchange{
 				{BRequest: reqReceiverMode, WValue: receiverModeOff},
-				{BRequest: reqSetSampleType, WValue: sampleTypeInt16IQ},
 				{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 0, Reply: count, N: 4},
 				{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 2, Reply: list, N: 8},
 			}
@@ -66,13 +64,12 @@ func TestDriverEnumerateOpenSetsSampleType(t *testing.T) {
 	}
 }
 
-func TestDriverOpenRetriesTransientDeviceGoneOnSetSampleType(t *testing.T) {
+func TestDriverOpenRetriesTransientDeviceGoneOnOpen(t *testing.T) {
 	prevBackoff := openRetryBackoff
 	openRetryBackoff = 0
 	t.Cleanup(func() { openRetryBackoff = prevBackoff })
 
 	openCalls := 0
-	var first *usb.MockTransport
 	var second *usb.MockTransport
 
 	enum := &usb.MockEnumerator{
@@ -81,30 +78,26 @@ func TestDriverOpenRetriesTransientDeviceGoneOnSetSampleType(t *testing.T) {
 		},
 		OpenFunc: func(d usb.Descriptor) (*usb.MockTransport, error) {
 			openCalls++
-			mt := usb.NewMockTransport()
 			switch openCalls {
 			case 1:
-				mt.Script = []usb.CtrlExchange{
-					{BRequest: reqReceiverMode, WValue: receiverModeOff},
-					{BRequest: reqSetSampleType, WValue: sampleTypeInt16IQ, Err: usb.ErrDeviceGone},
-				}
-				first = mt
+					return nil, usb.ErrDeviceGone
 			case 2:
+					mt := usb.NewMockTransport()
 				count := make([]byte, 4)
 				binary.LittleEndian.PutUint32(count, 1)
 				list := make([]byte, 4)
 				binary.LittleEndian.PutUint32(list, 10_000_000)
 				mt.Script = []usb.CtrlExchange{
 					{BRequest: reqReceiverMode, WValue: receiverModeOff},
-					{BRequest: reqSetSampleType, WValue: sampleTypeInt16IQ},
 					{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 0, Reply: count, N: 4},
 					{In: true, BRequest: reqGetSamplerates, WValue: 0, WIndex: 1, Reply: list, N: 4},
 				}
 				second = mt
+					return mt, nil
 			default:
 				t.Fatalf("unexpected OpenFunc call #%d", openCalls)
 			}
-			return mt, nil
+				return nil, nil
 		},
 	}
 
@@ -121,11 +114,8 @@ func TestDriverOpenRetriesTransientDeviceGoneOnSetSampleType(t *testing.T) {
 	if openCalls < 2 {
 		t.Fatalf("OpenFunc calls = %d, want at least 2", openCalls)
 	}
-	if first == nil || second == nil {
-		t.Fatalf("transports not captured (first=%v second=%v)", first != nil, second != nil)
-	}
-	if !first.Closed {
-		t.Error("first transport should have been closed after transient failure")
+	if second == nil {
+		t.Fatalf("second transport not captured")
 	}
 }
 
@@ -308,6 +298,7 @@ func TestDecodeInt16IQ(t *testing.T) {
 func TestStreamIQFlipsReceiverAndStops(t *testing.T) {
 	dev, mt := withDevice(t)
 	mt.Script = []usb.CtrlExchange{
+		{BRequest: reqSetSampleType, WValue: sampleTypeInt16IQ},
 		{BRequest: reqReceiverMode, WValue: receiverModeOn},
 		{BRequest: reqReceiverMode, WValue: receiverModeOff},
 	}

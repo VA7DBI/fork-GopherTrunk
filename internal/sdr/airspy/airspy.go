@@ -197,12 +197,6 @@ func (d *Driver) openDevice(desc usb.Descriptor, idx int, serial string) (*Devic
 		},
 	}
 	_ = controlOutInterfaceFallback(t, reqReceiverMode, receiverModeOff, nil, controlTimeoutMs)
-	// Pin the device to INT16_IQ — the format the StreamIQ decoder
-	// expects.
-	if err := setSampleTypeInt16(t); err != nil {
-		_ = dev.Close()
-		return nil, fmt.Errorf("airspy: set sample type: %w", err)
-	}
 	// Read the supported-samplerate table so SetSampleRate can match
 	// the requested rate against an index.
 	rates, err := dev.fetchSampleRates()
@@ -431,6 +425,16 @@ func (d *Device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 	}
 	d.streaming = true
 	d.mu.Unlock()
+
+	// Apply INT16_IQ at stream start rather than open time. This keeps
+	// Open resilient on hosts that reject early vendor OUT transfers,
+	// while still pinning the wire format before bulk IQ starts.
+	if err := setSampleTypeInt16(d.t); err != nil {
+		d.mu.Lock()
+		d.streaming = false
+		d.mu.Unlock()
+		return nil, fmt.Errorf("airspy: set sample type: %w", err)
+	}
 
 	if err := d.setReceiver(receiverModeOn); err != nil {
 		d.mu.Lock()

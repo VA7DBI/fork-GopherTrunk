@@ -319,7 +319,7 @@ func (t *winTransport) ControlIn(bRequest uint8, wValue, wIndex uint16, n int, t
 	if err == nil {
 		return out, nil
 	}
-	if !errors.Is(err, ErrDeviceGone) {
+	if !shouldRetryInterfaceRecipient(err) {
 		return nil, err
 	}
 	debugLogf("winusb", "ControlIn retry with interface recipient req=0x%02x val=0x%04x idx=0x%04x", bRequest, wValue, wIndex)
@@ -372,7 +372,7 @@ func (t *winTransport) ControlOut(bRequest uint8, wValue, wIndex uint16, data []
 	if err == nil {
 		return nil
 	}
-	if !errors.Is(err, ErrDeviceGone) {
+	if !shouldRetryInterfaceRecipient(err) {
 		return err
 	}
 	debugLogf("winusb", "ControlOut retry with interface recipient req=0x%02x val=0x%04x idx=0x%04x len=%d", bRequest, wValue, wIndex, len(data))
@@ -381,6 +381,15 @@ func (t *winTransport) ControlOut(bRequest uint8, wValue, wIndex uint16, data []
 		debugLogf("winusb", "ControlOut interface-recipient retry failed: %v", err)
 	}
 	return err
+}
+
+func shouldRetryInterfaceRecipient(err error) bool {
+	if errors.Is(err, ErrDeviceGone) {
+		return true
+	}
+	// Some WinUSB stacks surface recipient mismatches as ERROR_GEN_FAILURE
+	// rather than a disconnect-like code.
+	return strings.Contains(err.Error(), "ERROR_GEN_FAILURE")
 }
 
 func (t *winTransport) controlOutWithType(reqType uint8, bRequest uint8, wValue, wIndex uint16, data []byte) error {
