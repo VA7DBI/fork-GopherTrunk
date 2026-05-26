@@ -96,6 +96,14 @@ const (
 	// any protocol whose grant carries ALGID/KID at grant time does
 	// not need this event — the values are already on the Grant.
 	KindCallEncryption Kind = "call.encryption"
+	// KindBookmarkCreated / KindBookmarkUpdated / KindBookmarkDeleted
+	// fire whenever the bookmarks store mutates. Payload is a
+	// storage.Bookmark (or {ID} for deletes). Surfaced over SSE / WS
+	// so the web SPA + TUI can refresh their bookmark list without
+	// polling.
+	KindBookmarkCreated Kind = "bookmark.created"
+	KindBookmarkUpdated Kind = "bookmark.updated"
+	KindBookmarkDeleted Kind = "bookmark.deleted"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol

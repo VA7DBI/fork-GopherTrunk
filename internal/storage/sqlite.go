@@ -107,6 +107,27 @@ CREATE TABLE IF NOT EXISTS location_log (
 
 CREATE INDEX IF NOT EXISTS idx_location_log_time  ON location_log(reported_at);
 CREATE INDEX IF NOT EXISTS idx_location_log_radio ON location_log(radio_id, reported_at);
+
+-- Operator-managed conventional channel bookmarks: UI-editable shortlist
+-- of "where do I park the SDR" frequencies that complements the YAML
+-- scanner.conventional list. Each row carries enough metadata to
+-- click-to-tune from the spectrum waterfall and to filter against a
+-- channel-group navigator.
+CREATE TABLE IF NOT EXISTS bookmarks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL,
+    freq_hz     INTEGER NOT NULL,
+    mode        TEXT    NOT NULL DEFAULT 'FM',
+    ctcss_hz    REAL    NOT NULL DEFAULT 0,
+    dcs_code    INTEGER NOT NULL DEFAULT 0,
+    notes       TEXT    NOT NULL DEFAULT '',
+    grouping    TEXT    NOT NULL DEFAULT '',  -- "marine" / "ham-2m" / "utility" — operator-defined
+    created_at  INTEGER NOT NULL,             -- unix nanoseconds
+    updated_at  INTEGER NOT NULL              -- unix nanoseconds
+);
+
+CREATE INDEX IF NOT EXISTS idx_bookmarks_freq  ON bookmarks(freq_hz);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_group ON bookmarks(grouping, name);
 `
 
 func (d *DB) migrate() error {

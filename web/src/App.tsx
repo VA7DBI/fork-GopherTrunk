@@ -7,6 +7,7 @@ import { TabBar, type Tab } from "./components/TabBar";
 import { AudioPlayer } from "./components/AudioPlayer";
 import { InstallPrompt } from "./components/InstallPrompt";
 import { Active } from "./panels/Active";
+import { Bookmarks } from "./panels/Bookmarks";
 import { Dashboard } from "./panels/Dashboard";
 import { Devices } from "./panels/Devices";
 import { Events } from "./panels/Events";
@@ -34,6 +35,7 @@ const EXTRA_TABS: Tab[] = [
   { to: "/events", label: "Events", icon: "≣" },
   { to: "/tones", label: "Tones", icon: "♪" },
   { to: "/spectrum", label: "Spectrum", icon: "≈" },
+  { to: "/bookmarks", label: "Bookmarks", icon: "★" },
   { to: "/metrics", label: "Metrics", icon: "▰" },
   { to: "/devices", label: "Devices", icon: "⌗" },
   { to: "/import", label: "Import", icon: "↗" },
@@ -132,6 +134,7 @@ export function App() {
           <Route path="/active" element={<Active />} />
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/spectrum" element={<Spectrum />} />
+          <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/systems" element={<Systems />} />
           <Route path="/talkgroups" element={<Talkgroups />} />
           <Route path="/history" element={<History />} />

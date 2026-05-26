@@ -85,6 +85,11 @@ Silicon and Intel. Full per-OS recipes at
   trunking-adjacent decoders (paging, AIS, ADS-B, ...) tap the
   same source without disturbing CC decode. `GET /api/v1/spectrum/devices`
   + `WS /api/v1/spectrum/stream`; web panel under `/spectrum`.
+- **Bookmarks / frequency manager** — UI-managed conventional
+  channel list (marine VHF, NOAA weather, FRS/GMRS, repeater
+  outputs, public-safety fall-back channels) stored in the
+  daemon's SQLite database. Edit / create / delete from the web
+  panel under `/bookmarks`; REST at `/api/v1/bookmarks`.
 - **One dongle, many repeaters** — `role: wideband` pins a single
   SDR to a centre frequency and runs an internal channelizer so
   one dongle decodes every DMR Tier II conventional repeater AND
