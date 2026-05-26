@@ -724,6 +724,7 @@ func (s *Server) routes() *http.ServeMux {
 	// the broker map wasn't wired).
 	mux.HandleFunc("GET /api/v1/spectrum/devices", s.handleSpectrumDevices)
 	mux.HandleFunc("GET /api/v1/spectrum/stream", s.handleSpectrumStream)
+	mux.HandleFunc("POST /api/v1/spectrum/devices/{serial}/tune", s.gate(s.handleSpectrumTune))
 
 	// Bookmarks / frequency manager. Read endpoint is always open;
 	// create / update / delete are gated behind allow_mutations

@@ -43,6 +43,15 @@ type SpectrumProvider interface {
 	// closes when ctx cancels or the device disappears, and a
 	// cleanup func the caller MUST invoke on disconnect.
 	OpenStream(ctx context.Context, serial string, fftSize int, fps float64) (<-chan SpectrumFrame, func(), error)
+	// Tune programs the named SDR's centre frequency in Hz. Used by
+	// the web panel's click-to-tune handler. Returns an error if the
+	// serial isn't known or the underlying device rejects the value.
+	Tune(serial string, centerHz uint32) error
+}
+
+// TuneRequest is the body shape POST'd to /api/v1/spectrum/devices/{serial}/tune.
+type TuneRequest struct {
+	CenterHz uint32 `json:"center_hz"`
 }
 
 // handleSpectrumDevices answers GET /api/v1/spectrum/devices.
@@ -52,6 +61,41 @@ func (s *Server) handleSpectrumDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.spectrum.Devices())
+}
+
+// handleSpectrumTune answers POST /api/v1/spectrum/devices/{serial}/tune.
+// Body: {"center_hz": <uint32>}. Gated like every other mutation
+// route — auth / allow-mutations checks run first.
+//
+// Daemon-internal "tune the SDR" surface for the web Spectrum
+// panel's click-to-tune handler. External clients should use the
+// rigctld TCP server instead — it speaks the standard Hamlib wire
+// protocol against the same broker.
+func (s *Server) handleSpectrumTune(w http.ResponseWriter, r *http.Request) {
+	if s.spectrum == nil {
+		writeError(w, http.StatusServiceUnavailable, "spectrum subsystem not enabled")
+		return
+	}
+	serial := r.PathValue("serial")
+	if serial == "" {
+		writeError(w, http.StatusBadRequest, "serial path parameter is required")
+		return
+	}
+	var body TuneRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if body.CenterHz == 0 {
+		writeError(w, http.StatusBadRequest, "center_hz is required and must be > 0")
+		return
+	}
+	if err := s.spectrum.Tune(serial, body.CenterHz); err != nil {
+		s.log.Debug("api: spectrum tune", "serial", serial, "hz", body.CenterHz, "err", err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleSpectrumStream answers WS /api/v1/spectrum/stream?device=...&fps=...&bins=....

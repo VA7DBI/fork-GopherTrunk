@@ -82,10 +82,25 @@ done
 
 ## Click-to-tune from the spectrum panel
 
-Planned follow-up. The Bookmarks REST endpoints + frequency-axis
-metadata on spectrum frames already provide everything the
-spectrum panel needs to render bookmark markers and post a manual
-tune; the UI integration is the remaining piece.
+Shipped. The Spectrum panel polls `/api/v1/bookmarks` every 30 s
+and renders the bookmarks list as cyan tick markers across the
+top of the waterfall canvas wherever a bookmark's frequency
+falls inside the visible band. Out-of-band bookmarks are
+silently omitted from the overlay (they're still on the
+`/bookmarks` panel).
+
+Clicking anywhere on the waterfall posts to `POST
+/api/v1/spectrum/devices/{serial}/tune` with a body of
+`{"center_hz": N}` derived from the canvas X position; the
+daemon routes the call through the iqtap broker so the SDR
+retunes and the new centre frequency is reflected on every
+downstream panel (spectrum, constellation, CC Activity) plus
+any external rigctld client.
+
+The tune endpoint is gated like every other mutation — daemons
+started with `auth.mode: required` reject it without a bearer
+token. CORS / auth setup is documented in
+[hardening.md](hardening.md).
 
 ## What bookmarks are *not*
 

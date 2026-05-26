@@ -9,6 +9,17 @@ for tagged releases.
 
 ### Added
 
+- **Spectrum panel: click-to-tune + bookmark markers.** Closes the
+  click-to-tune TODO from the bookmarks PR (#368). Clicking
+  anywhere on the waterfall canvas now posts the bin's centre
+  frequency to a new `POST
+  /api/v1/spectrum/devices/{serial}/tune` endpoint and the SDR
+  retunes immediately. The bookmarks list is polled every 30 s
+  and rendered as small cyan ticks across the top of the
+  waterfall wherever a bookmark frequency falls inside the visible
+  band. Tune goes through the iqtap broker so the frequency stays
+  coherent across the spectrum, constellation, rigctld, and CC
+  decoder views, and survives `pool.Reacquire`.
 - **Constellation viewer.** New web panel at `/constellation` that
   renders a live 2D scatter of decimated IQ samples (2 ksps
   default). Brighter dots = newer samples; reference rings at
