@@ -9,6 +9,22 @@ for tagged releases.
 
 ### Added
 
+- **POCSAG DSP receiver + daemon wiring.** Third slice of Phase 3
+  (#365). New `internal/radio/pager/pocsag/receiver` package wires
+  the FM demod → rational resampler → integrator-and-slicer → bit
+  syncer pipeline together so a tuned SDR's IQ stream now flows
+  end-to-end into the pager bus event. New `paging.pocsag` YAML
+  section pins SDRs to paging frequencies (`serial` +
+  `frequency_hz` + optional `baud_hz`). The daemon retunes the
+  SDR on startup, subscribes to the iqtap broker, and runs one
+  receiver per configured entry as a non-essential spawn (so a
+  misconfigured paging frequency doesn't bring down the trunking
+  pipeline). Synthetic-IQ end-to-end test is skipped pending
+  real captured fixtures; receiver API surface (Options
+  validation, ctx cancel, nil input) is unit-tested. See
+  [docs/pocsag.md](docs/pocsag.md) for the configuration knob and
+  what's pending (timing-recovery tuning against real fixtures,
+  multi-channel-from-one-SDR DDC, FLEX).
 - **POCSAG syncer + page assembler + bus event + SQLite log +
   web panel.** Second slice of Phase 3 (#365), building on the
   protocol layer landed in #372. The new `pocsag.Syncer`

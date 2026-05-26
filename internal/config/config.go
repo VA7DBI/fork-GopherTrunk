@@ -26,6 +26,26 @@ type Config struct {
 	Audio      AudioConfig      `yaml:"audio"`
 	Broadcast  BroadcastConfig  `yaml:"broadcast"`
 	Baseband   BasebandConfig   `yaml:"baseband"`
+	Paging     PagingConfig     `yaml:"paging"`
+}
+
+// PagingConfig configures pager decoders (POCSAG today, FLEX
+// follow-up). Each entry pins an SDR to a paging frequency and
+// runs the per-protocol receiver against its IQ stream.
+type PagingConfig struct {
+	POCSAG []PagingPOCSAGConfig `yaml:"pocsag"`
+}
+
+// PagingPOCSAGConfig describes one POCSAG paging channel to
+// decode. Serial picks the SDR; the daemon tunes it to FrequencyHz
+// and runs the POCSAG receiver against its full IQ stream. Baud
+// defaults to 1200 — the most common POCSAG rate; configure 512
+// for legacy networks (e.g. some commercial paging providers) or
+// 2400 for higher-throughput systems (DAPNET).
+type PagingPOCSAGConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	BaudHz      uint32 `yaml:"baud_hz"`
 }
 
 // BasebandConfig configures wideband IQ recording and offline replay.

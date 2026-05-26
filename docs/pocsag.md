@@ -40,20 +40,44 @@ focused follow-up PR.
 
 ## What's pending
 
-- **DSP integration.** The FM-demodulated bit stream → POCSAG
-  syncer pipeline (the equivalent of the existing P25 / DMR
-  per-protocol `Process(stream, baseIdx)` adapters) lands in a
-  focused follow-up PR. The syncer is ready to consume packed
-  bits the moment the DSP layer exists. Path: iqtap broker
-  subscriber → narrowband DDC at the configured POCSAG frequency
-  → quadrature FM demod (`internal/dsp/demod/fm.go`) → Gardner
-  symbol timing recovery (`internal/dsp/sync/gardner.go`) → bit
-  slicer → `Syncer.Push(bit)`.
+- **End-to-end IQ validation.** The receiver code is wired and
+  builds against the full pipeline, but the synthetic FM-modulated
+  IQ test is skipped pending real captured fixtures (a `.cfile`
+  under `samples/pocsag/`). The receiver's API surface is unit-
+  tested (Options validation, ctx cancel, nil input); the protocol
+  + storage + REST + UI stack is covered by their respective
+  package tests. The remaining piece is tuning the
+  integrator-and-slicer timing against real on-air bits — likely
+  swapping the running-mean slicer for a proper Mueller-Müller +
+  matched-filter combination once we have signal to calibrate
+  against.
+- **Multi-channel POCSAG from one wideband SDR.** Today each
+  paging.pocsag entry pins one SDR to one frequency. A follow-up
+  will add a DDC tap so several narrow POCSAG channels inside
+  one wideband SDR's bandwidth decode concurrently — the same
+  primitive `role: wideband` uses for DMR Tier II.
 - **FLEX.** A separate, higher-rate (1600 / 3200 / 6400 sps)
   Motorola pager protocol that shares the operator workflow but
   needs its own FEC (Reed-Muller + two-of-three majority decoder)
   and frame structure. Documented as a planned follow-up; the
   framework added here is the foundation.
+
+## Configuration
+
+```yaml
+paging:
+  pocsag:
+    - serial: "antenna-pi"       # SDR serial (must be in sdr.devices
+                                 # or sdr.rtl_tcp)
+      frequency_hz: 152_007_500  # local commercial paging / fire
+                                 # dispatch / DAPNET / etc.
+      baud_hz: 1200              # 512 / 1200 / 2400; default 1200
+```
+
+The daemon retunes the named SDR to `frequency_hz` on startup and
+runs the receiver against its IQ stream via the iqtap broker.
+Pages flow onto `events.KindPagerMessage`, land in the SQLite
+`pager_log` table, and render on the web `/pagers` panel.
 
 ## What's shipped now
 
