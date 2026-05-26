@@ -33,6 +33,7 @@ var (
 
 	procWinUsbInitialize          = modWinUSB.NewProc("WinUsb_Initialize")
 	procWinUsbFree                = modWinUSB.NewProc("WinUsb_Free")
+	procWinUsbGetAssociatedInterface = modWinUSB.NewProc("WinUsb_GetAssociatedInterface")
 	procWinUsbControlTransfer     = modWinUSB.NewProc("WinUsb_ControlTransfer")
 	procWinUsbReadPipe            = modWinUSB.NewProc("WinUsb_ReadPipe")
 	procWinUsbAbortPipe           = modWinUSB.NewProc("WinUsb_AbortPipe")
@@ -250,6 +251,9 @@ type winTransport struct {
 	desc        Descriptor
 	closed      atomic.Bool
 
+	assocMu      sync.Mutex
+	assocHandles map[uint8]uintptr
+
 	bulkMu       sync.Mutex
 	bulkActive   bool
 	bulkEpAddr   byte
@@ -326,11 +330,19 @@ func (t *winTransport) ControlIn(bRequest uint8, wValue, wIndex uint16, n int, t
 	out, err = t.controlInWithType(VendorIn|interfaceRecipientBit, bRequest, wValue, wIndex, n)
 	if err != nil {
 		debugLogf("winusb", "ControlIn interface-recipient retry failed: %v", err)
+		out, assocErr := t.controlInAssociatedFallback(bRequest, wValue, wIndex, n)
+		if assocErr == nil {
+			return out, nil
+		}
 	}
 	return out, err
 }
 
 func (t *winTransport) controlInWithType(reqType uint8, bRequest uint8, wValue, wIndex uint16, n int) ([]byte, error) {
+	return t.controlInWithTypeOnHandle(t.ifaceHandle, reqType, bRequest, wValue, wIndex, n)
+}
+
+func (t *winTransport) controlInWithTypeOnHandle(handle uintptr, reqType uint8, bRequest uint8, wValue, wIndex uint16, n int) ([]byte, error) {
 	pkt := winusbSetupPacket{
 		RequestType: reqType,
 		Request:     bRequest,
@@ -347,7 +359,7 @@ func (t *winTransport) controlInWithType(reqType uint8, bRequest uint8, wValue, 
 	}
 	var transferred uint32
 	ret, _, errno := procWinUsbControlTransfer.Call(
-		t.ifaceHandle,
+		handle,
 		uintptr(setup),
 		bufPtr,
 		uintptr(n),
@@ -358,6 +370,26 @@ func (t *winTransport) controlInWithType(reqType uint8, bRequest uint8, wValue, 
 		return nil, fmt.Errorf("winusb: WinUsb_ControlTransfer IN: %w", winErr(errno))
 	}
 	return buf[:transferred], nil
+}
+
+func (t *winTransport) controlInAssociatedFallback(bRequest uint8, wValue, wIndex uint16, n int) ([]byte, error) {
+	h, ok, err := t.associatedInterfaceHandle(0)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("winusb: no associated interface available")
+	}
+	debugLogf("winusb", "ControlIn retry with associated interface[0] req=0x%02x val=0x%04x idx=0x%04x", bRequest, wValue, wIndex)
+	out, err := t.controlInWithTypeOnHandle(h, VendorIn, bRequest, wValue, wIndex, n)
+	if err == nil {
+		return out, nil
+	}
+	out, err = t.controlInWithTypeOnHandle(h, VendorIn|interfaceRecipientBit, bRequest, wValue, wIndex, n)
+	if err != nil {
+		debugLogf("winusb", "ControlIn associated interface retry failed: %v", err)
+	}
+	return out, err
 }
 
 func (t *winTransport) ControlOut(bRequest uint8, wValue, wIndex uint16, data []byte, timeoutMs int) error {
@@ -379,6 +411,10 @@ func (t *winTransport) ControlOut(bRequest uint8, wValue, wIndex uint16, data []
 	err = t.controlOutWithType(VendorOut|interfaceRecipientBit, bRequest, wValue, wIndex, data)
 	if err != nil {
 		debugLogf("winusb", "ControlOut interface-recipient retry failed: %v", err)
+		assocErr := t.controlOutAssociatedFallback(bRequest, wValue, wIndex, data)
+		if assocErr == nil {
+			return nil
+		}
 	}
 	return err
 }
@@ -393,6 +429,10 @@ func shouldRetryInterfaceRecipient(err error) bool {
 }
 
 func (t *winTransport) controlOutWithType(reqType uint8, bRequest uint8, wValue, wIndex uint16, data []byte) error {
+	return t.controlOutWithTypeOnHandle(t.ifaceHandle, reqType, bRequest, wValue, wIndex, data)
+}
+
+func (t *winTransport) controlOutWithTypeOnHandle(handle uintptr, reqType uint8, bRequest uint8, wValue, wIndex uint16, data []byte) error {
 	pkt := winusbSetupPacket{
 		RequestType: reqType,
 		Request:     bRequest,
@@ -407,7 +447,7 @@ func (t *winTransport) controlOutWithType(reqType uint8, bRequest uint8, wValue,
 	}
 	var transferred uint32
 	ret, _, errno := procWinUsbControlTransfer.Call(
-		t.ifaceHandle,
+		handle,
 		uintptr(setup),
 		dataPtr,
 		uintptr(len(data)),
@@ -418,6 +458,55 @@ func (t *winTransport) controlOutWithType(reqType uint8, bRequest uint8, wValue,
 		return fmt.Errorf("winusb: WinUsb_ControlTransfer OUT: %w", winErr(errno))
 	}
 	return nil
+}
+
+func (t *winTransport) controlOutAssociatedFallback(bRequest uint8, wValue, wIndex uint16, data []byte) error {
+	h, ok, err := t.associatedInterfaceHandle(0)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("winusb: no associated interface available")
+	}
+	debugLogf("winusb", "ControlOut retry with associated interface[0] req=0x%02x val=0x%04x idx=0x%04x len=%d", bRequest, wValue, wIndex, len(data))
+	err = t.controlOutWithTypeOnHandle(h, VendorOut, bRequest, wValue, wIndex, data)
+	if err == nil {
+		return nil
+	}
+	err = t.controlOutWithTypeOnHandle(h, VendorOut|interfaceRecipientBit, bRequest, wValue, wIndex, data)
+	if err != nil {
+		debugLogf("winusb", "ControlOut associated interface retry failed: %v", err)
+	}
+	return err
+}
+
+func (t *winTransport) associatedInterfaceHandle(index uint8) (uintptr, bool, error) {
+	t.assocMu.Lock()
+	defer t.assocMu.Unlock()
+	if t.assocHandles != nil {
+		if h, ok := t.assocHandles[index]; ok {
+			return h, true, nil
+		}
+	}
+	var h uintptr
+	ret, _, errno := procWinUsbGetAssociatedInterface.Call(
+		t.ifaceHandle,
+		uintptr(index),
+		uintptr(unsafe.Pointer(&h)),
+	)
+	if ret == 0 {
+		if errno == windows.ERROR_NO_MORE_ITEMS {
+			debugLogf("winusb", "WinUsb_GetAssociatedInterface[%d]: no more items", index)
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("winusb: WinUsb_GetAssociatedInterface[%d]: %w", index, winErr(errno))
+	}
+	if t.assocHandles == nil {
+		t.assocHandles = make(map[uint8]uintptr)
+	}
+	t.assocHandles[index] = h
+	debugLogf("winusb", "Associated interface[%d] acquired handle=0x%x", index, h)
+	return h, true, nil
 }
 
 // ClaimInterface is a no-op on Windows: WinUsb_Initialize already gave
@@ -686,6 +775,12 @@ func (t *winTransport) Close() error {
 		procWinUsbFree.Call(t.ifaceHandle)
 		t.ifaceHandle = 0
 	}
+	t.assocMu.Lock()
+	for idx, h := range t.assocHandles {
+		procWinUsbFree.Call(h)
+		delete(t.assocHandles, idx)
+	}
+	t.assocMu.Unlock()
 	if t.fileHandle != 0 {
 		windows.CloseHandle(t.fileHandle)
 		t.fileHandle = 0

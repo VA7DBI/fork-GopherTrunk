@@ -13,13 +13,14 @@ import (
 )
 
 const (
-	airspyRealEnv       = "GOPHERTRUNK_AIRSPY_REAL"
-	airspyRealSerialEnv = "GOPHERTRUNK_AIRSPY_REAL_SERIAL"
-	airspyRealHzEnv     = "GOPHERTRUNK_AIRSPY_REAL_CENTER_HZ"
-	airspyRealRateEnv   = "GOPHERTRUNK_AIRSPY_REAL_RATE_HZ"
-	airspyRealGainEnv   = "GOPHERTRUNK_AIRSPY_REAL_GAIN_TENTH_DB"
-	airspyRealBiasEnv   = "GOPHERTRUNK_AIRSPY_REAL_BIAS_TEE"
-	airspyRealDiagEnv   = "GOPHERTRUNK_AIRSPY_REAL_DIAG"
+	airspyRealEnv         = "GOPHERTRUNK_AIRSPY_REAL"
+	airspyRealSerialEnv   = "GOPHERTRUNK_AIRSPY_REAL_SERIAL"
+	airspyRealHzEnv       = "GOPHERTRUNK_AIRSPY_REAL_CENTER_HZ"
+	airspyRealRateEnv     = "GOPHERTRUNK_AIRSPY_REAL_RATE_HZ"
+	airspyRealGainEnv     = "GOPHERTRUNK_AIRSPY_REAL_GAIN_TENTH_DB"
+	airspyRealBiasEnv     = "GOPHERTRUNK_AIRSPY_REAL_BIAS_TEE"
+	airspyRealDiagEnv     = "GOPHERTRUNK_AIRSPY_REAL_DIAG"
+	airspyRealDiagRateEnv = "GOPHERTRUNK_AIRSPY_REAL_DIAG_SAMPLERATE"
 )
 
 func TestRealHardware_OpenConfigureStream(t *testing.T) {
@@ -185,13 +186,12 @@ func TestRealHardware_USBControlTransferProbe(t *testing.T) {
 
 	candidates := []uint16{0, 1, 2}
 	var (
-		inOK, outModeOK, outTypeOK bool
-		inLastErr, outModeLastErr, outTypeLastErr error
+		inOK, outModeOK           bool
+		inLastErr, outModeLastErr error
 	)
 	for _, idx := range candidates {
 		_, inErr := tr.ControlIn(reqGetSamplerates, 0, idx, 4, controlTimeoutMs)
 		modeErr := tr.ControlOut(reqReceiverMode, receiverModeOff, idx, nil, controlTimeoutMs)
-		typeErr := tr.ControlOut(reqSetSampleType, sampleTypeInt16IQ, idx, nil, controlTimeoutMs)
 
 		if inErr == nil {
 			inOK = true
@@ -208,18 +208,106 @@ func TestRealHardware_USBControlTransferProbe(t *testing.T) {
 			outModeLastErr = modeErr
 			t.Logf("raw control out receiver OFF failed: req=0x%02x wValue=%d wIndex=%d err=%v", reqReceiverMode, receiverModeOff, idx, modeErr)
 		}
+	}
 
-		if typeErr == nil {
-			outTypeOK = true
-			t.Logf("raw control out set sample type succeeded with wIndex=%d", idx)
-		} else {
-			outTypeLastErr = typeErr
-			t.Logf("raw control out set sample type failed: req=0x%02x wValue=%d wIndex=%d err=%v", reqSetSampleType, sampleTypeInt16IQ, idx, typeErr)
+	if !inOK && !outModeOK {
+		t.Fatalf("raw control probe failed for all wIndex candidates %v (IN=%v receiverMode=%v)", candidates, inLastErr, outModeLastErr)
+	}
+}
+
+func TestRealHardware_USBSampleRateProbe(t *testing.T) {
+	requireRealAirspy(t)
+	if !envBool(airspyRealDiagRateEnv) {
+		t.Skipf("set %s=1 to run raw samplerate control probe", airspyRealDiagRateEnv)
+	}
+
+	serialHint := strings.TrimSpace(os.Getenv(airspyRealSerialEnv))
+	enum := usb.DefaultEnumerator()
+	descs, err := enum.List(vidAirspy, pidAirspy)
+	if err != nil {
+		t.Fatalf("usb enumerate: %v", err)
+	}
+	if len(descs) == 0 {
+		t.Fatalf("usb enumerate returned no Airspy descriptors")
+	}
+
+	desc := descs[0]
+	if serialHint != "" {
+		matched := false
+		for _, d := range descs {
+			if d.Serial == serialHint || strings.Contains(d.Serial, serialHint) {
+				desc = d
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Fatalf("no Airspy descriptor matched %q; found serials: %v", serialHint, collectUSBSerials(descs))
 		}
 	}
 
-	if !inOK && !outModeOK && !outTypeOK {
-		t.Fatalf("raw control probe failed for all wIndex candidates %v (IN=%v receiverMode=%v sampleType=%v)", candidates, inLastErr, outModeLastErr, outTypeLastErr)
+	t.Logf("samplerate probe backend=%s path=%q serial=%q", enum.Name(), desc.Path, desc.Serial)
+	tr, err := enum.Open(desc)
+	if err != nil {
+		t.Fatalf("usb open: %v", err)
+	}
+	defer tr.Close()
+	if err := tr.ClaimInterface(0); err != nil {
+		t.Fatalf("usb claim interface 0: %v", err)
+	}
+	defer tr.ReleaseInterface(0)
+
+	inCases := []struct {
+		name           string
+		wValue, wIndex uint16
+		n              int
+	}{
+		{name: "count-v0-i0", wValue: 0, wIndex: 0, n: 4},
+		{name: "count-v0-i1", wValue: 0, wIndex: 1, n: 4},
+		{name: "count-v0-i2", wValue: 0, wIndex: 2, n: 4},
+		{name: "count-v1-i0", wValue: 1, wIndex: 0, n: 4},
+		{name: "list-v0-i4", wValue: 0, wIndex: 4, n: 16},
+		{name: "list-v0-i16", wValue: 0, wIndex: 16, n: 64},
+	}
+	outCases := []struct {
+		name           string
+		wValue, wIndex uint16
+	}{
+		{name: "set-v0-i0", wValue: 0, wIndex: 0},
+		{name: "set-v1-i0", wValue: 1, wIndex: 0},
+		{name: "set-v2-i0", wValue: 2, wIndex: 0},
+		{name: "set-v0-i1", wValue: 0, wIndex: 1},
+		{name: "set-v1-i1", wValue: 1, wIndex: 1},
+		{name: "set-v2-i1", wValue: 2, wIndex: 1},
+	}
+
+	inOK, outOK := 0, 0
+	var inLastErr, outLastErr error
+
+	for _, tc := range inCases {
+		buf, inErr := tr.ControlIn(reqGetSamplerates, tc.wValue, tc.wIndex, tc.n, controlTimeoutMs)
+		if inErr == nil {
+			inOK++
+			t.Logf("samplerate IN %s ok: req=0x%02x wValue=0x%04x wIndex=0x%04x wLength=%d gotLen=%d", tc.name, reqGetSamplerates, tc.wValue, tc.wIndex, tc.n, len(buf))
+		} else {
+			inLastErr = inErr
+			t.Logf("samplerate IN %s failed: req=0x%02x wValue=0x%04x wIndex=0x%04x wLength=%d err=%v", tc.name, reqGetSamplerates, tc.wValue, tc.wIndex, tc.n, inErr)
+		}
+	}
+
+	for _, tc := range outCases {
+		outErr := tr.ControlOut(reqSetSamplerate, tc.wValue, tc.wIndex, nil, controlTimeoutMs)
+		if outErr == nil {
+			outOK++
+			t.Logf("samplerate OUT %s ok: req=0x%02x wValue=0x%04x wIndex=0x%04x wLength=0", tc.name, reqSetSamplerate, tc.wValue, tc.wIndex)
+		} else {
+			outLastErr = outErr
+			t.Logf("samplerate OUT %s failed: req=0x%02x wValue=0x%04x wIndex=0x%04x wLength=0 err=%v", tc.name, reqSetSamplerate, tc.wValue, tc.wIndex, outErr)
+		}
+	}
+
+	if inOK == 0 && outOK == 0 {
+		t.Fatalf("samplerate probe failed for all variants (last IN=%v last OUT=%v)", inLastErr, outLastErr)
 	}
 }
 
