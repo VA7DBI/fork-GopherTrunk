@@ -150,6 +150,15 @@ var (
 	// within the supplied timeoutMs window.
 	ErrTimeout = errors.New("usb: transfer timed out")
 
+	// ErrPipeStalled is returned when the device stalled the USB pipe
+	// (CLEAR_FEATURE(ENDPOINT_HALT) recoverable). Maps to ERROR_GEN_FAILURE
+	// on Windows/WinUSB — the clone-dongle cold-boot symptom where the
+	// chip latches the first vendor-OUT write and then NAKs the next one
+	// with byte-identical wire bytes. The librtlsdr-parity Linux
+	// equivalent surfaces as syscall.EPIPE. Callers should clear the
+	// halt via [Transport.Reset] and retry once.
+	ErrPipeStalled = errors.New("usb: pipe stalled")
+
 	// ErrClosed is returned by methods invoked after Close.
 	ErrClosed = errors.New("usb: transport closed")
 )

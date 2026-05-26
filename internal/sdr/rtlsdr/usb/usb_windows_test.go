@@ -122,6 +122,18 @@ func TestWinErr_GenFailureIsNotDeviceGone(t *testing.T) {
 	}
 }
 
+func TestWinErr_GenFailureMapsToPipeStalled(t *testing.T) {
+	// The WinUSB equivalent of librtlsdr's "dummy write probe stalled
+	// on cold boot" surfaces as ERROR_GEN_FAILURE on the second
+	// USB_SYSCTL=0x09 write. The bring-up retry envelope keys off
+	// ErrPipeStalled to trigger a control-pipe clear-halt and retry
+	// once — matching the Linux EPIPE recovery path.
+	got := winErr(windows.ERROR_GEN_FAILURE)
+	if !errors.Is(got, ErrPipeStalled) {
+		t.Errorf("winErr(ERROR_GEN_FAILURE) = %v, want errors.Is(err, ErrPipeStalled) so the bring-up retry kicks in", got)
+	}
+}
+
 func TestWinErr_DisconnectCodesMapToDeviceGone(t *testing.T) {
 	for _, errno := range []windows.Errno{
 		windows.ERROR_DEVICE_NOT_CONNECTED,
