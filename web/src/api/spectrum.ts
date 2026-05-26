@@ -129,3 +129,32 @@ export async function fetchSpectrumDevices(
   if (!res.ok) throw new Error(`spectrum/devices ${res.status}`);
   return (await res.json()) as SpectrumDevice[];
 }
+
+// tuneSpectrumDevice posts a new centre frequency for the named
+// SDR. Wraps POST /api/v1/spectrum/devices/{serial}/tune. Gated
+// like every other mutation route — daemons started with auth
+// required will reject without a bearer token.
+export async function tuneSpectrumDevice(
+  cfg: ClientConfig,
+  serial: string,
+  centerHz: number,
+): Promise<void> {
+  const url = joinURL(
+    cfg.baseURL,
+    `/api/v1/spectrum/devices/${encodeURIComponent(serial)}/tune`,
+  );
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  if (cfg.token) headers["Authorization"] = `Bearer ${cfg.token}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ center_hz: Math.round(centerHz) }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`tune ${res.status}: ${text || res.statusText}`);
+  }
+}

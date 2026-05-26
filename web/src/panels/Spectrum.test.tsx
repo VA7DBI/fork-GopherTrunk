@@ -4,6 +4,16 @@ import { render, screen, waitFor } from "@testing-library/react";
 vi.mock("../api/spectrum", () => ({
   fetchSpectrumDevices: vi.fn(),
   openSpectrumStream: vi.fn(),
+  tuneSpectrumDevice: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../api/bookmarks", () => ({
+  bookmarks: {
+    list: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+    update: vi.fn(),
+    remove: vi.fn(),
+  },
 }));
 
 import { fetchSpectrumDevices, openSpectrumStream } from "../api/spectrum";
@@ -93,6 +103,46 @@ describe("Spectrum panel", () => {
     render(<Spectrum />);
     await waitFor(() => {
       expect(screen.getByText("live")).toBeInTheDocument();
+    });
+  });
+
+  it("fetches and shows bookmark marker count", async () => {
+    vi.mocked(fetchSpectrumDevices).mockResolvedValue([
+      {
+        serial: "rtl-1",
+        driver: "rtlsdr",
+        role: "control",
+        center_hz: 851_012_500,
+        sample_rate_hz: 2_048_000,
+      },
+    ]);
+    vi.mocked(openSpectrumStream).mockReturnValue({ close: vi.fn() });
+    const { bookmarks } = await import("../api/bookmarks");
+    vi.mocked(bookmarks.list).mockResolvedValue([
+      {
+        id: 1,
+        name: "marker-1",
+        freq_hz: 851_500_000,
+        mode: "FM",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: 2,
+        name: "marker-2",
+        freq_hz: 851_800_000,
+        mode: "FM",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    ]);
+
+    render(<Spectrum />);
+    await waitFor(() => {
+      expect(bookmarks.list).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/2 visible/)).toBeInTheDocument();
     });
   });
 });

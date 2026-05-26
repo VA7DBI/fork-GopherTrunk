@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,9 +24,26 @@ type fakeSpectrumProvider struct {
 	// frames is sent on the returned channel one by one with a tiny
 	// pause; tests close it via the returned cleanup func.
 	frames []SpectrumFrame
+	// tuneErr forces Tune to return an error if non-nil. Tuned
+	// records each successful Tune call so the test can assert it.
+	tuneErr error
+	tuned   []tunedCall
 }
 
 func (f *fakeSpectrumProvider) Devices() []SpectrumDevice { return f.devices }
+
+type tunedCall struct {
+	Serial   string
+	CenterHz uint32
+}
+
+func (f *fakeSpectrumProvider) Tune(serial string, centerHz uint32) error {
+	if f.tuneErr != nil {
+		return f.tuneErr
+	}
+	f.tuned = append(f.tuned, tunedCall{Serial: serial, CenterHz: centerHz})
+	return nil
+}
 
 func (f *fakeSpectrumProvider) OpenStream(ctx context.Context, serial string, _ int, _ float64) (<-chan SpectrumFrame, func(), error) {
 	if f.openErr != nil {
@@ -194,5 +213,81 @@ func TestSpectrumStreamBadBinsRejected(t *testing.T) {
 	n, _ := resp.Body.Read(body)
 	if !strings.Contains(string(body[:n]), "power of two") {
 		t.Errorf("body = %q, want mention of 'power of two'", string(body[:n]))
+	}
+}
+
+func TestSpectrumTuneReturns503WhenNotWired(t *testing.T) {
+	ts := newSpectrumTestServer(t, nil)
+	body := bytes.NewBufferString(`{"center_hz":100000000}`)
+	resp, err := http.Post(ts.URL+"/api/v1/spectrum/devices/rtl-1/tune", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestSpectrumTuneHappyPath(t *testing.T) {
+	prov := &fakeSpectrumProvider{}
+	ts := newSpectrumTestServer(t, prov)
+
+	body := bytes.NewBufferString(`{"center_hz":851012500}`)
+	resp, err := http.Post(ts.URL+"/api/v1/spectrum/devices/rtl-1/tune", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+	if len(prov.tuned) != 1 {
+		t.Fatalf("tuned calls = %d, want 1", len(prov.tuned))
+	}
+	if prov.tuned[0].Serial != "rtl-1" || prov.tuned[0].CenterHz != 851_012_500 {
+		t.Errorf("tuned[0] = %+v", prov.tuned[0])
+	}
+}
+
+func TestSpectrumTuneBadJSON(t *testing.T) {
+	prov := &fakeSpectrumProvider{}
+	ts := newSpectrumTestServer(t, prov)
+	body := bytes.NewBufferString(`not json`)
+	resp, err := http.Post(ts.URL+"/api/v1/spectrum/devices/rtl-1/tune", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestSpectrumTuneZeroFreqRejected(t *testing.T) {
+	prov := &fakeSpectrumProvider{}
+	ts := newSpectrumTestServer(t, prov)
+	body := bytes.NewBufferString(`{"center_hz":0}`)
+	resp, err := http.Post(ts.URL+"/api/v1/spectrum/devices/rtl-1/tune", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestSpectrumTuneBackendError(t *testing.T) {
+	prov := &fakeSpectrumProvider{tuneErr: errors.New("bad device")}
+	ts := newSpectrumTestServer(t, prov)
+	body := bytes.NewBufferString(`{"center_hz":1000000}`)
+	resp, err := http.Post(ts.URL+"/api/v1/spectrum/devices/nope/tune", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 on backend error", resp.StatusCode)
 	}
 }

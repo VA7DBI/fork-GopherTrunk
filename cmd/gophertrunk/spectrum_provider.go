@@ -68,6 +68,25 @@ func (p *spectrumProvider) Devices() []api.SpectrumDevice {
 	return out
 }
 
+// Tune programs the named SDR's centre frequency. Routes through
+// the iqtap broker so the broker's CenterHz cache stays current
+// (the spectrum + constellation frame stamps follow), the change
+// survives pool.Reacquire, and external rigctld clients see the
+// same view.
+func (p *spectrumProvider) Tune(serial string, centerHz uint32) error {
+	if p == nil {
+		return errors.New("spectrum: provider not wired")
+	}
+	br, ok := p.brokers[serial]
+	if !ok {
+		return fmt.Errorf("spectrum: serial %q is not a known SDR", serial)
+	}
+	if err := br.SetCenterFreq(centerHz); err != nil {
+		return fmt.Errorf("spectrum: tune %s to %d Hz: %w", serial, centerHz, err)
+	}
+	return nil
+}
+
 // OpenStream subscribes to the named device's broker and starts a
 // producer goroutine that converts IQ to spectrum frames at the
 // negotiated rate. The returned cleanup func MUST be called by the

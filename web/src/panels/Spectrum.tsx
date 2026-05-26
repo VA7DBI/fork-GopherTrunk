@@ -2,9 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchSpectrumDevices,
   openSpectrumStream,
+  tuneSpectrumDevice,
   type SpectrumDevice,
   type SpectrumFrame,
 } from "../api/spectrum";
+import {
+  bookmarks as bookmarksAPI,
+  type Bookmark,
+} from "../api/bookmarks";
 import { selectClientConfig, useShared } from "../store/shared";
 
 // Spectrum waterfall panel. Operator picks an SDR from the daemon's
@@ -31,9 +36,12 @@ export function Spectrum() {
   const [latest, setLatest] = useState<SpectrumFrame | null>(null);
   const [conn, setConn] = useState<ConnState>("closed");
   const [error, setError] = useState<string | null>(null);
+  const [bookmarkList, setBookmarkList] = useState<Bookmark[]>([]);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rowsRef = useRef<Float32Array[]>([]);
+  const latestRef = useRef<SpectrumFrame | null>(null);
+  const bookmarksRef = useRef<Bookmark[]>([]);
 
   // Discover SDRs.
   useEffect(() => {
@@ -56,6 +64,40 @@ export function Spectrum() {
     // Re-fetch whenever the connection identity changes.
   }, [cfg, selected]);
 
+  // Fetch bookmarks for the click-to-tune + marker overlay. Refresh
+  // on a long interval; SSE refresh is a follow-up.
+  useEffect(() => {
+    let cancel = false;
+    const refresh = async () => {
+      try {
+        const list = await bookmarksAPI.list(cfg);
+        if (cancel) return;
+        bookmarksRef.current = list;
+        setBookmarkList(list);
+        // Re-render so the marker overlay updates against the latest
+        // canvas state, even if no new frame has landed yet.
+        if (latestRef.current) {
+          renderWaterfall(
+            canvasRef.current,
+            rowsRef.current,
+            latestRef.current,
+            list,
+          );
+        }
+      } catch {
+        // bookmarks are best-effort here; silent failure keeps the
+        // primary spectrum view alive when the daemon was started
+        // without storage.
+      }
+    };
+    refresh();
+    const t = window.setInterval(refresh, 30_000);
+    return () => {
+      cancel = true;
+      window.clearInterval(t);
+    };
+  }, [cfg]);
+
   // Open the WS stream for the selected SDR.
   useEffect(() => {
     if (!selected) return;
@@ -70,14 +112,46 @@ export function Spectrum() {
       fps: FPS,
       onFrame: (f) => {
         setLatest(f);
+        latestRef.current = f;
         const row = new Float32Array(f.bins);
         rowsRef.current = [row, ...rowsRef.current.slice(0, HISTORY_ROWS - 1)];
-        renderWaterfall(canvasRef.current, rowsRef.current);
+        renderWaterfall(
+          canvasRef.current,
+          rowsRef.current,
+          f,
+          bookmarksRef.current,
+        );
       },
       onStatus: setConn,
     });
     return () => stream.close();
   }, [cfg, selected]);
+
+  // Convert a click on the canvas into a centre frequency and post
+  // it to the tune endpoint. Maps the click X position back through
+  // the FFT-shifted bin layout: leftmost bin = (centerHz -
+  // sampleRate/2), rightmost = (centerHz + sampleRate/2 -
+  // sampleRate/N).
+  const handleCanvasClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    const frame = latestRef.current;
+    if (!canvas || !frame || !selected) return;
+    const rect = canvas.getBoundingClientRect();
+    const xRatio = (e.clientX - rect.left) / rect.width;
+    if (xRatio < 0 || xRatio > 1) return;
+    const sampleRate = frame.sample_rate_hz;
+    const halfBand = sampleRate / 2;
+    const targetHz = Math.round(
+      frame.center_hz - halfBand + sampleRate * xRatio,
+    );
+    if (targetHz <= 0) return;
+    try {
+      await tuneSpectrumDevice(cfg, selected, targetHz);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const tuningLabel = useMemo(() => {
     if (!latest) return "";
@@ -120,14 +194,19 @@ export function Spectrum() {
           ref={canvasRef}
           width={FFT_BINS}
           height={HISTORY_ROWS}
-          className="block w-full"
+          className="block w-full cursor-crosshair"
           style={{ imageRendering: "pixelated", height: 320 }}
+          onClick={handleCanvasClick}
+          aria-label="Spectrum waterfall — click to tune the SDR to that frequency"
         />
       </div>
 
       <div className="text-[11px] text-muted">
         {DB_FLOOR} dBFS (cold) → {DB_CEIL} dBFS (hot). New frames render at
         the top; the canvas scrolls down as history accumulates.
+        Click anywhere on the waterfall to retune the SDR to that
+        frequency. Bookmark markers ({bookmarkList.length} visible)
+        appear as cyan ticks along the top.
       </div>
     </div>
   );
@@ -144,7 +223,17 @@ function ConnPill({ state }: { state: ConnState }) {
 // renderWaterfall draws the current history onto the canvas. Newest row
 // at the top. dBFS → palette mapping is linear from DB_FLOOR (blue) to
 // DB_CEIL (red). Off-canvas (canvas not yet mounted) is a no-op.
-function renderWaterfall(canvas: HTMLCanvasElement | null, rows: Float32Array[]) {
+//
+// frame is the most-recent SpectrumFrame (used for the bookmark-axis
+// mapping); bookmarks is the operator's bookmark list — markers are
+// drawn as 4-pixel cyan ticks across the top of the waterfall where
+// any bookmark's freq_hz falls inside the visible band.
+function renderWaterfall(
+  canvas: HTMLCanvasElement | null,
+  rows: Float32Array[],
+  frame: SpectrumFrame | null,
+  bookmarks: Bookmark[],
+) {
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -178,6 +267,26 @@ function renderWaterfall(canvas: HTMLCanvasElement | null, rows: Float32Array[])
     }
   }
   ctx.putImageData(img, 0, 0);
+
+  // Bookmark markers along the top edge — drawn after putImageData so
+  // they sit on top of the pixel data. Only render bookmarks whose
+  // frequency lands inside the visible band; outside-band bookmarks
+  // are simply omitted from this view (they're still listed on the
+  // /bookmarks panel).
+  if (frame && bookmarks.length > 0) {
+    const sampleRate = frame.sample_rate_hz;
+    if (sampleRate > 0) {
+      const minHz = frame.center_hz - sampleRate / 2;
+      const maxHz = frame.center_hz + sampleRate / 2;
+      ctx.fillStyle = "rgba(120, 220, 255, 0.95)";
+      for (const b of bookmarks) {
+        if (b.freq_hz < minHz || b.freq_hz > maxHz) continue;
+        const x = Math.round(((b.freq_hz - minHz) / sampleRate) * width);
+        // 6 px tall, 2 px wide tick.
+        ctx.fillRect(x - 1, 0, 2, 6);
+      }
+    }
+  }
 }
 
 // dbToColor maps a dBFS magnitude to a 5-stop palette:
