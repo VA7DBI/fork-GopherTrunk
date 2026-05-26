@@ -9,6 +9,17 @@ for tagged releases.
 
 ### Added
 
+- **CC Activity panel.** New web panel at `/cc` that filters the
+  events stream down to control-channel chatter: voice grants,
+  affiliations, registrations, patches / dynamic regroups, talker
+  aliases, CC lock / loss, and call start/end. Per-row rendering
+  pulls the right detail out of each payload (talkgroup + source
+  + frequency + tags for grants, member count for patches,
+  response codes for affiliations, the alias string for talker
+  aliases). Kind + system substring filters narrow the view; a
+  pause button freezes the display without disconnecting the
+  bus. Pure filter view over events already on the bus — no new
+  bus kinds or storage.
 - **Bookmarks / frequency manager.** UI-managed conventional
   channel list (marine VHF, NOAA weather, FRS/GMRS, repeater
   outputs, public-safety conventional fall-backs) backed by a new

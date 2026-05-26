@@ -145,6 +145,7 @@ const ROUTES = [
   "/talkgroups",
   "/history",
   "/events",
+  "/cc",
   "/tones",
   "/metrics",
   "/devices",

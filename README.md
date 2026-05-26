@@ -85,6 +85,10 @@ Silicon and Intel. Full per-OS recipes at
   trunking-adjacent decoders (paging, AIS, ADS-B, ...) tap the
   same source without disturbing CC decode. `GET /api/v1/spectrum/devices`
   + `WS /api/v1/spectrum/stream`; web panel under `/spectrum`.
+- **CC Activity panel** — focused web view of the trunked control-
+  channel chatter (grants, affiliations, registrations, patches,
+  talker aliases, CC lock / loss). Pure filter over the events
+  stream with per-row payload rendering; web panel at `/cc`.
 - **Bookmarks / frequency manager** — UI-managed conventional
   channel list (marine VHF, NOAA weather, FRS/GMRS, repeater
   outputs, public-safety fall-back channels) stored in the
