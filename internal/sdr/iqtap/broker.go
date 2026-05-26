@@ -170,6 +170,21 @@ func (b *Broker) CenterHz() uint32 { return b.centerHz.Load() }
 // via SetSampleRate. Zero before the first call.
 func (b *Broker) SampleRateHz() uint32 { return b.rateHz.Load() }
 
+// Seed populates the centerHz / rateHz caches without calling into the
+// inner device. The daemon uses it to inject the bootstrap sample rate
+// the pool already programmed on the raw device before the broker was
+// wrapped around it, so spectrum frames stamp the correct rate from
+// the very first frame. Zero arguments leave the corresponding field
+// unchanged so callers can seed one field at a time.
+func (b *Broker) Seed(centerHz, rateHz uint32) {
+	if centerHz != 0 {
+		b.centerHz.Store(centerHz)
+	}
+	if rateHz != 0 {
+		b.rateHz.Store(rateHz)
+	}
+}
+
 func (b *Broker) SetGain(tenthDB int) error {
 	b.innerMu.RLock()
 	defer b.innerMu.RUnlock()

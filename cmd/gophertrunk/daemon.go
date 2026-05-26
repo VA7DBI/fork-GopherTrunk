@@ -401,7 +401,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			d.pool = nil
 		} else {
 			d.wrapBasebandRecorders(cfg, log)
-			d.wrapIQBrokers(log)
+			d.wrapIQBrokers(cfg, log)
 		}
 	} else if len(cfg.Trunking.Systems) > 0 {
 		// Trunked systems configured but no SDR devices listed —
@@ -801,10 +801,21 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 					SystemName:  ch.System,
 				})
 			}
+			// Route IQ + tuning through the iqtap broker so the live
+			// spectrum view (and any other secondary observer) can
+			// Subscribe to chunk copies. Without the broker indirection
+			// the engine's StreamIQ would bypass the fan-out goroutine
+			// and its SetCenterFreq would skip the broker's centerHz
+			// cache, leaving spectrum frames empty and stamped at 0.
+			// Mirrors the CC decoder wiring above.
+			var iqDev sdr.Device = entry.Device
+			if br := d.iqBrokers[entry.Info.Serial]; br != nil {
+				iqDev = br
+			}
 			eng, err := widebandt2.New(widebandt2.Options{
 				Log:           log,
 				Bus:           d.bus,
-				Device:        entry.Device,
+				Device:        iqDev,
 				SampleRateHz:  cfg.SDR.SampleRate,
 				CenterFreqHz:  devCfg.CenterFreqHz,
 				TunerStrategy: devCfg.TunerStrategy,
@@ -1633,13 +1644,24 @@ func (d *Daemon) wrapBasebandRecorders(cfg config.Config, log *slog.Logger) {
 // device, not a RecordingDevice — baseband recording stops across a
 // USB-disconnect cycle, which is an existing behavior the broker
 // inherits rather than fixes.
-func (d *Daemon) wrapIQBrokers(log *slog.Logger) {
+func (d *Daemon) wrapIQBrokers(cfg config.Config, log *slog.Logger) {
 	if d.pool == nil {
 		return
 	}
+	rate := cfg.SDR.SampleRate
+	if rate == 0 {
+		rate = sdr.DefaultSampleRateHz
+	}
 	d.iqBrokers = make(map[string]*iqtap.Broker, len(d.pool.Entries()))
 	for _, e := range d.pool.Entries() {
-		d.iqBrokers[e.Info.Serial] = iqtap.New(e.Device, 0, log)
+		br := iqtap.New(e.Device, 0, log)
+		// pool.Open already programmed cfg.SDR.SampleRate on the raw
+		// device before we wrapped it, so Broker.SetSampleRate's cache
+		// path never ran. Seed it directly so spectrum frame stamps
+		// (and any other SampleRateHz reader) anchor at the right rate
+		// from the first frame instead of 0.
+		br.Seed(0, rate)
+		d.iqBrokers[e.Info.Serial] = br
 	}
 }
 
