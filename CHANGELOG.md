@@ -7,6 +7,80 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Spectrum panel: click-to-tune + bookmark markers.** Closes the
+  click-to-tune TODO from the bookmarks PR (#368). Clicking
+  anywhere on the waterfall canvas now posts the bin's centre
+  frequency to a new `POST
+  /api/v1/spectrum/devices/{serial}/tune` endpoint and the SDR
+  retunes immediately. The bookmarks list is polled every 30 s
+  and rendered as small cyan ticks across the top of the
+  waterfall wherever a bookmark frequency falls inside the visible
+  band. Tune goes through the iqtap broker so the frequency stays
+  coherent across the spectrum, constellation, rigctld, and CC
+  decoder views, and survives `pool.Reacquire`.
+- **Constellation viewer.** New web panel at `/constellation` that
+  renders a live 2D scatter of decimated IQ samples (2 ksps
+  default). Brighter dots = newer samples; reference rings at
+  |z|=0.5 and |z|=1.0; per-frame dBFS energy banner. Identifies
+  signal shape visually — PSK clusters, FSK arcs, AM rotation,
+  noise circles, DC bias, frequency-offset spirals — without
+  launching a separate SDR receiver alongside GopherTrunk. Builds
+  on the iqtap broker (PR #365) so multiple subscribers share the
+  same SDR's IQ stream without disturbing decode.
+  `internal/dsp/diag` adds a pure-Go stride decimator + per-frame
+  energy estimator; `WS /api/v1/diag/iq?device=...&rate=2000`
+  exposes it. See [docs/constellation.md](docs/constellation.md).
+- **CC Activity panel.** New web panel at `/cc` that filters the
+  events stream down to control-channel chatter: voice grants,
+  affiliations, registrations, patches / dynamic regroups, talker
+  aliases, CC lock / loss, and call start/end. Per-row rendering
+  pulls the right detail out of each payload (talkgroup + source
+  + frequency + tags for grants, member count for patches,
+  response codes for affiliations, the alias string for talker
+  aliases). Kind + system substring filters narrow the view; a
+  pause button freezes the display without disconnecting the
+  bus. Pure filter view over events already on the bus — no new
+  bus kinds or storage.
+- **Bookmarks / frequency manager.** UI-managed conventional
+  channel list (marine VHF, NOAA weather, FRS/GMRS, repeater
+  outputs, public-safety conventional fall-backs) backed by a new
+  `bookmarks` table in the daemon's SQLite database. Each row
+  carries name, frequency, mode, optional CTCSS / DCS, freeform
+  notes, and an operator-defined group tag. REST endpoints under
+  `/api/v1/bookmarks` (read open; create / update / delete gated
+  the same as every other write route); web panel at
+  `/bookmarks`. Mutations publish `bookmark.{created,updated,
+  deleted}` events on the bus so SSE / WS subscribers refresh
+  without polling.
+- **Hamlib `rigctld` TCP server.** Opt-in (`api.rigctld:
+  "127.0.0.1:4532"`) endpoint speaking the standard rigctld wire
+  protocol so external amateur-radio tooling (Cloudlog,
+  GridTracker, PSTRotator, satellite trackers, `rigctl(1)`) can
+  read and set the control SDR's frequency without learning the
+  GopherTrunk REST API. Implements the ~10 commands real clients
+  send (`F` / `f`, `M` / `m`, `V` / `v`, `T` / `t`, `chk_vfo`,
+  `dump_state`, `q`); unknown commands return `RPRT -1` per
+  Hamlib's "unsupported" convention. RX-only backend — `set_ptt 1`
+  is rejected. Tuning routes through the iqtap broker so external
+  retunes stay coherent with the spectrum panel's frequency axis
+  and survive USB-disconnect cycles. See
+  [docs/rigctld.md](docs/rigctld.md).
+- **Remote `rtl_tcp` SDRs.** A new `rtltcp` driver mounts any number
+  of remote `rtl_tcp` servers as virtual tuners alongside locally-
+  attached USB dongles. The driver speaks the well-known librtlsdr
+  wire protocol (12-byte `RTL0` header, u8 IQ stream, 5-byte command
+  packets) used by SDR++, Gqrx, and OpenWebRX, so any host running
+  `rtl_tcp` can publish its dongle to the daemon. Configure under
+  `sdr.rtl_tcp` in `config.yaml`; each entry carries `addr`,
+  optional `serial`, `role`, `ppm`, `gain`, `bias_tee`, and
+  `connect_timeout_ms`. Pool roles, broker fan-out, baseband
+  recording, and the live spectrum panel all work against remote
+  sources just like local ones. Plaintext on the wire — restrict
+  to trusted networks or wrap with SSH/WireGuard/Tailscale. See
+  [docs/hardware.md](docs/hardware.md).
+
 ### Fixed
 
 - **Wideband DMR receiver loop-gain now matches the single-channel

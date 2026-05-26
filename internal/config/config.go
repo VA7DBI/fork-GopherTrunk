@@ -250,6 +250,14 @@ type MessageLogConfig struct {
 type SDRConfig struct {
 	SampleRate uint32         `yaml:"sample_rate"`
 	Devices    []DeviceConfig `yaml:"devices"`
+	// RTLTCP lists remote rtl_tcp endpoints (host:port + optional
+	// per-endpoint metadata) to mount as virtual tuners. Each entry
+	// becomes a pool device alongside any locally-attached USB
+	// dongles. Useful when the SDR hardware lives on a different
+	// host from the daemon (e.g. a Raspberry Pi by the antenna +
+	// a beefier machine for decode). rtl_tcp is plaintext — use it
+	// on trusted networks only or through an SSH/wireguard tunnel.
+	RTLTCP []RTLTCPConfig `yaml:"rtl_tcp"`
 	// WatchdogIntervalMs governs the periodic USB-disconnect
 	// watchdog that the SDR pool runs while the daemon is up. It
 	// polls the registered drivers, surfaces serials that vanish
@@ -262,6 +270,34 @@ type SDRConfig struct {
 	// In-stream IQ-death recovery (ccdecoder retry loop, voice
 	// Bind reacquire) is unaffected by this knob.
 	WatchdogIntervalMs int `yaml:"watchdog_interval_ms"`
+}
+
+// RTLTCPConfig describes one remote rtl_tcp endpoint to expose as
+// a virtual tuner. Addr is required; Serial / Role follow the same
+// semantics as the local SDR devices block.
+type RTLTCPConfig struct {
+	// Addr is the host:port pair the rtl_tcp server is listening
+	// on, e.g. "192.168.1.50:1234". Required.
+	Addr string `yaml:"addr"`
+	// Serial is the virtual device serial reported on the pool's
+	// /api/v1/devices snapshot. Empty generates one from Addr.
+	Serial string `yaml:"serial"`
+	// Role hints the pool's role assignment: control|voice|auto.
+	Role string `yaml:"role"`
+	// PPM is the frequency-correction tuning sent to the remote on
+	// open (the remote's local rtlsdr layer applies it). Optional;
+	// zero matches every TCXO-equipped dongle.
+	PPM int `yaml:"ppm"`
+	// Gain follows the same rule as DeviceConfig.Gain — "auto" /
+	// "" selects AGC, any other value parses as tenths of dB.
+	Gain string `yaml:"gain"`
+	// BiasTee toggles the remote dongle's 5 V bias-tee output.
+	// Honoured only by servers running librtlsdr ≥ 0.7; older
+	// servers silently ignore the command.
+	BiasTee bool `yaml:"bias_tee"`
+	// ConnectTimeoutMs caps the TCP dial in milliseconds. Zero
+	// picks the driver default (3000).
+	ConnectTimeoutMs int `yaml:"connect_timeout_ms"`
 }
 
 type DeviceConfig struct {
@@ -560,6 +596,16 @@ type APIConfig struct {
 	GRPCAddr       string        `yaml:"grpc_addr"`
 	AllowMutations bool          `yaml:"allow_mutations"`
 	Auth           APIAuthConfig `yaml:"auth"`
+	// Rigctld, when non-empty, exposes the control SDR's tuning over
+	// the Hamlib rigctld TCP wire protocol on this address. Lets
+	// external amateur-radio tooling (Cloudlog, logging programs,
+	// satellite trackers) read and set the daemon's frequency
+	// without learning the GopherTrunk REST API. Defaults to empty
+	// (off). Typical value: "127.0.0.1:4532" (the rigctld default
+	// port). The server is read-only beyond SetFreq; PTT is
+	// always reported as 0. Bind to loopback unless the network
+	// is trusted — the protocol has no authentication.
+	Rigctld string `yaml:"rigctld"`
 	// CORS gates cross-origin browser requests. Off by default
 	// (no Access-Control-* headers emitted). Enable when serving
 	// the bundled web UI from a different origin than the daemon
@@ -755,6 +801,28 @@ func (c Config) Validate() error {
 				i, d.Serial, prev)
 		}
 		seenSerials[d.Serial] = i
+	}
+	// Validate rtl_tcp endpoints. Addr is required; role must match
+	// the standard set; serial collisions with local devices are
+	// rejected for the same reason serial dedup runs above.
+	for i, r := range c.SDR.RTLTCP {
+		if r.Addr == "" {
+			return fmt.Errorf("sdr.rtl_tcp[%d]: addr is required (host:port)", i)
+		}
+		switch r.Role {
+		case "", "control", "voice", "auto":
+		default:
+			return fmt.Errorf("sdr.rtl_tcp[%d]: role must be control|voice|auto", i)
+		}
+		if r.Serial == "" {
+			continue
+		}
+		if prev, dup := seenSerials[r.Serial]; dup {
+			return fmt.Errorf(
+				"sdr.rtl_tcp[%d]: serial %q collides with sdr.devices[%d]",
+				i, r.Serial, prev)
+		}
+		seenSerials[r.Serial] = i
 	}
 	if c.Trunking.CallTimeoutMs < 0 {
 		return fmt.Errorf("trunking.call_timeout_ms: %d ms must be ≥ 0", c.Trunking.CallTimeoutMs)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/api"
+	"github.com/MattCheramie/GopherTrunk/internal/api/rigctld"
 	"github.com/MattCheramie/GopherTrunk/internal/broadcast"
 	"github.com/MattCheramie/GopherTrunk/internal/config"
 	"github.com/MattCheramie/GopherTrunk/internal/events"
@@ -22,6 +23,8 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/iqtap"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtltcp"
 	"github.com/MattCheramie/GopherTrunk/internal/storage"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 	"github.com/MattCheramie/GopherTrunk/internal/voice"
@@ -98,6 +101,7 @@ type Daemon struct {
 	db           *storage.DB
 	callLog      *storage.CallLog
 	locationLog  *storage.LocationLog
+	bookmarks    *storage.BookmarkStore
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -116,9 +120,20 @@ type Daemon struct {
 	controlSampleRate uint32
 	convScan          *conventional.Scanner
 	widebandT2        []*widebandt2.Engine
-	metrics           *metrics.Metrics
-	httpAPI           *api.Server
-	grpcAPI           *api.GRPCServer
+	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
+	// Primary consumers (CC decoder, conventional scanner) stream IQ
+	// through the broker so secondary observers (live spectrum,
+	// future paging / AIS / ADS-B decoders, rtl_tcp server) can
+	// Subscribe without disturbing the primary's StreamIQ contract.
+	// Foundation for the trunking-adjacent feature work — see
+	// internal/sdr/iqtap. Populated after wrapBasebandRecorders so
+	// the broker wraps the recorder when baseband recording is on
+	// for the same dongle.
+	iqBrokers map[string]*iqtap.Broker
+	metrics   *metrics.Metrics
+	httpAPI   *api.Server
+	grpcAPI   *api.GRPCServer
+	rigctld   *rigctld.Server
 
 	// startupWarnings collects non-fatal observations from
 	// NewDaemon / preflight (missing talkgroup CSV, SDR enumeration
@@ -293,7 +308,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 	// fall through gracefully when the pool is empty. The pool is
 	// also constructed when only baseband replay recordings are
 	// configured, so an offline capture can be decoded with no radio.
-	if len(cfg.SDR.Devices) > 0 || len(cfg.Baseband.Replay) > 0 {
+	if len(cfg.SDR.Devices) > 0 || len(cfg.Baseband.Replay) > 0 || len(cfg.SDR.RTLTCP) > 0 {
 		d.pool = sdr.NewPool(log)
 		d.pool.SetBus(d.bus)
 		var hints []sdr.Hint
@@ -333,6 +348,50 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			sdr.Register(baseband.NewFileDriver(specs))
 			log.Info("baseband replay mounted", "recordings", len(specs))
 		}
+		// Mount rtl_tcp endpoints as virtual tuners. Each entry
+		// becomes one pool device; the driver dials lazily inside
+		// Pool.Open so misconfigured / down hosts surface as
+		// "failed to open" warnings rather than blocking daemon
+		// startup. Per-endpoint Hint carries role / ppm / gain /
+		// bias-tee through the same hint-matcher local USB devices
+		// use.
+		if len(cfg.SDR.RTLTCP) > 0 {
+			rspecs := make([]rtltcp.Spec, 0, len(cfg.SDR.RTLTCP))
+			for _, r := range cfg.SDR.RTLTCP {
+				if r.Addr == "" {
+					log.Warn("daemon: rtl_tcp entry missing addr; skipping")
+					continue
+				}
+				rspecs = append(rspecs, rtltcp.Spec{
+					Addr:           r.Addr,
+					Serial:         r.Serial,
+					Role:           r.Role,
+					ConnectTimeout: time.Duration(r.ConnectTimeoutMs) * time.Millisecond,
+				})
+				if r.Serial != "" {
+					h := sdr.Hint{
+						Serial:  r.Serial,
+						Role:    sdr.ParseRole(r.Role),
+						PPM:     r.PPM,
+						BiasTee: r.BiasTee,
+					}
+					if r.Gain != "" {
+						gain, ok := parseGain(r.Gain)
+						if !ok {
+							log.Warn("daemon: ignoring unparseable rtl_tcp gain",
+								"serial", r.Serial, "gain", r.Gain)
+						} else {
+							h = h.WithGain(gain)
+						}
+					}
+					hints = append(hints, h)
+				}
+			}
+			if len(rspecs) > 0 {
+				sdr.Register(rtltcp.New(rspecs, log))
+				log.Info("rtl_tcp endpoints mounted", "count", len(rspecs))
+			}
+		}
 		if err := d.pool.Open(cfg.SDR.SampleRate, hints); err != nil {
 			log.Warn("daemon: SDR pool open failed", "err", err)
 			d.addWarning(fmt.Sprintf(
@@ -341,6 +400,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			d.pool = nil
 		} else {
 			d.wrapBasebandRecorders(cfg, log)
+			d.wrapIQBrokers(log)
 		}
 	} else if len(cfg.Trunking.Systems) > 0 {
 		// Trunked systems configured but no SDR devices listed —
@@ -568,10 +628,20 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		if cchEnabled {
 			controlEntry := d.pool.FirstByRole(sdr.RoleControl)
 			if controlEntry != nil {
+				// Route the supervisor's retunes through the broker
+				// (when present) so SetCenterFreq follows the same
+				// broker.SetInner swap path the ccdecoder uses after
+				// pool.Reacquire — and so retunes during a future
+				// spectrum subscription still hit whatever device the
+				// pool now considers authoritative.
+				var cchTuner cchunt.Tuner = controlEntry.Device
+				if br := d.iqBrokers[controlEntry.Info.Serial]; br != nil {
+					cchTuner = br
+				}
 				sup, err := cchunt.New(cchunt.Options{
 					Bus:            d.bus,
 					Log:            log,
-					Tuner:          controlEntry.Device,
+					Tuner:          cchTuner,
 					Cache:          d.ccCache,
 					Systems:        d.systems,
 					Dwell:          msToDuration(cfg.Scanner.CCHunt.DwellMs, 3*time.Second),
@@ -604,11 +674,24 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 				if d.metrics != nil {
 					iqObs = d.metrics
 				}
+				// Route the control SDR's IQ through the iqtap broker
+				// so secondary observers (live spectrum, future paging /
+				// AIS / ADS-B decoders) can Subscribe without disturbing
+				// the CC decoder. Tuner goes through the same broker so
+				// SetCenterFreq calls land on whichever inner the broker
+				// currently wraps (kept in sync with pool.Reacquire via
+				// broker.SetInner below).
+				var iqSrc ccdecoder.IQSource = controlEntry.Device
+				var tuner ccdecoder.Tuner = controlEntry.Device
+				if br := d.iqBrokers[controlEntry.Info.Serial]; br != nil {
+					iqSrc = br
+					tuner = br
+				}
 				d.ccDecoderOpts = ccdecoder.Options{
 					Bus:          d.bus,
 					Log:          log,
-					Tuner:        controlEntry.Device,
-					IQ:           controlEntry.Device,
+					Tuner:        tuner,
+					IQ:           iqSrc,
 					Systems:      d.systems,
 					SampleRateHz: float64(cfg.SDR.SampleRate),
 					Metrics:      iqObs,
@@ -755,6 +838,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.locationLog = ll
 
+		bs, err := storage.NewBookmarkStore(db, d.bus)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: bookmarks: %w", err)
+		}
+		d.bookmarks = bs
+
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
 			if err != nil {
@@ -803,6 +893,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			AudioPublisher: d.audioPub,
 			TLSCert:        cfg.API.TLSCert,
 			TLSKey:         cfg.API.TLSKey,
+		}
+		if len(d.iqBrokers) > 0 {
+			opts.Spectrum = newSpectrumProvider(d.pool, d.iqBrokers, log)
+			opts.Diag = newDiagProvider(d.pool, d.iqBrokers, cfg.SDR.SampleRate, log)
+		}
+		if d.bookmarks != nil {
+			opts.Bookmarks = bookmarkProvider{store: d.bookmarks}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -864,6 +961,30 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			return nil, fmt.Errorf("daemon: http api: %w", err)
 		}
 		d.httpAPI = srv
+	}
+
+	// rigctld TCP server — optional. Exposes the control SDR's
+	// frequency to external Hamlib clients (loggers, sat trackers).
+	// Wired only when an SDR is in the pool *and* the operator opted
+	// in via api.rigctld in the YAML; otherwise stays off so a daemon
+	// without a tuner doesn't pretend to be a controllable rig.
+	if cfg.API.Rigctld != "" && d.pool != nil {
+		ctrlEntry := d.pool.FirstByRole(sdr.RoleControl)
+		if ctrlEntry == nil {
+			log.Warn("daemon: rigctld configured but no control SDR in pool; skipping")
+		} else {
+			var rigCtrl rigctld.Controller
+			if br := d.iqBrokers[ctrlEntry.Info.Serial]; br != nil {
+				rigCtrl = brokerRigController{serial: ctrlEntry.Info.Serial, broker: br}
+			} else {
+				rigCtrl = &poolRigController{serial: ctrlEntry.Info.Serial, dev: ctrlEntry.Device}
+			}
+			rs, err := rigctld.New(cfg.API.Rigctld, rigCtrl, log)
+			if err != nil {
+				return nil, fmt.Errorf("daemon: rigctld: %w", err)
+			}
+			d.rigctld = rs
+		}
 	}
 
 	// gRPC — optional.
@@ -1015,6 +1136,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return d.grpcAPI.Run(ctx)
 		})
 	}
+	if d.rigctld != nil {
+		// Non-essential: external loggers / sat-trackers consume
+		// this, but a bind failure (port 4532 already taken by a
+		// real Hamlib daemon, for instance) shouldn't bring down
+		// the trunking pipeline. Log + continue.
+		d.spawn(runCtx, "rigctld", false, func(ctx context.Context) error {
+			return d.rigctld.Run(ctx)
+		})
+	}
 
 	// Conservative readiness: give every spawn a brief grace window
 	// so the HTTP listener has time to bind. Components without an
@@ -1072,6 +1202,9 @@ func (d *Daemon) Close() {
 	d.closeOnce.Do(func() {
 		if d.httpAPI != nil {
 			_ = d.httpAPI.Close()
+		}
+		if d.rigctld != nil {
+			_ = d.rigctld.Close()
 		}
 		if d.grpcAPI != nil {
 			d.grpcAPI.Stop()
@@ -1237,10 +1370,22 @@ func (d *Daemon) runCCDecoderWithRetry(ctx context.Context) error {
 			} else {
 				d.log.Info("daemon: ccdecoder: control SDR reacquired",
 					"serial", d.controlSerial)
-				d.ccDecoderOpts.IQ = newEntry.Device
-				d.ccDecoderOpts.Tuner = newEntry.Device
+				// Keep the broker pointed at the fresh handle so
+				// secondary subscribers (spectrum, paging, ...)
+				// resume streaming on the next StreamIQ. If no
+				// broker exists (pool wired without iqBrokers),
+				// fall back to the raw new device.
+				var iqSrc ccdecoder.IQSource = newEntry.Device
+				var tuner ccdecoder.Tuner = newEntry.Device
+				if br := d.iqBrokers[d.controlSerial]; br != nil {
+					br.SetInner(newEntry.Device)
+					iqSrc = br
+					tuner = br
+				}
+				d.ccDecoderOpts.IQ = iqSrc
+				d.ccDecoderOpts.Tuner = tuner
 				if d.cchuntSup != nil {
-					if serr := d.cchuntSup.SwapTuner(newEntry.Device); serr != nil {
+					if serr := d.cchuntSup.SwapTuner(tuner); serr != nil {
 						d.log.Warn("daemon: cchunt: SwapTuner failed",
 							"err", serr)
 					}
@@ -1453,6 +1598,32 @@ func (d *Daemon) wrapBasebandRecorders(cfg config.Config, log *slog.Logger) {
 	}
 }
 
+// wrapIQBrokers creates one iqtap.Broker per pool entry, keyed by
+// serial, wrapping whatever entry.Device currently points at (the raw
+// driver Device, or a baseband.RecordingDevice if wrapBasebandRecorders
+// already wrapped it). Brokers live in d.iqBrokers as a parallel map
+// to the pool — entry.Device itself is left untouched so the existing
+// Pool.Reacquire contract (which mutates entry.Device in place) keeps
+// working unchanged. Primary consumers that want fan-out wire
+// d.iqBrokers[serial] in as their IQSource + Tuner; the broker
+// forwards every Device method to its inner.
+//
+// After a successful pool.Reacquire, the daemon must call
+// broker.SetInner(newEntry.Device) so the next StreamIQ session
+// streams from the fresh handle. Note: Reacquire returns the raw new
+// device, not a RecordingDevice — baseband recording stops across a
+// USB-disconnect cycle, which is an existing behavior the broker
+// inherits rather than fixes.
+func (d *Daemon) wrapIQBrokers(log *slog.Logger) {
+	if d.pool == nil {
+		return
+	}
+	d.iqBrokers = make(map[string]*iqtap.Broker, len(d.pool.Entries()))
+	for _, e := range d.pool.Entries() {
+		d.iqBrokers[e.Info.Serial] = iqtap.New(e.Device, 0, log)
+	}
+}
+
 // convFanoutRecorder lets the conventional scanner drive both the
 // WAV recorder and the live player. The conventional.Recorder
 // interface only requires WritePCM, matching what both downstreams
@@ -1552,4 +1723,92 @@ func (p *poolDevices) FindBySerial(serial string) composer.IQSource {
 		return nil
 	}
 	return e.Device
+}
+
+// brokerRigController adapts an iqtap.Broker into the rigctld
+// Controller interface. Routing through the broker means SetFreq
+// goes through the same path the ccdecoder uses (so the broker's
+// CenterHz / SampleRateHz stay in sync) AND survives pool.Reacquire
+// because the broker keeps its inner pointer.
+type brokerRigController struct {
+	serial string
+	broker *iqtap.Broker
+}
+
+func (b brokerRigController) Serial() string { return b.serial }
+func (b brokerRigController) Freq() (uint32, error) {
+	return b.broker.CenterHz(), nil
+}
+func (b brokerRigController) SetFreq(hz uint32) error {
+	return b.broker.SetCenterFreq(hz)
+}
+
+// poolRigController is the fallback for tests / scaffolding paths
+// where the broker isn't wired. Talks directly to an sdr.Device. The
+// device interface doesn't expose a CenterFreq getter, so Freq
+// returns the last SetFreq value cached locally (0 before any set).
+type poolRigController struct {
+	serial string
+	dev    sdr.Device
+
+	mu sync.Mutex
+	hz uint32
+}
+
+func (p *poolRigController) Serial() string { return p.serial }
+func (p *poolRigController) Freq() (uint32, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.hz, nil
+}
+func (p *poolRigController) SetFreq(hz uint32) error {
+	if err := p.dev.SetCenterFreq(hz); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.hz = hz
+	p.mu.Unlock()
+	return nil
+}
+
+// bookmarkProvider adapts the storage.BookmarkStore into the
+// api.BookmarkProvider interface, attaching a fresh request-scoped
+// context to each call. The handlers don't carry a context all the
+// way through today (the existing patterns use background-scoped
+// queries with their own timeouts); a 5-second cap keeps a wedged
+// DB write from pinning a handler forever.
+type bookmarkProvider struct{ store *storage.BookmarkStore }
+
+func (p bookmarkProvider) ctx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Second)
+}
+
+func (p bookmarkProvider) ListBookmarks() ([]storage.Bookmark, error) {
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return p.store.List(ctx)
+}
+
+func (p bookmarkProvider) GetBookmark(id int64) (storage.Bookmark, error) {
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return p.store.Get(ctx, id)
+}
+
+func (p bookmarkProvider) CreateBookmark(b storage.Bookmark) (storage.Bookmark, error) {
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return p.store.Create(ctx, b)
+}
+
+func (p bookmarkProvider) UpdateBookmark(b storage.Bookmark) (storage.Bookmark, error) {
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return p.store.Update(ctx, b)
+}
+
+func (p bookmarkProvider) DeleteBookmark(id int64) error {
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return p.store.Delete(ctx, id)
 }

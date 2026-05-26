@@ -20,6 +20,7 @@ transport (USBDEVFS on Linux, IOKit on macOS, WinUSB on Windows).
 | **HackRF One / Jawbreaker / Rad1o** | `hackrf` | `0x1d50:0x6089` · `0x1d50:0x604b` · `0x1d50:0xcc15` | Wire-protocol-complete; on-air validation against attached hardware is the documented follow-up. |
 | **Airspy R2 / Airspy Mini** | `airspy` | `0x1d50:0x60a1` | Wire-protocol-complete; on-air validation against attached hardware is the documented follow-up. |
 | **Airspy HF+ Discovery / HF+ Dual Port / legacy HF+** | `airspyhf` | `0x03eb:0x800c` | Wire-protocol-complete; HF (9 kHz – 31 MHz) + VHF (60 – 260 MHz). On-air validation against attached hardware is the documented follow-up. |
+| **rtl_tcp remote** (any librtlsdr-shipped server) | `rtltcp` | TCP | Remote RTL-SDR mounted over the network. See [Remote rtl_tcp SDRs](#remote-rtl_tcp-sdrs). |
 
 The HackRF and Airspy / Airspy HF+ drivers speak the documented
 libhackrf, libairspy, and libairspyhf USB vendor protocols directly
@@ -351,6 +352,56 @@ message that names the offending entry.
 - **CPU scales with channel count.** Eight DDC taps at 2.4 MS/s is a
   few percent of one modern x86 core; the polyphase mode lands lower
   at the same count.
+
+## Remote rtl_tcp SDRs
+
+`rtl_tcp` ships with librtlsdr and exposes a single RTL-SDR dongle
+over a TCP socket. GopherTrunk's `rtltcp` driver consumes the same
+wire protocol SDR++, Gqrx, and OpenWebRX speak, so any host with a
+USB-attached RTL-SDR can publish its radio to the daemon.
+
+Typical layout:
+
+- **Antenna host** (Raspberry Pi / Mac mini at the antenna, USB
+  range from the antenna minimised): run `rtl_tcp -a 0.0.0.0 -p 1234`
+  against the local dongle.
+- **Daemon host** (the box with CPU + storage for decode): list the
+  endpoint under `sdr.rtl_tcp` in `config.yaml`.
+
+```yaml
+sdr:
+  sample_rate: 2_400_000
+  rtl_tcp:
+    - addr: "192.168.1.50:1234"
+      serial: "antenna-pi"   # generator fills this from addr when blank
+      role: control           # control | voice | auto
+      ppm: 0
+      gain: "auto"            # "auto" or tenths-of-dB ("496" = 49.6 dB)
+      bias_tee: false
+      connect_timeout_ms: 3000
+```
+
+Each entry becomes a pool device alongside any local USB dongles —
+the engine roles them via the same hint matcher (`control` /
+`voice` / `auto`) and the broker / fan-out path is the same as
+local SDRs, so the live spectrum panel, baseband recorder, and CC
+decoder all work against remote sources.
+
+**Limitations:**
+
+- One client per `rtl_tcp` endpoint (the upstream protocol is
+  single-tuner).
+- Plaintext over TCP. Keep it on a trusted network, or tunnel it
+  through SSH / WireGuard / Tailscale before exposing it.
+- Bias-tee + advanced rtlsdr-only knobs (direct sampling, offset
+  tuning, IF gain) are wired through but rely on the remote
+  running librtlsdr ≥ 0.7. Servers that ignore those commands
+  silently no-op them.
+
+**Diagnostics:** the daemon logs `rtltcp: connected addr=... tuner=...`
+on each successful Open, `dial: connection refused` if the remote
+isn't listening, and `header magic = "..."` if the address points
+at something that isn't an `rtl_tcp` server.
 
 ## USB disconnect recovery
 

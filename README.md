@@ -75,6 +75,31 @@ Silicon and Intel. Full per-OS recipes at
   dongles that drop off the bus and re-enumerate without
   restarting the daemon. See
   [docs/hardware.md](docs/hardware.md).
+- **Remote rtl_tcp SDRs** — Mount any number of `rtl_tcp`
+  endpoints as virtual tuners alongside local USB dongles. The
+  SDR can live on a Raspberry Pi at the antenna while the daemon
+  runs on a beefier host; one entry per remote in `sdr.rtl_tcp`.
+- **Live spectrum / waterfall** — In-browser FFT waterfall served
+  off the same IQ stream the trunking decoder consumes. New
+  `internal/sdr/iqtap` multi-consumer fan-out lets future
+  trunking-adjacent decoders (paging, AIS, ADS-B, ...) tap the
+  same source without disturbing CC decode. `GET /api/v1/spectrum/devices`
+  + `WS /api/v1/spectrum/stream`; web panel under `/spectrum`.
+- **CC Activity panel** — focused web view of the trunked control-
+  channel chatter (grants, affiliations, registrations, patches,
+  talker aliases, CC lock / loss). Pure filter over the events
+  stream with per-row payload rendering; web panel at `/cc`.
+- **Constellation viewer** — live IQ scatter visualization that
+  taps the same broker the trunking decoder reads. Useful for
+  identifying signal shape (PSK / QPSK / FSK / C4FM / AM /
+  noise), spotting frequency offset, and checking demod /
+  equalizer health. Decimated to 2 ksps for the wire; canvas
+  scatter with energy banner. Web panel at `/constellation`.
+- **Bookmarks / frequency manager** — UI-managed conventional
+  channel list (marine VHF, NOAA weather, FRS/GMRS, repeater
+  outputs, public-safety fall-back channels) stored in the
+  daemon's SQLite database. Edit / create / delete from the web
+  panel under `/bookmarks`; REST at `/api/v1/bookmarks`.
 - **One dongle, many repeaters** — `role: wideband` pins a single
   SDR to a centre frequency and runs an internal channelizer so
   one dongle decodes every DMR Tier II conventional repeater AND
@@ -90,6 +115,12 @@ Silicon and Intel. Full per-OS recipes at
 - **APIs** — gRPC + HTTP/SSE + WebSocket; optional TLS +
   bearer-token auth on mutations; Prometheus `/metrics`; pure-Go
   SQLite call log; in-process pub/sub event bus.
+- **Hamlib `rigctld` integration** — optional TCP server speaking
+  the standard Hamlib wire protocol so loggers, satellite
+  trackers, and amateur-radio tooling (Cloudlog, GridTracker,
+  PSTRotator, `rigctl(1)`) can read and set the control SDR's
+  frequency. RX-only backend; see
+  [docs/rigctld.md](docs/rigctld.md).
 - **Outbound call streaming** — Broadcastify Calls, RdioScanner,
   OpenMHz, live Icecast / ShoutCast with pre-encoded silence keep-alive.
   Pure-Go MP3 encoder. See `internal/broadcast`.

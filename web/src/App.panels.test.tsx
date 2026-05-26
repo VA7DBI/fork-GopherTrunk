@@ -18,6 +18,34 @@ vi.mock("./api/events", () => ({
   ),
 }));
 
+vi.mock("./api/spectrum", () => ({
+  fetchSpectrumDevices: vi.fn().mockResolvedValue([]),
+  openSpectrumStream: vi.fn(
+    (_cfg: unknown, opts: { onStatus?: (s: string) => void }) => {
+      opts.onStatus?.("closed");
+      return { close: vi.fn() };
+    },
+  ),
+}));
+
+vi.mock("./api/diag", () => ({
+  openIQStream: vi.fn(
+    (_cfg: unknown, opts: { onStatus?: (s: string) => void }) => {
+      opts.onStatus?.("closed");
+      return { close: vi.fn() };
+    },
+  ),
+}));
+
+vi.mock("./api/bookmarks", () => ({
+  bookmarks: {
+    list: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+    update: vi.fn(),
+    remove: vi.fn(),
+  },
+}));
+
 vi.mock("./api/client", () => {
   // Defined inside the factory: vi.mock is hoisted above module scope.
   const ok = (value: unknown) => vi.fn().mockResolvedValue(value);
@@ -120,10 +148,14 @@ const ROUTES = [
   "/dashboard",
   "/active",
   "/scanner",
+  "/spectrum",
+  "/constellation",
+  "/bookmarks",
   "/systems",
   "/talkgroups",
   "/history",
   "/events",
+  "/cc",
   "/tones",
   "/metrics",
   "/devices",

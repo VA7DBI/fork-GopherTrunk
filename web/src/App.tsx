@@ -7,6 +7,9 @@ import { TabBar, type Tab } from "./components/TabBar";
 import { AudioPlayer } from "./components/AudioPlayer";
 import { InstallPrompt } from "./components/InstallPrompt";
 import { Active } from "./panels/Active";
+import { Bookmarks } from "./panels/Bookmarks";
+import { CCActivity } from "./panels/CCActivity";
+import { Constellation } from "./panels/Constellation";
 import { Dashboard } from "./panels/Dashboard";
 import { Devices } from "./panels/Devices";
 import { Events } from "./panels/Events";
@@ -15,6 +18,7 @@ import { Import } from "./panels/Import";
 import { Metrics } from "./panels/Metrics";
 import { Scanner } from "./panels/Scanner";
 import { Settings } from "./panels/Settings";
+import { Spectrum } from "./panels/Spectrum";
 import { Systems } from "./panels/Systems";
 import { Talkgroups } from "./panels/Talkgroups";
 import { Tones } from "./panels/Tones";
@@ -31,7 +35,11 @@ const EXTRA_TABS: Tab[] = [
   { to: "/talkgroups", label: "Talkgroups", icon: "☷" },
   { to: "/history", label: "History", icon: "↺" },
   { to: "/events", label: "Events", icon: "≣" },
+  { to: "/cc", label: "CC Activity", icon: "⌁" },
   { to: "/tones", label: "Tones", icon: "♪" },
+  { to: "/spectrum", label: "Spectrum", icon: "≈" },
+  { to: "/constellation", label: "Constellation", icon: "✦" },
+  { to: "/bookmarks", label: "Bookmarks", icon: "★" },
   { to: "/metrics", label: "Metrics", icon: "▰" },
   { to: "/devices", label: "Devices", icon: "⌗" },
   { to: "/import", label: "Import", icon: "↗" },
@@ -129,10 +137,14 @@ export function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/active" element={<Active />} />
           <Route path="/scanner" element={<Scanner />} />
+          <Route path="/spectrum" element={<Spectrum />} />
+          <Route path="/constellation" element={<Constellation />} />
+          <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/systems" element={<Systems />} />
           <Route path="/talkgroups" element={<Talkgroups />} />
           <Route path="/history" element={<History />} />
           <Route path="/events" element={<Events />} />
+          <Route path="/cc" element={<CCActivity />} />
           <Route path="/tones" element={<Tones />} />
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/devices" element={<Devices />} />

@@ -252,6 +252,22 @@ type Server struct {
 	// the same fan-out. nil disables the route.
 	audioPub *AudioPublisher
 
+	// spectrum is the optional provider backing /api/v1/spectrum/...
+	// routes. nil disables the routes. Implemented by the daemon
+	// over its iqtap broker map.
+	spectrum SpectrumProvider
+
+	// bookmarks is the optional provider backing /api/v1/bookmarks/...
+	// routes. nil disables the routes (503). Implemented by the
+	// daemon over storage.BookmarkStore.
+	bookmarks BookmarkProvider
+
+	// diag is the optional provider backing /api/v1/diag/...
+	// routes (decimated-IQ stream for the Constellation panel).
+	// nil disables the routes (503). Implemented by the daemon
+	// over the iqtap broker + internal/dsp/diag.
+	diag DiagProvider
+
 	mu     sync.Mutex
 	srv    *http.Server
 	closed bool
@@ -421,6 +437,25 @@ type ServerOptions struct {
 	// publisher that backs gRPC StreamAudio so the HTTP stream is
 	// a parallel subscriber rather than a second fan-out.
 	AudioPublisher *AudioPublisher
+	// Spectrum, when non-nil, enables the
+	// GET /api/v1/spectrum/devices read endpoint and the
+	// WS /api/v1/spectrum/stream live FFT frame stream. The daemon
+	// implements this on top of its iqtap.Broker map; nil keeps the
+	// routes returning 503 so a build without SDRs doesn't pretend
+	// to have a waterfall.
+	Spectrum SpectrumProvider
+	// Bookmarks, when non-nil, enables the
+	// GET/POST/PATCH/DELETE /api/v1/bookmarks routes for operator-
+	// managed conventional channel bookmarks. nil keeps the routes
+	// returning 503. Wired by the daemon over the SQLite-backed
+	// storage.BookmarkStore.
+	Bookmarks BookmarkProvider
+	// Diag, when non-nil, enables the
+	// WS /api/v1/diag/iq decimated-IQ live stream that backs the
+	// web Constellation panel. The daemon implements this over
+	// the iqtap broker + internal/dsp/diag; nil keeps the route
+	// returning 503.
+	Diag DiagProvider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -512,6 +547,9 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		tlsKey:         opts.TLSKey,
 		cors:           opts.CORS,
 		audioPub:       opts.AudioPublisher,
+		spectrum:       opts.Spectrum,
+		bookmarks:      opts.Bookmarks,
+		diag:           opts.Diag,
 	}, nil
 }
 
@@ -678,6 +716,28 @@ func (s *Server) routes() *http.ServeMux {
 	// it via <audio src="/api/v1/audio/stream">. Returns 503 when
 	// the daemon was started without an audio publisher.
 	mux.HandleFunc("GET /api/v1/audio/stream", s.handleAudioStream)
+
+	// Spectrum / waterfall — list devices that can be streamed and
+	// open a WS feed of FFT magnitude frames. Foundation for the
+	// browser + TUI live spectrum panel. Returns 503 when the
+	// daemon was started without a SpectrumProvider (no SDRs, or
+	// the broker map wasn't wired).
+	mux.HandleFunc("GET /api/v1/spectrum/devices", s.handleSpectrumDevices)
+	mux.HandleFunc("GET /api/v1/spectrum/stream", s.handleSpectrumStream)
+	mux.HandleFunc("POST /api/v1/spectrum/devices/{serial}/tune", s.gate(s.handleSpectrumTune))
+
+	// Bookmarks / frequency manager. Read endpoint is always open;
+	// create / update / delete are gated behind allow_mutations
+	// like every other write route.
+	mux.HandleFunc("GET /api/v1/bookmarks", s.handleListBookmarks)
+	mux.HandleFunc("POST /api/v1/bookmarks", s.gate(s.handleCreateBookmark))
+	mux.HandleFunc("PATCH /api/v1/bookmarks/{id}", s.gate(s.handleUpdateBookmark))
+	mux.HandleFunc("DELETE /api/v1/bookmarks/{id}", s.gate(s.handleDeleteBookmark))
+
+	// Diagnostic IQ stream — feeds the web Constellation panel.
+	// Read-only; the daemon doesn't expose any way to inject IQ
+	// via this path. Returns 503 when no SDR is in the pool.
+	mux.HandleFunc("GET /api/v1/diag/iq", s.handleDiagStream)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes
