@@ -46,6 +46,17 @@ const (
 	// divNum based on the chip's VCO fine-tune status bits.
 	r82xxVCOPowerRef = 2
 
+	// r82xxMaxNint is the largest nint value that fits the chip's PLL
+	// integer-divider encoding. setPLL writes nint to register 0x14
+	// split across two fields: ni in bits 0..5 (0x3F) and si in bits
+	// 6..7 (0x3), with nint = 13 + 4*ni + si. So the encoding caps
+	// nint at 13 + 4*0x3F + 0x3 = 268. The earlier limit of 0x3F+13
+	// (= 76) only accounted for ni's width and falsely rejected
+	// R828D (16 MHz xtal) tunes above ~140 MHz, where the smaller
+	// pllRef pushes nint past 76 even though it still fits both the
+	// encoding and the VCO range. See issue #264.
+	r82xxMaxNint uint32 = 13 + 4*0x3F + 0x3
+
 	// r82xxBurstMaxData caps the data-byte count per I2C-bridge OUT
 	// to the tuner. librtlsdr's r82xx_write uses NMAX_WRITES = 16 for
 	// the same reason: some R820T2 dongles stall the very first
