@@ -22,16 +22,39 @@ const p25p1VoiceIntermediateHz = 48_000
 // per TIA-102.BAAA. It calibrates the receiver's 4-level slicer.
 const p25p1DeviationHz = 1800.0
 
+// resolveP25Phase1DemodMode parses the system-level
+// p25_phase1_demod_mode string carried on the grant into a receiver
+// mode. Unknown values warn-log and fall back to C4FM so a typo doesn't
+// silently kill a previously-working system; empty is the canonical
+// default. Factored out so the wiring is unit-testable independently
+// of the full IQ → LDU pipeline (issue #356 follow-up).
+func (c *Composer) resolveP25Phase1DemodMode(serial, mode string) p25p1rx.DemodMode {
+	parsed, ok := p25p1rx.ParseDemodMode(mode)
+	if !ok {
+		c.log.Warn("composer: unrecognised p25_phase1_demod_mode; voice chain falling back to c4fm",
+			"serial", serial, "value", mode)
+	}
+	return parsed
+}
+
 // runP25Phase1VoiceChain consumes IQ for one P25 Phase 1 voice call. It
 // decimates the wideband IQ to a C4FM-friendly rate, recovers the dibit
 // stream with the Phase 1 receiver, assembles complete 1728-bit LDUs,
 // and for each LDU extracts its 9 IMBE voice frames and appends them to
 // the recorder's .raw sidecar.
 //
+// demodMode is the raw system-level p25_phase1_demod_mode string from
+// the grant ("c4fm" / "cqpsk" / ""). An empty or unrecognised value
+// preserves the legacy C4FM path; "cqpsk" / "lsm" / "linear" routes
+// voice IQ through the linear-CQPSK path required for LSM simulcast
+// sites. Without this the voice chain was hardcoded to C4FM regardless
+// of the system setting and never decoded LDUs on simulcast sites
+// (issue #356 follow-up).
+//
 // The recorder maps protocol "p25" to the pure-Go IMBE vocoder
 // (voice.DefaultVocoderForProtocol), so WriteRawFrame here decodes each
 // 11-byte frame to PCM and into the call's WAV.
-func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iqCh <-chan []complex64, iqHz uint32, done chan<- struct{}) {
+func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iqCh <-chan []complex64, iqHz uint32, demodMode string, done chan<- struct{}) {
 	defer close(done)
 
 	decim := int(iqHz) / p25p1VoiceIntermediateHz
@@ -39,6 +62,8 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 		decim = 1
 	}
 	symbolHz := float64(iqHz) / float64(decim)
+
+	mode := c.resolveP25Phase1DemodMode(serial, demodMode)
 
 	// Front-end LPF: doubles as the anti-aliasing filter for the
 	// decimation, so it is only needed when the IQ is actually
@@ -81,6 +106,7 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 	rx := p25p1rx.New(p25p1rx.Options{
 		SampleRateHz: symbolHz,
 		DeviationHz:  p25p1DeviationHz,
+		DemodMode:    mode,
 		Sink: func(ldu []byte) {
 			// Bump first so the watchdog gate accounts for LDU
 			// delivery even when there's no raw-frame sink.

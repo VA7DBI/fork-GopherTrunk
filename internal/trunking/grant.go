@@ -43,7 +43,17 @@ type Grant struct {
 	// it from its PatchRegistry so the call can be attributed to every
 	// member. Empty for an ordinary (non-patched) grant.
 	PatchedGroups []uint32
-	At            time.Time
+	// P25Phase1DemodMode mirrors the system-level
+	// trunking.System.P25Phase1DemodMode setting so the voice composer
+	// can pick the matching symbol-recovery path on grants for the
+	// system (C4FM vs CQPSK / LSM). The control-channel decoder
+	// already honours the setting via the ccdecoder connector; without
+	// this field every voice grant landed in a hardcoded C4FM voice
+	// receiver and never decoded on LSM-modulated simulcast sites
+	// (issue #356 follow-up). Populated by the protocol layer when it
+	// publishes the grant; ignored for non-P25-Phase-1 grants.
+	P25Phase1DemodMode string
+	At                 time.Time
 }
 
 // String renders a one-line summary of a Grant for log output.

@@ -324,7 +324,12 @@ trunking:
   #                                     # P25 simulcast sites whose CC
   #                                     # is transmitted as Linear
   #                                     # Simulcast Modulation rather
-  #                                     # than C4FM (issue #275)
+  #                                     # than C4FM (issue #275). Also
+  #                                     # routes the per-call voice chain
+  #                                     # through the LSM path; without
+  #                                     # this voice grants on simulcast
+  #                                     # sites time out with no audio
+  #                                     # (issue #356).
   #
   #   - name: "Legacy-P25-Phase2"
   #     protocol: p25

@@ -469,8 +469,12 @@ type SystemConfig struct {
 	// (the linear / LSM path — complex RRC + Gardner + differential
 	// QPSK; required for simulcast P25 deployments whose control
 	// channel transmits Linear Simulcast Modulation rather than
-	// straight C4FM, see issue #275 and TIA-102.BAAA). Ignored for
-	// non-P25-Phase-1 protocols.
+	// straight C4FM, see issue #275 and TIA-102.BAAA). Applies to
+	// both the control channel decoder and the per-call voice
+	// chain — without the voice-chain side a simulcast site would
+	// lock the CC fine but never decode an LDU on a granted voice
+	// call (issue #356 follow-up). Ignored for non-P25-Phase-1
+	// protocols.
 	P25Phase1DemodMode string `yaml:"p25_phase1_demod_mode"`
 	// P25Phase2TrellisMode enables the 4-state ½-rate trellis FEC
 	// decoder on the P25 Phase 2 MAC PDU window. Recognised values:
