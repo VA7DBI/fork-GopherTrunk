@@ -90,3 +90,18 @@ func TestParseLinkControlLengthError(t *testing.T) {
 		t.Error("ParseLinkControl accepted a wrong-length block")
 	}
 }
+
+func TestIsTalkerAliasLCO(t *testing.T) {
+	// The three standard TIA-102.AABF talker-alias opcodes report
+	// true; the common LCO 0x00 does not.
+	for _, lcf := range []uint8{LCOTalkerAliasHeader, LCOTalkerAliasBlock1, LCOTalkerAliasBlock2} {
+		if !IsTalkerAliasLCO(lcf) {
+			t.Errorf("IsTalkerAliasLCO(0x%02x) = false, want true", lcf)
+		}
+	}
+	for _, lcf := range []uint8{LCOGroupVoiceChannelUser, 0x14, 0x18, 0xFF} {
+		if IsTalkerAliasLCO(lcf) {
+			t.Errorf("IsTalkerAliasLCO(0x%02x) = true, want false", lcf)
+		}
+	}
+}
