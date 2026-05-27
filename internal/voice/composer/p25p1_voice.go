@@ -59,13 +59,13 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 		lastES    phase1.EncryptionSync
 		hasLastES bool
 	)
-	// aliasBuf reassembles the per-call standard P25 voice-channel
-	// talker alias (TIA-102.AABF LCOs 0x15/0x16/0x17). Distinct from
-	// the Motorola vendor TSBK form, which the control channel
-	// already handles via phase1.TalkerAliasAssembler. One buffer
-	// per voice chain — each chain handles exactly one call's worth
-	// of LDU1s, so per-source tracking isn't needed here.
-	aliasBuf := phase1.NewStandardTalkerAliasBuf(nil)
+	// aliasBuf reassembles the per-call Motorola voice-channel
+	// talker alias (LCO 0x15 header + N × LCO 0x17 data blocks).
+	// Distinct from the Motorola vendor TSBK form on the control
+	// channel, which phase1.TalkerAliasAssembler still handles. One
+	// buffer per voice chain — each chain handles exactly one call's
+	// worth of LDU1s.
+	aliasBuf := phase1.NewMotorolaTalkerAliasBuf(nil)
 	// lastSourceID is the most recently observed SourceID from an
 	// LCO-0 (group voice channel user) LC on this chain. The alias
 	// LCs (0x15/0x16/0x17) carry only payload bytes — no SourceID —
@@ -114,12 +114,11 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 			}
 			switch duid {
 			case phase1.DUIDLogicalLink1:
-				// Standard TIA-102 voice-channel talker-alias LCs
-				// (LCO 0x15/0x16/0x17) reuse the LC octets for the
-				// alias payload — ParseLinkControl's TG/SRC view is
-				// only meaningful for LCOGroupVoiceChannelUser (0x00),
-				// so dispatch on the opcode before interpreting the
-				// rest of the content.
+				// Motorola voice-channel talker-alias LCs reuse the
+				// LC octets for the alias payload, so dispatch on
+				// the opcode byte from ParseLinkControlContent —
+				// ParseLinkControl's TG/SRC view is only meaningful
+				// for LCOGroupVoiceChannelUser (0x00).
 				content, _, cerr := phase1.ParseLinkControlContent(blocks)
 				if cerr != nil {
 					return
@@ -128,6 +127,8 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 				switch {
 				case phase1.IsTalkerAliasLCO(lcf):
 					if alias, ok := aliasBuf.AddFragment(lcf, content); ok && lastSourceID != 0 {
+						c.log.Info("composer: p25p1 motorola talker alias",
+							"serial", serial, "src", lastSourceID, "alias", alias)
 						c.bus.Publish(events.Event{
 							Kind: events.KindTalkerAlias,
 							Payload: trunking.TalkerAlias{

@@ -127,13 +127,20 @@ Two paths feed it:
 - **Motorola vendor TSBK** — control-channel `OpVendorTalkerAlias`
   0x15, reassembled by `phase1.TalkerAliasAssembler` (Phase 1)
   and the Phase 2 vendor MAC opcode.
-- **Standard TIA-102.AABF voice-channel LCs** — P25 Phase 1 LDU1
-  Link Control opcodes 0x15 HEADER / 0x16 BLOCK1 / 0x17 BLOCK2,
-  reassembled per call by `phase1.StandardTalkerAliasBuf` in the
-  voice composer.
+- **Motorola voice-channel LCs** — P25 Phase 1 LDU1 Link Control
+  opcodes 0x15 (header: talkgroup + variable block_count +
+  sequence number) and 0x17 (data blocks, 44 bits each),
+  reassembled per call by `phase1.MotorolaTalkerAliasBuf`. The
+  reassembled message is run through a reverse-engineered
+  Motorola substitution-table cipher
+  (`phase1.decodeAliasBytes`) to recover the printable alias
+  characters. (Earlier work assumed the TIA-102.AABF "standard"
+  HEADER+BLOCK1+BLOCK2 layout; real Motorola systems don't emit
+  that form, so the standard-form decoder was replaced with this
+  vendor variant in a follow-up to PR #389.)
 
-Phase 2 standard voice-MAC alias dispatch is a follow-up; the
-vendor MAC form on the Phase 2 control channel is already wired.
+Phase 2 voice-MAC alias dispatch is a follow-up; the vendor MAC
+form on the Phase 2 control channel is already wired.
 
 ## See also
 

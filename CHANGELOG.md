@@ -7,6 +7,29 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Changed
+
+- **Motorola voice-channel talker-alias decoder (issue #376
+  follow-up).** Field-testing on a real MMR system surfaced that
+  the standard TIA-102.AABF HEADER + BLOCK1 + BLOCK2 form #389
+  implemented does NOT match what Motorola actually emits — real
+  Motorola P25 systems use a vendor-specific variant: LCO 0x15
+  header (talkgroup + variable block_count + sequence number) +
+  N × LCO 0x17 data blocks (44-bit fragment each), with the
+  reassembled message running the encoded alias through a
+  proprietary lookup-table + accumulator cipher to recover the
+  UTF-16 character stream. Replaced `StandardTalkerAliasBuf`
+  with a clean-room Go port of the Motorola form
+  (`phase1.MotorolaTalkerAliasBuf` +
+  `phase1.decodeAliasBytes`). The voice composer dispatch on
+  `IsTalkerAliasLCO` is unchanged at the call site; the Info
+  log line now reads "composer: p25p1 motorola talker alias
+  src=... alias=..." so operators can see decode events in the
+  daemon log. The cipher LUT and arithmetic are treated as
+  facts about Motorola's wire protocol (the algorithm is
+  reverse-engineered prior art across multiple open-source
+  decoders).
+
 ## [v0.2.4] — 2026-05-27
 
 Phase-5 (APRS) + Phase-3 (POCSAG) + Phase-1 (Radio IDs) feature-density
