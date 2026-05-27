@@ -7,6 +7,25 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **RTL-SDR cold-boot stall on Windows: wider recovery envelope for the
+  most stubborn clone dongles (issue #395).** A Windows 10 reporter on
+  v0.2.4 still hit `rtlsdr: init baseband: init baseband step 0 ...
+  ERROR_GEN_FAILURE` after the prior #382 + #393 fixes — warmup succeeded
+  but the byte-identical step 0 of `InitBaseband` failed, and all three
+  attempts of the previous 3-attempt / 100 ms+200 ms backoff envelope
+  also failed. The open-time bring-up envelope now runs 5 attempts (4
+  resets) with exponential backoff (200 / 400 / 800 / 1200 ms), and the
+  WinUSB `Reset()` settle grows from 50 ms to 150 ms — both targeted at
+  Windows USB-stack timing for the wedged-firmware recovery path.
+  Healthy dongles still open on attempt 0 with zero delay; only dongles
+  that actually need recovery pay the new costs. The surfaced hint for
+  `ErrPipeStalled` now also recommends unplugging the dongle for 10 s
+  before re-plugging (which physically clears the firmware state) and
+  references the issue for users hitting this after a Windows
+  sleep/resume.
+
 ### Changed
 
 - **Motorola voice-channel talker-alias decoder (issue #376

@@ -362,10 +362,14 @@ func (t *winTransport) Reset() error {
 	}
 
 	// Let the WinUSB stack release the file-object and the device
-	// firmware finish internal recovery before we re-open. 50ms is
-	// the conservative settle libusb-1.0 uses on Windows after
-	// libusb_reset_device's close path.
-	time.Sleep(50 * time.Millisecond)
+	// firmware finish internal recovery before we re-open. libusb-1.0
+	// uses 50ms here for clean closes, but the bring-up envelope only
+	// calls Reset() after a wedged-firmware failure (ERROR_GEN_FAILURE
+	// / pipe stall) — issue #395 surfaced a Windows clone dongle whose
+	// firmware needed longer than 50ms to recover, so we settle for
+	// 150ms here. Healthy opens never run this path; the cost only
+	// applies to dongles that actually need recovery.
+	time.Sleep(150 * time.Millisecond)
 
 	wpath, err := windows.UTF16PtrFromString(t.desc.Path)
 	if err != nil {
