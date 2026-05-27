@@ -176,6 +176,19 @@ for tagged releases.
 
 ### Fixed
 
+- **RTL-SDR cold-boot stall on Windows: deeper recovery for wedged
+  clone dongles.** The previous fix mapped `ERROR_GEN_FAILURE (0x1F)`
+  to `ErrPipeStalled` and ran one clear-halt + re-claim retry, which
+  recovers a stale endpoint halt but not a wedged firmware state from
+  a prior crashed process. WinUSB `Transport.Reset()` now matches
+  what `libusb_reset_device` does on Windows: clear-halt the control
+  endpoint, drop the WinUSB handles, then re-open the device via
+  `CreateFile` + `WinUsb_Initialize` (a true device-object re-bind,
+  not just a pipe reset). The open-time bring-up envelope now allows
+  up to two such resets per `Open` with 100ms / 200ms backoff, giving
+  clones that need two settles to come back a chance to recover
+  before surfacing the Zadig / port-choice / `gophertrunk sdr doctor`
+  hint. Healthy dongles still open with zero resets and zero delay.
 - **RTL-SDR cold-boot stall on Windows now self-recovers.** Clone
   dongles (and some power-marginal hubs) latch the first
   USB_SYSCTL=0x09 vendor-OUT write, then NAK the byte-identical

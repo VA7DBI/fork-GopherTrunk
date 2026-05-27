@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/rtl2832u"
@@ -152,35 +153,42 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 // explicit "kick" to arm the bridge for the multi-byte OUT that
 // follows, even though the demod register already holds the on-value.
 //
-// The whole sequence is wrapped in a one-shot reset+retry envelope on
-// EPIPE / ErrDeviceGone — covers both the librtlsdr "dummy write
-// probe" recovery case (warmup phase) and the NESDR v5 cold-boot
-// I²C-bridge-stall case (issue #248, the chip rejecting the first
-// 17-byte tuner burst even after PR #262's fresh wire toggle is on
-// the wire). At most one USBDEVFS_RESET per Open. Non-EPIPE errors
-// return immediately — reset is the wrong hammer for them.
+// The whole sequence is wrapped in a bounded reset+retry envelope on
+// EPIPE / ErrDeviceGone / ErrTimeout / ErrPipeStalled — covers the
+// librtlsdr "dummy write probe" recovery case (warmup phase), the
+// NESDR v5 cold-boot I²C-bridge-stall case (issue #248, the chip
+// rejecting the first 17-byte tuner burst even after PR #262's fresh
+// wire toggle is on the wire), and the Windows clone-dongle wedge
+// where one device-rebind isn't enough to clear a stale firmware
+// state. Up to two resets per Open with 100ms / 200ms backoff between
+// the failing attempt and the next retry — gives the WinUSB stack and
+// device firmware time to settle before the next bring-up pass.
+// Non-resetable errors (validation failures, ErrClosed) return
+// immediately — reset is the wrong hammer for them.
 func openDevice(transport usb.Transport, desc usb.Descriptor, idx int) (*Device, error) {
 	if err := transport.ClaimInterface(0); err != nil {
 		return nil, fmt.Errorf("rtlsdr: claim interface 0: %w%s", err, claimBusyHint(err))
 	}
 
+	const maxAttempts = 3
 	var (
 		demod *rtl2832u.Demod
 		tuner tuners.Tuner
 		err   error
 	)
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		demod = rtl2832u.New(transport)
 		tuner, err = runBringup(demod)
 		if err == nil {
 			break
 		}
-		if attempt == 1 || !isBringupResetable(err) {
+		if attempt == maxAttempts-1 || !isBringupResetable(err) {
 			return nil, err
 		}
 		if resetErr := transport.Reset(); resetErr != nil {
 			return nil, fmt.Errorf("rtlsdr: bring-up hit %w; reset failed: %w", err, resetErr)
 		}
+		time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
 		_ = transport.ReleaseInterface(0)
 		if claimErr := transport.ClaimInterface(0); claimErr != nil {
 			return nil, fmt.Errorf("rtlsdr: re-claim interface 0 after reset: %w", claimErr)
@@ -275,10 +283,11 @@ func runBringup(demod *rtl2832u.Demod) (tuners.Tuner, error) {
 // ERROR_SEM_TIMEOUT instead of stalling the pipe), or ErrPipeStalled
 // (Windows/WinUSB clone-dongle cold-boot — the chip latches the first
 // USB_SYSCTL write and then NAKs the next identical write with
-// ERROR_GEN_FAILURE). The retry is bounded to one reset
-// per Open so even if a reset is wasted on a non-cold-boot stall the
-// cost is capped at ~200ms before the original error surfaces. Other
-// errors (ErrClosed, validation failures) stay non-resetable.
+// ERROR_GEN_FAILURE). The retry is bounded to two resets per Open
+// (100ms + 200ms backoff between passes) so even if both resets are
+// wasted on a non-cold-boot stall the cost is capped at ~1s before
+// the original error surfaces. Other errors (ErrClosed, validation
+// failures) stay non-resetable.
 func isBringupResetable(err error) bool {
 	return errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, usb.ErrDeviceGone) ||
