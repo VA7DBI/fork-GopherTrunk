@@ -118,6 +118,22 @@ func ParseLinkControl(blocks [LDULCESBlockCount][]byte) (LinkControl, int, error
 	}, errs, nil
 }
 
+// ParseLinkControlContent decodes the 6 LC blocks of an LDU1 into the
+// raw 9 LC content octets plus the inner-FEC corrected-error count.
+// Used by the talker-alias path so opcodes other than 0x00 (group
+// voice channel user) can read their own octet layout without going
+// through ParseLinkControl's LCO-0-shaped struct.
+func ParseLinkControlContent(blocks [LDULCESBlockCount][]byte) ([lcContentOctets]byte, int, error) {
+	var out [lcContentOctets]byte
+	data, errs, err := lcInnerDecode(blocks)
+	if err != nil {
+		return out, 0, err
+	}
+	oct := bitsToOctets(data[:lcContentOctets*8])
+	copy(out[:], oct)
+	return out, errs, nil
+}
+
 // AssembleLinkControl is the inverse of ParseLinkControl; it builds the
 // 6 on-wire LC blocks for a LinkControl word. The RS-parity half of the
 // 144-bit data field is left zero (see the package note above).

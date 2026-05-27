@@ -9,6 +9,31 @@ for tagged releases.
 
 ### Added
 
+- **Radio IDs as first-class entities (#387, #376).** New
+  `trunking.RIDDB` operator-configured alias catalogue mirroring
+  `TalkgroupDB`: per-system `rid_alias_file` (CSV or JSON, dispatched
+  by extension) carrying `Decimal/DEC/ID` plus optional `Alias`,
+  `Description`, `Tag`, `Group`, `Owner`, `Priority`, `Lockout`,
+  `Watch`, `Icon` columns. `AffiliationTracker` gained `TalkerAlias`,
+  `TalkerAliasAt`, `CallCount`, `FirstSeen` on `UnitActivity` and
+  now subscribes to `KindTalkerAlias`. New HTTP routes `GET
+  /api/v1/rids`, `GET /api/v1/rids/{id}`, `GET
+  /api/v1/rids/{id}/history` (backed by `HistoryFilter.SourceID`),
+  and `PATCH /api/v1/rids/{id}`. New gRPC `RIDService`
+  (`ListRIDs` / `GetRID` / `ListRIDHistory`). New `/rids` web panel
+  with the configured ∪ live merge, last-50-calls detail modal, and
+  write-mode mutation controls. CC Activity RID chips are now
+  clickable links into the detail view. See [docs/radio-ids.md](docs/radio-ids.md).
+- **Standard P25 talker-alias voice-channel decoder.** Follow-up to
+  #387 closing the second half of issue #376. Phase 1 LDU1 Link
+  Control opcodes 0x15 (HEADER) / 0x16 (BLOCK1) / 0x17 (BLOCK2) are
+  now reassembled by `phase1.StandardTalkerAliasBuf` (one buffer
+  per active voice chain) and published as `KindTalkerAlias` events
+  with the call's SourceID; the affiliation tracker stamps the
+  decoded alias onto the RID row so it surfaces in
+  `/api/v1/rids` and the Radio IDs panel. The existing Motorola
+  vendor TSBK form (control channel) is unchanged. Phase 2 voice-MAC
+  alias dispatch remains a follow-up.
 - **APRS bus event + SQLite log + REST + web panel.** Second
   slice of Phase 5 (#365), building on the protocol layer from
   #381. New `events.KindAPRSPacket` bus event, `aprs_log`

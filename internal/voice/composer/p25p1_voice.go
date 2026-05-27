@@ -59,6 +59,19 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 		lastES    phase1.EncryptionSync
 		hasLastES bool
 	)
+	// aliasBuf reassembles the per-call standard P25 voice-channel
+	// talker alias (TIA-102.AABF LCOs 0x15/0x16/0x17). Distinct from
+	// the Motorola vendor TSBK form, which the control channel
+	// already handles via phase1.TalkerAliasAssembler. One buffer
+	// per voice chain — each chain handles exactly one call's worth
+	// of LDU1s, so per-source tracking isn't needed here.
+	aliasBuf := phase1.NewStandardTalkerAliasBuf(nil)
+	// lastSourceID is the most recently observed SourceID from an
+	// LCO-0 (group voice channel user) LC on this chain. The alias
+	// LCs (0x15/0x16/0x17) carry only payload bytes — no SourceID —
+	// so the voice channel's own LCO-0 LCs are how we tag a decoded
+	// alias with the right radio.
+	var lastSourceID uint32
 	// frames counts LDUs delivered by the receiver — i.e. real voice
 	// activity. The touch ticker (below) only refreshes the engine's
 	// LastHeardAt when this counter has advanced since the previous
@@ -101,21 +114,38 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 			}
 			switch duid {
 			case phase1.DUIDLogicalLink1:
-				if lc, _, lerr := phase1.ParseLinkControl(blocks); lerr == nil {
-					c.log.Debug("composer: p25p1 link control",
-						"serial", serial, "lcf", lc.LCFormat,
-						"tg", lc.TalkgroupID, "src", lc.SourceID)
-					// Surface the standard TIA-102 voice-channel
-					// talker-alias LCOs at Info so operators whose
-					// system uses them can see they're flowing on
-					// the wire even though we don't yet reassemble
-					// them. The Motorola vendor TSBK form is handled
-					// by the control channel today (see
-					// phase1.OpVendorTalkerAlias); the standard
-					// voice-channel form is issue #376 follow-up.
-					if phase1.IsTalkerAliasLCO(lc.LCFormat) {
-						c.log.Info("composer: p25p1 standard talker-alias LC observed (not yet decoded — see issue #376)",
-							"serial", serial, "lcf", lc.LCFormat)
+				// Standard TIA-102 voice-channel talker-alias LCs
+				// (LCO 0x15/0x16/0x17) reuse the LC octets for the
+				// alias payload — ParseLinkControl's TG/SRC view is
+				// only meaningful for LCOGroupVoiceChannelUser (0x00),
+				// so dispatch on the opcode before interpreting the
+				// rest of the content.
+				content, _, cerr := phase1.ParseLinkControlContent(blocks)
+				if cerr != nil {
+					return
+				}
+				lcf := content[0]
+				switch {
+				case phase1.IsTalkerAliasLCO(lcf):
+					if alias, ok := aliasBuf.AddFragment(lcf, content); ok && lastSourceID != 0 {
+						c.bus.Publish(events.Event{
+							Kind: events.KindTalkerAlias,
+							Payload: trunking.TalkerAlias{
+								Protocol: "p25-phase1",
+								SourceID: lastSourceID,
+								Alias:    alias,
+								At:       time.Now(),
+							},
+						})
+					}
+				default:
+					if lc, _, lerr := phase1.ParseLinkControl(blocks); lerr == nil {
+						c.log.Debug("composer: p25p1 link control",
+							"serial", serial, "lcf", lc.LCFormat,
+							"tg", lc.TalkgroupID, "src", lc.SourceID)
+						if lc.LCFormat == phase1.LCOGroupVoiceChannelUser && lc.SourceID != 0 {
+							lastSourceID = lc.SourceID
+						}
 					}
 				}
 			case phase1.DUIDLogicalLink2:

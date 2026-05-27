@@ -100,7 +100,20 @@ Silicon and Intel. Full per-OS recipes at
 - **CC Activity panel** — focused web view of the trunked control-
   channel chatter (grants, affiliations, registrations, patches,
   talker aliases, CC lock / loss). Pure filter over the events
-  stream with per-row payload rendering; web panel at `/cc`.
+  stream with per-row payload rendering; web panel at `/cc`. RIDs
+  in the feed are clickable chips that pivot into the per-radio
+  detail view.
+- **Radio IDs panel** — per-radio (subscriber-unit) entity browser
+  with the same shape as Talkgroups. Merges the operator-configured
+  alias catalogue (per-system `rid_alias_file` CSV or JSON: alias,
+  owner, tag, group, priority, lockout, watch) with the live
+  affiliation tracker (last talkgroup, last seen, call count,
+  decoded talker alias). Detail modal pulls the last 50 calls for
+  the RID from the persisted call log. Web panel at `/rids`; REST
+  at `/api/v1/rids`; gRPC `RIDService`. Talker-alias decoders
+  cover the Motorola vendor TSBK form (control channel) and the
+  standard TIA-102.AABF voice-channel LCs (P25 Phase 1 LDU1 LCO
+  0x15/0x16/0x17).
 - **Constellation viewer** — live IQ scatter visualization that
   taps the same broker the trunking decoder reads. Useful for
   identifying signal shape (PSK / QPSK / FSK / C4FM / AM /
