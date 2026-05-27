@@ -432,7 +432,7 @@ func (r *R82xx) setPLL(freqHz uint32) error {
 	pllRef := uint64(r.xtalHz)
 	nint := uint32(vcoFreq / (2 * pllRef))
 	vcoFra := uint32((vcoFreq - 2*pllRef*uint64(nint)) / 1000)
-	if nint > 0x3F+13 {
+	if nint > r82xxMaxNint {
 		return fmt.Errorf("r82xx setPLL: nint=%d overflows", nint)
 	}
 	ni := uint8((nint - 13) / 4)

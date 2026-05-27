@@ -22,29 +22,54 @@ const p25p1VoiceIntermediateHz = 48_000
 // per TIA-102.BAAA. It calibrates the receiver's 4-level slicer.
 const p25p1DeviationHz = 1800.0
 
+// resolveP25Phase1DemodMode parses the system-level
+// p25_phase1_demod_mode string carried on the grant into a receiver
+// mode. Unknown values warn-log and fall back to C4FM so a typo doesn't
+// silently kill a previously-working system; empty is the canonical
+// default. Factored out so the wiring is unit-testable independently
+// of the full IQ → LDU pipeline (issue #356 follow-up).
+func (c *Composer) resolveP25Phase1DemodMode(serial, mode string) p25p1rx.DemodMode {
+	parsed, ok := p25p1rx.ParseDemodMode(mode)
+	if !ok {
+		c.log.Warn("composer: unrecognised p25_phase1_demod_mode; voice chain falling back to c4fm",
+			"serial", serial, "value", mode)
+	}
+	return parsed
+}
+
 // runP25Phase1VoiceChain consumes IQ for one P25 Phase 1 voice call. It
 // decimates the wideband IQ to a C4FM-friendly rate, recovers the dibit
 // stream with the Phase 1 receiver, assembles complete 1728-bit LDUs,
 // and for each LDU extracts its 9 IMBE voice frames and appends them to
 // the recorder's .raw sidecar.
 //
+// demodMode is the raw system-level p25_phase1_demod_mode string from
+// the grant ("c4fm" / "cqpsk" / ""). An empty or unrecognised value
+// preserves the legacy C4FM path; "cqpsk" / "lsm" / "linear" routes
+// voice IQ through the linear-CQPSK path required for LSM simulcast
+// sites. Without this the voice chain was hardcoded to C4FM regardless
+// of the system setting and never decoded LDUs on simulcast sites
+// (issue #356 follow-up).
+//
 // The recorder maps protocol "p25" to the pure-Go IMBE vocoder
 // (voice.DefaultVocoderForProtocol), so WriteRawFrame here decodes each
 // 11-byte frame to PCM and into the call's WAV.
-func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iqCh <-chan []complex64, done chan<- struct{}) {
+func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iqCh <-chan []complex64, iqHz uint32, demodMode string, done chan<- struct{}) {
 	defer close(done)
 
-	decim := int(c.iqHz) / p25p1VoiceIntermediateHz
+	decim := int(iqHz) / p25p1VoiceIntermediateHz
 	if decim < 1 {
 		decim = 1
 	}
-	symbolHz := float64(c.iqHz) / float64(decim)
+	symbolHz := float64(iqHz) / float64(decim)
+
+	mode := c.resolveP25Phase1DemodMode(serial, demodMode)
 
 	// Front-end LPF: doubles as the anti-aliasing filter for the
 	// decimation, so it is only needed when the IQ is actually
 	// decimated (decim == 1 only in tests that feed IQ already at the
 	// intermediate rate).
-	cutoff := float64(c.bw) / float64(c.iqHz)
+	cutoff := float64(c.bw) / float64(iqHz)
 	if cutoff > 0.45 {
 		cutoff = 0.45
 	}
@@ -59,6 +84,19 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 		lastES    phase1.EncryptionSync
 		hasLastES bool
 	)
+	// aliasBuf reassembles the per-call Motorola voice-channel
+	// talker alias (LCO 0x15 header + N × LCO 0x17 data blocks).
+	// Distinct from the Motorola vendor TSBK form on the control
+	// channel, which phase1.TalkerAliasAssembler still handles. One
+	// buffer per voice chain — each chain handles exactly one call's
+	// worth of LDU1s.
+	aliasBuf := phase1.NewMotorolaTalkerAliasBuf(nil)
+	// lastSourceID is the most recently observed SourceID from an
+	// LCO-0 (group voice channel user) LC on this chain. The alias
+	// LCs (0x15/0x16/0x17) carry only payload bytes — no SourceID —
+	// so the voice channel's own LCO-0 LCs are how we tag a decoded
+	// alias with the right radio.
+	var lastSourceID uint32
 	// frames counts LDUs delivered by the receiver — i.e. real voice
 	// activity. The touch ticker (below) only refreshes the engine's
 	// LastHeardAt when this counter has advanced since the previous
@@ -68,6 +106,7 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 	rx := p25p1rx.New(p25p1rx.Options{
 		SampleRateHz: symbolHz,
 		DeviationHz:  p25p1DeviationHz,
+		DemodMode:    mode,
 		Sink: func(ldu []byte) {
 			// Bump first so the watchdog gate accounts for LDU
 			// delivery even when there's no raw-frame sink.
@@ -101,21 +140,39 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 			}
 			switch duid {
 			case phase1.DUIDLogicalLink1:
-				if lc, _, lerr := phase1.ParseLinkControl(blocks); lerr == nil {
-					c.log.Debug("composer: p25p1 link control",
-						"serial", serial, "lcf", lc.LCFormat,
-						"tg", lc.TalkgroupID, "src", lc.SourceID)
-					// Surface the standard TIA-102 voice-channel
-					// talker-alias LCOs at Info so operators whose
-					// system uses them can see they're flowing on
-					// the wire even though we don't yet reassemble
-					// them. The Motorola vendor TSBK form is handled
-					// by the control channel today (see
-					// phase1.OpVendorTalkerAlias); the standard
-					// voice-channel form is issue #376 follow-up.
-					if phase1.IsTalkerAliasLCO(lc.LCFormat) {
-						c.log.Info("composer: p25p1 standard talker-alias LC observed (not yet decoded — see issue #376)",
-							"serial", serial, "lcf", lc.LCFormat)
+				// Motorola voice-channel talker-alias LCs reuse the
+				// LC octets for the alias payload, so dispatch on
+				// the opcode byte from ParseLinkControlContent —
+				// ParseLinkControl's TG/SRC view is only meaningful
+				// for LCOGroupVoiceChannelUser (0x00).
+				content, _, cerr := phase1.ParseLinkControlContent(blocks)
+				if cerr != nil {
+					return
+				}
+				lcf := content[0]
+				switch {
+				case phase1.IsTalkerAliasLCO(lcf):
+					if alias, ok := aliasBuf.AddFragment(lcf, content); ok && lastSourceID != 0 {
+						c.log.Info("composer: p25p1 motorola talker alias",
+							"serial", serial, "src", lastSourceID, "alias", alias)
+						c.bus.Publish(events.Event{
+							Kind: events.KindTalkerAlias,
+							Payload: trunking.TalkerAlias{
+								Protocol: "p25-phase1",
+								SourceID: lastSourceID,
+								Alias:    alias,
+								At:       time.Now(),
+							},
+						})
+					}
+				default:
+					if lc, _, lerr := phase1.ParseLinkControl(blocks); lerr == nil {
+						c.log.Debug("composer: p25p1 link control",
+							"serial", serial, "lcf", lc.LCFormat,
+							"tg", lc.TalkgroupID, "src", lc.SourceID)
+						if lc.LCFormat == phase1.LCOGroupVoiceChannelUser && lc.SourceID != 0 {
+							lastSourceID = lc.SourceID
+						}
 					}
 				}
 			case phase1.DUIDLogicalLink2:

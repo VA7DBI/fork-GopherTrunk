@@ -182,12 +182,13 @@ func newP25Phase1Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 		}
 	}
 	cc := p25phase1.New(p25phase1.Options{
-		Bus:         opts.Bus,
-		Log:         opts.Log,
-		SystemName:  opts.SystemName,
-		FrequencyHz: opts.FrequencyHz,
-		BandPlan:    bandPlan,
-		Rotations:   rotations,
+		Bus:                opts.Bus,
+		Log:                opts.Log,
+		SystemName:         opts.SystemName,
+		FrequencyHz:        opts.FrequencyHz,
+		BandPlan:           bandPlan,
+		Rotations:          rotations,
+		P25Phase1DemodMode: opts.System.P25Phase1DemodMode,
 	})
 	rx := p25phase1rx.New(p25phase1rx.Options{
 		SampleRateHz: opts.SampleRateHz,

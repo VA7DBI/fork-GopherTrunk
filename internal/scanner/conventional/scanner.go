@@ -240,7 +240,7 @@ func New(opts Options) (*Scanner, error) {
 	}
 	detectors := make([]toneDetector, len(channels))
 	for i, ch := range channels {
-		if d := buildDetector(ch.Tone, opts.SampleRateHz); d != nil {
+		if d := buildDetector(ch.Tone, opts.SampleRateHz, opts.Log); d != nil {
 			detectors[i] = d
 		}
 	}
@@ -319,8 +319,24 @@ type toneDetector interface {
 // Goertzel-based CTCSSDetector; DCS routes to the Golay-based
 // DCSDetector. Returns nil for ungated channels or when SampleHz is
 // zero. The scanner treats nil as "no gating".
-func buildDetector(t ToneConfig, sampleHz float64) toneDetector {
+//
+// When tone gating IS configured but the detector can't be built
+// (zero sample rate, or the detector constructor refuses the inputs)
+// the function warn-logs through log so operators see why a CTCSS /
+// DCS channel they configured is passing every signal through
+// ungated. Issue #356 follow-up: the silent-nil path used to make
+// "my CTCSS doesn't work" impossible to diagnose from the logs
+// alone. log==nil suppresses the warning — kept for the existing
+// in-package unit tests that call buildDetector directly.
+func buildDetector(t ToneConfig, sampleHz float64, log *slog.Logger) toneDetector {
+	if t.Mode == "" || t.Mode == "none" {
+		return nil
+	}
 	if sampleHz <= 0 {
+		if log != nil {
+			log.Warn("conv: tone gating configured but scanner sample rate is zero; tone gate disabled — every signal passes the gate",
+				"mode", t.Mode, "ctcss_hz", t.CTCSSHz, "dcs_code", t.DCSCode)
+		}
 		return nil
 	}
 	switch t.Mode {
@@ -328,9 +344,17 @@ func buildDetector(t ToneConfig, sampleHz float64) toneDetector {
 		if d := NewCTCSSDetector(CTCSSConfig{SampleHz: sampleHz, TargetHz: t.CTCSSHz}); d != nil {
 			return d
 		}
+		if log != nil {
+			log.Warn("conv: CTCSS detector failed to initialise; tone gate disabled — every signal passes the gate",
+				"ctcss_hz", t.CTCSSHz, "sample_hz", sampleHz)
+		}
 	case "dcs":
 		if d := NewDCSDetector(DCSConfig{SampleHz: sampleHz, Code: t.DCSCode}); d != nil {
 			return d
+		}
+		if log != nil {
+			log.Warn("conv: DCS detector failed to initialise; tone gate disabled — every signal passes the gate",
+				"dcs_code", t.DCSCode, "sample_hz", sampleHz)
 		}
 	}
 	return nil
@@ -681,7 +705,7 @@ func (s *Scanner) AddTemporaryChannel(ch Channel) int {
 		s.log.Warn("conv: dropping invalid tone config on temp channel", "err", err)
 		ch.Tone = ToneConfig{}
 	}
-	det := buildDetector(ch.Tone, s.opts.SampleRateHz)
+	det := buildDetector(ch.Tone, s.opts.SampleRateHz, s.log)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx := len(s.channels)

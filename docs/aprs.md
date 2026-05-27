@@ -57,21 +57,73 @@ pending" below.
 - Polls every 5 s. Frames with `fcs_ok = false` highlight in
   yellow as a marginal-signal indicator.
 
+## Protocol layer (`internal/radio/aprs`)
+
+Pure-Go AX.25 frame parser + APRS info-field decoder that turn
+bit-de-stuffed AX.25 frames into the `events.KindAPRSPacket`
+payload the bus / log / REST / UI scaffolding above expects.
+
+- **`internal/radio/aprs/ax25`** — AX.25 UI-frame parser:
+  7-byte address packing with the spec's bit-shifted ASCII
+  callsigns, up to 8 digipeater path entries, HDLC CRC-16-CCITT
+  validation via the standard 0x8408 reflected-bit polynomial,
+  conventional `W1AW-9` / `WIDE2-1*` display helpers. HBit
+  handling is only meaningful for path entries; dst + src use
+  that bit position for the C-bit (Command/Response indicator),
+  which the APRS console convention ignores.
+- **`internal/radio/aprs`** — info-field decoder. Recognised
+  packet types (data-type indicator → decoded fields):
+  - `!` / `=` — position without timestamp; messaging flag set
+    on `=`
+  - `/` / `@` — position with raw 7-char timestamp; messaging
+    flag set on `@`
+  - `:` — message (9-char trimmed addressee, body, optional
+    `{seqno}`, `ack` / `rej` short-form) or bulletin
+    (`BLN`-prefixed addressee → `Bulletin` struct)
+  - `>` — status (free-text)
+  - `;` / `_` / `T#` / Mic-E — type-tagged with payloads
+    stashed for follow-up decoders
+  - anything else — `TypeUnknown`, raw bytes preserved
+- Position parsing covers both hemispheres (N/S, E/W), the
+  spec's "ambiguity space" convention (low-precision digits as
+  space — treated as 0), and the standard `DDMM.hhH` /
+  `DDDMM.hhH` hundredths-of-a-minute encoding.
+
+## Bit-stream pipeline (`internal/radio/aprs/hdlc` + `receiver`)
+
+Once a DSP layer produces LSB-first wire bits, the following
+glue turns them into operator-visible packets — no daemon changes
+required to wire it in (the receiver is a `Push(bit byte)`
+function).
+
+- **`internal/radio/aprs/hdlc`** — bit-stream framer. Tracks the
+  sliding-flag detector (HDLC's 0x7E delimiter), reverses the
+  bit-stuffing (after 5 consecutive 1s, drop the next 0),
+  resyncs on shared-flag packing, aborts on 7-or-more-1s runs
+  (the HDLC abort sequence). Emits one fully-formed AX.25 frame
+  body per (flag, ..., flag) sequence. Note: HDLC framing is
+  the layer below the AX.25 frame parser — the bit-stuffing
+  reversal happens here, not in `ax25`.
+- **`internal/radio/aprs/receiver`** — orchestrator. Threads
+  bits through the framer, hands frame bodies to `ax25.Parse`,
+  the info field to `aprs.Decode`, and publishes one
+  `events.KindAPRSPacket` per successfully-decoded UI frame.
+  Bus payload is `storage.APRSPacket` carrying the AX.25
+  envelope, the APRS sub-type label, the decoded summary
+  string, and (for position-bearing types) lat/lon. The
+  receiver counts frames in / parsed / CRC-failed / emitted
+  for future `/metrics` surfacing. Options expose
+  `DropBadFCS` and `DropNonUI` toggles for operators who'd
+  rather lose marginal frames than see them on the panel.
+
 ## What's pending
 
-- **AX.25 frame parser + APRS info-field decoder.** Pure-Go
-  parsers that turn bit-de-stuffed AX.25 frames into the
-  `events.KindAPRSPacket` payload this pipeline expects. Mirrors
-  the POCSAG protocol-layer split (#372 → #373) — the bus / log
-  / REST / UI ship in their own PR (this one) so the protocol
-  layer can be reviewed against its own concerns. Until that
-  ships, no events fire and the panel stays at the empty state.
-- **DSP receiver.** 1200 Bd Bell-202 AFSK demodulation, HDLC
-  bit-stuffing reversal, 0x7E flag-delimited frame extraction.
-  Plugs into the AX.25 parser the moment both pieces land.
-  Pattern matches the POCSAG receiver (#378): iqtap broker
-  subscriber → narrowband FM demod → bit slicer → frame
-  delivery → bus event.
+- **DSP receiver.** 1200 Bd Bell-202 AFSK demodulation +
+  NRZI decoding to produce the LSB-first wire bits the HDLC
+  framer expects. Pattern matches the POCSAG receiver (#378):
+  iqtap broker subscriber → narrowband FM demod → bit slicer →
+  `receiver.Push(bit)`. Once that ships, the end-to-end
+  pipeline goes live.
 - **Mic-E decoder.** Compressed lat/lon format common on mobile
   trackers (Kenwood TH-D74, Yaesu FT-3D). ~200 LOC for base-91
   unpacking + speed / course / altitude decode.

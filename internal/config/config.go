@@ -359,10 +359,25 @@ type DeviceConfig struct {
 
 	// Channels is the list of repeater carriers a wideband dongle
 	// should monitor inside its IQ band. Each entry binds a
-	// frequency to a configured trunking.systems[].name; v1 only
-	// supports DMR Tier II conventional. Ignored for non-wideband
-	// roles.
+	// frequency to a configured trunking.systems[].name. Ignored
+	// for non-wideband roles.
 	Channels []DeviceChannelConfig `yaml:"channels"`
+
+	// VoiceTaps is the number of per-grant DDC tuners the daemon
+	// allocates from this wideband dongle's IQ stream so trunked
+	// voice grants can be followed without retuning a separate
+	// `role: voice` SDR. Each tap subscribes to the dongle's
+	// iqtap broker on demand and emits 48 kHz IQ centred on the
+	// grant frequency.
+	//
+	// Defaults to 0 (no virtual voice taps; voice grants route to
+	// the physical voice pool). Set to 2-4 on a wideband dongle
+	// hosting a trunked CC tap (DMR T3, P25 Phase 1, P25 Phase 2)
+	// so one SDR can cover the full system end-to-end. Out-of-
+	// window grants surface ErrOutOfBand and fall back to a
+	// physical voice SDR when one is configured. Capped at 8 to
+	// keep CPU bounded.
+	VoiceTaps int `yaml:"voice_taps"`
 }
 
 // DeviceChannelConfig is one repeater carrier carried by a
@@ -454,8 +469,12 @@ type SystemConfig struct {
 	// (the linear / LSM path — complex RRC + Gardner + differential
 	// QPSK; required for simulcast P25 deployments whose control
 	// channel transmits Linear Simulcast Modulation rather than
-	// straight C4FM, see issue #275 and TIA-102.BAAA). Ignored for
-	// non-P25-Phase-1 protocols.
+	// straight C4FM, see issue #275 and TIA-102.BAAA). Applies to
+	// both the control channel decoder and the per-call voice
+	// chain — without the voice-chain side a simulcast site would
+	// lock the CC fine but never decode an LDU on a granted voice
+	// call (issue #356 follow-up). Ignored for non-P25-Phase-1
+	// protocols.
 	P25Phase1DemodMode string `yaml:"p25_phase1_demod_mode"`
 	// P25Phase2TrellisMode enables the 4-state ½-rate trellis FEC
 	// decoder on the P25 Phase 2 MAC PDU window. Recognised values:
@@ -998,6 +1017,10 @@ const widebandGuardFrac = 0.05
 func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, systems []SystemConfig) error {
 	if d.Serial == "" {
 		return fmt.Errorf("sdr.devices[%d]: role: wideband requires serial (the daemon binds the channel list to the device by USB serial)", idx)
+	}
+	if d.VoiceTaps < 0 || d.VoiceTaps > 8 {
+		return fmt.Errorf("sdr.devices[%d]: voice_taps %d out of range; 0 disables, 1-8 allocate that many virtual voice DDC taps on the dongle",
+			idx, d.VoiceTaps)
 	}
 	if d.CenterFreqHz == 0 {
 		return fmt.Errorf("sdr.devices[%d]: role: wideband requires center_freq_hz", idx)

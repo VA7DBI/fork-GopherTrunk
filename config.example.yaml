@@ -200,9 +200,18 @@ sdr:
     # channel's frequency_hz must appear in its control_channels.
     # Honours `p25_phase1_demod_mode` (c4fm vs cqpsk / LSM) on the
     # system entry just like a dedicated CC dongle.
+    #
+    # `voice_taps: N` (0-8) lets the same SDR host N concurrent
+    # voice grants without a separate `role: voice` dongle: each
+    # grant whose frequency falls inside the wideband IQ window
+    # gets its own per-call DDC tap on this dongle's IQ stream.
+    # Out-of-window grants spill over to a physical voice SDR
+    # when one is configured, or drop with the standard
+    # "no voice device available" log otherwise.
     # - serial: "00000005"
     #   role: wideband
     #   center_freq_hz: 851_500_000
+    #   voice_taps: 4
     #   channels:
     #     - frequency_hz: 851_037_500
     #       system: "regional-p25"
@@ -315,7 +324,12 @@ trunking:
   #                                     # P25 simulcast sites whose CC
   #                                     # is transmitted as Linear
   #                                     # Simulcast Modulation rather
-  #                                     # than C4FM (issue #275)
+  #                                     # than C4FM (issue #275). Also
+  #                                     # routes the per-call voice chain
+  #                                     # through the LSM path; without
+  #                                     # this voice grants on simulcast
+  #                                     # sites time out with no audio
+  #                                     # (issue #356).
   #
   #   - name: "Legacy-P25-Phase2"
   #     protocol: p25

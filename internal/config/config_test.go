@@ -219,6 +219,44 @@ func TestValidate(t *testing.T) {
 				ControlChannels: []uint32{851_006_250},
 			}}},
 		}, false},
+		// voice_taps: virtual voice DDC tap count per wideband
+		// dongle. 0 disables (default); 1-8 allocates that many.
+		{"wideband voice_taps in range", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 851_500_000, VoiceTaps: 4,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 851_037_500, System: "regional-p25"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{
+				Name: "regional-p25", Protocol: "p25",
+				ControlChannels: []uint32{851_037_500},
+			}}},
+		}, false},
+		{"wideband voice_taps too large", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 851_500_000, VoiceTaps: 99,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 851_037_500, System: "regional-p25"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{
+				Name: "regional-p25", Protocol: "p25",
+				ControlChannels: []uint32{851_037_500},
+			}}},
+		}, true},
+		{"wideband voice_taps negative", Config{
+			SDR: SDRConfig{SampleRate: 2_400_000, Devices: []DeviceConfig{{
+				Serial: "00000010", Role: "wideband", CenterFreqHz: 851_500_000, VoiceTaps: -1,
+				Channels: []DeviceChannelConfig{
+					{FrequencyHz: 851_037_500, System: "regional-p25"},
+				},
+			}}},
+			Trunking: TrunkingConfig{Systems: []SystemConfig{{
+				Name: "regional-p25", Protocol: "p25",
+				ControlChannels: []uint32{851_037_500},
+			}}},
+		}, true},
 		// Non-trunked protocols are still rejected — wideband doesn't
 		// host NXDN / EDACS / etc. yet.
 		{"wideband unsupported protocol", Config{
