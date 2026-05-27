@@ -283,6 +283,18 @@ func (p *Pool) applyHintSettings(dev Device, info Info, h Hint) {
 		if err := dev.SetGain(h.Gain); err != nil {
 			p.log.Warn("set gain failed", "serial", info.Serial, "gain", h.Gain, "err", err)
 		}
+	} else {
+		// Surface the "no `gain:` in config" path explicitly. Without
+		// this warn, a device whose driver default happens to be too
+		// low for the user's antenna + LNA chain reads as completely
+		// deaf — the field symptom in issue #356 (v0.2.4 follow-up,
+		// reporter @v2maldo). The driver-default gain varies between
+		// chips and even firmware revisions; surfacing it once at open
+		// gives the operator a chance to set `gain: auto` (AGC) or a
+		// specific tenth-dB value before chasing harder hypotheses
+		// like a broken voice chain.
+		p.log.Warn("sdr: no gain configured for device; using driver default — set `gain: auto` for AGC or a specific tenth-dB value (e.g. \"496\" = 49.6 dB) if reception is weak",
+			"serial", info.Serial, "role", h.Role.String())
 	}
 	if h.BiasTee {
 		if err := dev.SetBiasTee(true); err != nil {

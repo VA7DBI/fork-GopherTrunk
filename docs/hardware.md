@@ -65,6 +65,16 @@ sdr:
       bias_tee: true           # 5V on the SMA — only enable if you want it
 ```
 
+> **Always set `gain:` explicitly.** A device listed in
+> `sdr.devices[]` with no `gain:` key opens at whatever the librtlsdr
+> default chose for the tuner — typically a middle-range fixed value
+> that's too low for many LNA + antenna combinations. The field
+> symptom is "voice grants land on a Voice SDR but every call ends
+> `reason=timeout` with an empty WAV" (issue #356 follow-up). The
+> daemon now surfaces this at startup with `sdr: no gain configured
+> for device ...`; if you see that line, set `gain: "auto"` for AGC
+> or pick a tenth-dB value that matches your front-end.
+
 ### HackRF tested combinations
 
 | Device | PID | Coverage | Gain chain | Bias-tee | Notes |
