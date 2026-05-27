@@ -1,0 +1,62 @@
+---
+layout: default
+---
+{%- assign category_slug = page.category | default: page.categories | first -%}
+{%- assign category_label = category_slug | replace: '-', ' ' | capitalize -%}
+{%- assign post_author = page.author | default: site.author.name -%}
+{%- assign post_image = page.image | default: site.image -%}
+<main id="content" class="page" role="main">
+  <div class="container page__container">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <ol>
+        <li><a href="{{ '/' | relative_url }}">Home</a></li>
+        <li><a href="{{ '/blog/' | relative_url }}">Blog</a></li>
+        {%- if category_slug -%}
+          <li><a href="{{ '/blog/category/' | append: category_slug | append: '/' | relative_url }}">{{ category_label }}</a></li>
+        {%- endif -%}
+        <li><span aria-current="page">{{ page.title }}</span></li>
+      </ol>
+    </nav>
+
+    <article class="prose post" itemscope itemtype="https://schema.org/BlogPosting">
+      <header class="post__header">
+        <h1 class="post__title" itemprop="headline">{{ page.title }}</h1>
+        <p class="post__meta">
+          <span class="post__byline">By <span itemprop="author" itemscope itemtype="https://schema.org/Person"><span itemprop="name">{{ post_author }}</span></span></span>
+          <span class="post__sep" aria-hidden="true">·</span>
+          <time class="post__date" datetime="{{ page.date | date_to_xmlschema }}" itemprop="datePublished">{{ page.date | date: "%B %-d, %Y" }}</time>
+          {%- if page.last_modified_at -%}
+            <meta itemprop="dateModified" content="{{ page.last_modified_at | date_to_xmlschema }}">
+          {%- else -%}
+            <meta itemprop="dateModified" content="{{ page.date | date_to_xmlschema }}">
+          {%- endif -%}
+          {%- if category_slug -%}
+            <span class="post__sep" aria-hidden="true">·</span>
+            <a class="category-chip" href="{{ '/blog/category/' | append: category_slug | append: '/' | relative_url }}">{{ category_label }}</a>
+          {%- endif -%}
+        </p>
+      </header>
+
+      <div itemprop="articleBody">
+        {{ content }}
+      </div>
+
+      {%- if page.tags and page.tags.size > 0 -%}
+        <footer class="post__tags" aria-label="Tags">
+          {%- for tag in page.tags -%}
+            <span class="post__tag">#{{ tag }}</span>
+          {%- endfor -%}
+        </footer>
+      {%- endif -%}
+    </article>
+
+    {%- if page.path -%}
+      <footer class="page__edit">
+        <a href="https://github.com/MattCheramie/GopherTrunk/blob/main/{{ page.path }}" rel="noopener">
+          Edit this post on GitHub &rarr;
+        </a>
+      </footer>
+    {%- endif -%}
+  </div>
+</main>
+

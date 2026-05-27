@@ -3,6 +3,18 @@ groups:
     items:
       - title: The Story of GopherTrunk
         url: /story.html
+  - label: Blog
+    items:
+      - title: All posts
+        url: /blog/
+      - title: Announcements
+        url: /blog/category/announcements/
+      - title: Releases
+        url: /blog/category/releases/
+      - title: Deep dives
+        url: /blog/category/deep-dives/
+      - title: Tutorials
+        url: /blog/category/tutorials/
   - label: Install
     items:
       - title: Downloads
