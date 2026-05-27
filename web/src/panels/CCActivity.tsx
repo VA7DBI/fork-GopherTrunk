@@ -216,7 +216,7 @@ function renderRow(ev: EventDTO, label: string): Row | null {
       const system = str(payload.system);
       const superGroup = num(payload.super_group ?? payload.regroup_id);
       const members = (payload.members ?? []) as unknown[];
-      const op = payload.cancelled || payload.removed ? "cancel" : "add";
+      const op = payload.add === false || payload.cancelled || payload.removed ? "cancel" : "add";
       const details =
         `super-group ${superGroup}` +
         (members.length ? ` · ${members.length} member${members.length === 1 ? "" : "s"}` : "") +

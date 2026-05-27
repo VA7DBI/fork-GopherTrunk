@@ -285,6 +285,30 @@ func unitRegistrationToDTO(u trunking.UnitRegistration) UnitRegistrationDTO {
 	}
 }
 
+// PatchDTO mirrors trunking.Patch for SSE / REST consumers. Add=true is
+// a patch becoming active; Add=false is a cancel.
+type PatchDTO struct {
+	System     string    `json:"system"`
+	Protocol   string    `json:"protocol"`
+	SuperGroup uint32    `json:"super_group"`
+	Members    []uint32  `json:"members"`
+	Vendor     string    `json:"vendor,omitempty"`
+	Add        bool      `json:"add"`
+	At         time.Time `json:"at"`
+}
+
+func patchToDTO(p trunking.Patch) PatchDTO {
+	return PatchDTO{
+		System:     p.System,
+		Protocol:   p.Protocol,
+		SuperGroup: p.SuperGroup,
+		Members:    append([]uint32(nil), p.Members...),
+		Vendor:     p.Vendor,
+		Add:        p.Add,
+		At:         p.At,
+	}
+}
+
 // ActiveCallDTO mirrors trunking.ActiveCall for JSON.
 type ActiveCallDTO struct {
 	Grant        GrantDTO      `json:"grant"`
