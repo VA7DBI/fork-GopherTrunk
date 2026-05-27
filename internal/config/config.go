@@ -395,6 +395,15 @@ type SystemConfig struct {
 	Protocol        string   `yaml:"protocol"`
 	ControlChannels []uint32 `yaml:"control_channels"`
 	TalkgroupFile   string   `yaml:"talkgroup_file"`
+	// RIDAliasFile is the optional path to a per-system CSV or JSON
+	// catalogue of radio-ID (subscriber unit) aliases — the per-RID
+	// equivalent of TalkgroupFile. CSV format: a Decimal/DEC/ID column
+	// plus optional Alias/AlphaTag, Description, Tag, Group, Owner,
+	// Priority, Lockout, Watch, Icon columns. JSON format: an array
+	// of {id, alias, description, ...} objects. Empty leaves the RID
+	// catalogue blank for this system (live observations still
+	// surface via the affiliation tracker).
+	RIDAliasFile string `yaml:"rid_alias_file"`
 
 	// TETRAColourCode is the 30-bit extended colour code the TETRA
 	// scrambler uses to seed its LFSR (ETSI EN 300 392-2 §8.2.5).

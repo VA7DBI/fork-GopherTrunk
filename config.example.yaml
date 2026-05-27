@@ -264,6 +264,14 @@ trunking:
         - 851_000_000
         - 852_000_000
       talkgroup_file: "/etc/gophertrunk/talkgroups-p25.csv"
+      # Optional per-system radio-ID alias catalogue — the per-RID
+      # equivalent of talkgroup_file. CSV (Decimal/DEC/ID column +
+      # optional Alias/Description/Tag/Group/Owner/Priority/Lockout/
+      # Watch/Icon) or JSON (array of {id, alias, ...} objects) is
+      # accepted, dispatched by file extension. Leave commented out
+      # to let the affiliation tracker surface RIDs live without any
+      # operator-configured aliases.
+      # rid_alias_file: "/etc/gophertrunk/rids-p25.csv"
 
   # Per-protocol FEC is on by default — every protocol the daemon
   # supports (TETRA, LTR, P25 Phase 2, NXDN, EDACS, MPT 1327,
