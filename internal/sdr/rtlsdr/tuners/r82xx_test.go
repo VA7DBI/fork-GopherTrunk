@@ -655,6 +655,73 @@ func TestComputePLLDivisor_VHFRange(t *testing.T) {
 	}
 }
 
+// pickMixDiv replays setPLL's mixer-divider sweep. The production code
+// inlines this loop; the tests below want to assert what nint comes out
+// for a given (freq, xtal) pair, so we factor the loop here rather than
+// rebuilding the whole USB write script for setPLL itself.
+func pickMixDiv(freqHz uint32) uint32 {
+	mixDiv := uint32(2)
+	for mixDiv <= 64 {
+		v := uint64(freqHz) * uint64(mixDiv)
+		if v >= r82xxVCOMin && v < r82xxVCOMax {
+			return mixDiv
+		}
+		mixDiv <<= 1
+	}
+	return 0
+}
+
+func TestR82xx_PLLNintWithinEncoding_R828D(t *testing.T) {
+	// Regression for issue #264. After PR #266 set R828D's xtal to
+	// 16 MHz (correct), setPLL's overflow guard kept the R820T-era
+	// limit of nint > 76 (= 0x3F+13) — derived only from ni's 6-bit
+	// width, ignoring si's 2 bits. With the smaller pllRef, R828D
+	// produces nint up to ~121 across the VCO range, which the old
+	// guard rejected as "overflows" even though it still fits the
+	// 8-bit (ni|si) encoding.
+	//
+	// User's failing frequency: SetCenterFreq(153_587_500) →
+	// LO = 153_587_500 + 3_570_000 = 157_157_500 Hz.
+	const loHz uint32 = 157_157_500
+	mixDiv := pickMixDiv(loHz)
+	if mixDiv != 16 {
+		t.Fatalf("mixDiv = %d, want 16", mixDiv)
+	}
+	vcoFreq := uint64(loHz) * uint64(mixDiv)
+	pllRef := uint64(r828dXtalHz)
+	nint := uint32(vcoFreq / (2 * pllRef))
+	if nint != 78 {
+		t.Errorf("nint = %d, want 78", nint)
+	}
+	if nint > r82xxMaxNint {
+		t.Errorf("nint=%d exceeds r82xxMaxNint=%d (encoding cap)", nint, r82xxMaxNint)
+	}
+
+	// Top of the R828D tuning range: 1.7 GHz LO drives nint near the
+	// VCO-ceiling maximum. Make sure that case fits the encoding too.
+	const topLO uint32 = 1_700_000_000
+	if md := pickMixDiv(topLO); md == 0 {
+		t.Errorf("no mixDiv for %d Hz", topLO)
+	} else {
+		nintTop := uint32(uint64(topLO) * uint64(md) / (2 * uint64(r828dXtalHz)))
+		if nintTop > r82xxMaxNint {
+			t.Errorf("nint=%d at %d Hz exceeds r82xxMaxNint=%d", nintTop, topLO, r82xxMaxNint)
+		}
+	}
+
+	// And the R820T path is unchanged — pllRef=28.8 MHz at low VHF
+	// still produces nint well above the lower 13-floor.
+	const r820tLO uint32 = 103_570_000 // 100 MHz center + 3.57 MHz IF
+	if md := pickMixDiv(r820tLO); md == 0 {
+		t.Errorf("no mixDiv for %d Hz", r820tLO)
+	} else {
+		nintR820T := uint32(uint64(r820tLO) * uint64(md) / (2 * uint64(r82xxXtalHz)))
+		if nintR820T < 13 {
+			t.Errorf("nint=%d underflows the 13-floor for R820T at %d Hz", nintR820T, r820tLO)
+		}
+	}
+}
+
 // Detect orchestrator tests moved to detect_test.go (it walks every
 // candidate tuner, not just R820T, so the scripts that pin its
 // behavior live with the orchestrator).
