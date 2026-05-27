@@ -7,6 +7,40 @@ for tagged releases.
 
 ## [Unreleased]
 
+## [v0.2.4] — 2026-05-27
+
+Phase-5 (APRS) + Phase-3 (POCSAG) + Phase-1 (Radio IDs) feature-density
+follow-up to v0.2.3. The APRS scaffold landed (events bus / SQLite log /
+REST / web panel — #384) and immediately got its protocol layer
+(pure-Go AX.25 frame parser + APRS info-field decoder — #390), with
+the Bell-202 AFSK DSP receiver as the remaining follow-up. POCSAG
+closed end-to-end with the DSP receiver + daemon wiring (#378), so a
+tuned SDR's IQ now flows demod → bit-slicer → syncer → page event →
+SQLite log / REST / web panel without further plumbing. Radio IDs
+landed in three slices: the `RIDDB` alias catalogue + REST + gRPC +
+`/rids` web panel mirroring `TalkgroupDB` (#387), the standard
+TIA-102.AABF P25 voice-channel talker-alias LC decoder (LDU1 LCOs
+0x15 / 0x16 / 0x17 — #389) closing the second half of issue #376, and
+a docs pass under [docs/radio-ids.md](docs/radio-ids.md). One-dongle
+deployments got more powerful: the `role: wideband` channelizer now
+hosts P25 Phase 1 and Phase 2 control channels alongside DMR T2/T3
+(#385), and a new "virtual voice pool" (#386) follows trunked voice
+grants whose frequency lands inside the wideband IQ window — so a
+single SDR can cover P25 CC + voice end-to-end. The wideband engine
+also routes through the iqtap broker so the spectrum view works on
+wideband-only deployments (#377). Two more Windows RTL-SDR cold-boot
+stall paths now self-recover: #382 classifies the
+`ERROR_GEN_FAILURE` NAK as `ErrPipeStalled` and clears the control
+halt, and #393 makes WinUSB `Reset` re-open the device handle
+(matching `libusb_reset_device`) and allows up to two settles during
+open. Plus polish: r82xx PLL nint encoding limit widened to 268 so
+V4-class dongles tune above ~140 MHz on the 16 MHz xtal (#391,
+closes #264), CC Activity super-group patches finally render member
+counts (#392, closes #374), and the misleading "voice pool full"
+message is replaced with an actionable startup WARN pointing at
+`docs/hardware.md` when no `role: voice` SDR is attached (#383,
+closes #379).
+
 ### Added
 
 - **AX.25 frame parser + APRS info-field decoder.** Third slice
@@ -73,6 +107,155 @@ for tagged releases.
   [docs/pocsag.md](docs/pocsag.md) for the configuration knob and
   what's pending (timing-recovery tuning against real fixtures,
   multi-channel-from-one-SDR DDC, FLEX).
+- **Wideband channelizer hosts P25 Phase 1 + Phase 2 control
+  channels (#385).** A single SDR pinned to a centre frequency can
+  now host a P25 trunked control channel inside the wideband
+  channelizer, alongside the existing DMR Tier II and Tier III state
+  machines. The per-channel wiring uses a small `narrowbandReceiver`
+  interface (`Process([]complex64)`) so the engine itself stays
+  protocol-agnostic; P25 Phase 1 honours the system's
+  `p25_phase1_demod_mode` (C4FM vs CQPSK / LSM) and any
+  operator-supplied `P25BandPlan` entries, and P25 Phase 2 reuses the
+  existing trellis / RS / interleave / scrambler / clock-mode knobs
+  and the PN44 seed derivation so a wideband CC tap decodes
+  identically to a dedicated CC dongle. Config validator accepts
+  protocol `p25` / `p25-phase2` for wideband channels with the same
+  control-channel-membership rule that already applies to DMR Tier
+  III. Docs and `config.example.yaml` updated with worked P25
+  examples. Voice grants on these protocols still route to the
+  daemon's existing physical voice pool — the virtual voice pool
+  (next bullet) covers in-window grants.
+- **Virtual voice pool on the wideband dongle (#386).** A wideband
+  dongle can now also follow trunked voice grants whose frequency
+  lands inside its IQ window — DMR Tier III, P25 Phase 1, P25
+  Phase 2 — without a separate `role: voice` SDR. New
+  `internal/sdr/wbvoice` package: `VirtualTuner` implements both
+  `trunking.Tuner` (`SetCenterFreq`, `CanTune`) and
+  `composer.IQSource` (`StreamIQ`, `SampleRateHz`). Each tap
+  subscribes to the wideband dongle's iqtap broker on demand, runs a
+  single-tap DDC at the (target − wideband) offset, and emits 48
+  kHz IQ to the composer's existing P25 / DMR voice chains — no
+  changes to the receivers themselves. `voicepool.FindFreeForFrequency`
+  consults an optional `FrequencyChecker.CanTune` on each free
+  device, so a voice grant outside the wideband window passes over
+  a virtual tuner and lands on the physical `role: voice` SDR when
+  one is configured. One SDR end-to-end for any system whose
+  carriers fit in a single 2.4 MHz band.
+- **Wideband engine routes IQ + tuning through the iqtap broker
+  (#377).** Wideband-only DMR Tier 2 deployments (single SDR,
+  `role: wideband`, multiple T2 systems) couldn't render the
+  spectrum waterfall because the engine consumed `StreamIQ` from
+  the raw device and never fed the broker's fan-out. The wideband
+  engine now takes the broker (mirroring the CC decoder wiring) so
+  the spectrum panel works on wideband-only deployments. Also seeds
+  each broker's sample-rate cache in `wrapIQBrokers` from
+  `cfg.SDR.SampleRate` — the pool programs the rate on the raw
+  device before the broker wraps it, so `Broker.SetSampleRate`'s
+  cache path never ran and frames stamped `sample_rate_hz=0` for
+  every device.
+
+### Fixed
+
+- **RTL-SDR cold-boot stall on Windows: deeper recovery for wedged
+  clone dongles (issue #333).** The previous fix (#382) mapped
+  `ERROR_GEN_FAILURE (0x1F)` to `ErrPipeStalled` and ran one
+  clear-halt + re-claim retry, which recovers a stale endpoint halt
+  but not a wedged firmware state from a prior crashed process.
+  WinUSB `Transport.Reset()` now matches what `libusb_reset_device`
+  does on Windows: clear-halt the control endpoint, drop the WinUSB
+  handles, then re-open the device via `CreateFile` +
+  `WinUsb_Initialize` (a true device-object re-bind, not just a pipe
+  reset). The open-time bring-up envelope now allows up to two such
+  resets per `Open` with 100 ms / 200 ms backoff, giving clones that
+  need two settles to come back a chance to recover before surfacing
+  the Zadig / port-choice / `gophertrunk sdr doctor` hint. Healthy
+  dongles still open with zero resets and zero delay.
+- **RTL-SDR cold-boot stall on Windows now self-recovers (#382).**
+  Clone dongles (and some power-marginal hubs) latch the first
+  USB_SYSCTL=0x09 vendor-OUT write, then NAK the byte-identical
+  second write in `init baseband` step 0 with `ERROR_GEN_FAILURE
+  (0x1F)`. The Linux equivalent (`EPIPE`) was already covered by the
+  bring-up reset+retry envelope; the Windows path wasn't because (a)
+  `ERROR_GEN_FAILURE` wasn't classified as resetable, and (b) the
+  WinUSB `Transport.Reset()` was a no-op. WinUSB now clears the
+  control-pipe halt via `WinUsb_ResetPipe(0)` (USB
+  `CLEAR_FEATURE(ENDPOINT_HALT)`), the new `usb.ErrPipeStalled`
+  sentinel keys the existing retry envelope, and a clone-dongle hint
+  pointing at Zadig / port choice / `gophertrunk sdr doctor` is
+  appended when the second attempt still fails.
+- **r82xx setPLL nint encoding limit widened to 268 (closes #264).**
+  The overflow guard used `0x3F + 13 = 76`, which only accounts for
+  ni's 6-bit width and ignores that si's 2 extra bits also encode
+  part of nint (register 0x14 = `ni | si<<6`; nint = `13 + 4*ni + si`).
+  The real encoding cap is `13 + 4*0x3F + 0x3 = 268`. With R820T /
+  R820T2's 28.8 MHz xtal the VCO range capped nint near 67 so the
+  bug was latent; PR #266's correct R828D xtal (16 MHz) halves
+  `pllRef` and pushes nint up to ~121 — the guard then rejected
+  tunes above ~140 MHz on the V4 dongle, e.g. 153.5875 MHz →
+  nint=78 overflows. Regression test pins the nint=78 math for the
+  reporter's frequency.
+- **CC Activity panel renders super-group patches with member counts
+  (closes #374).** `eventToDTO` had no case for `trunking.Patch`,
+  so the payload fell through to default and was JSON-marshalled
+  with Go's PascalCase names (`SuperGroup`, `Members`, `Add`). The
+  CC Activity panel reads snake_case fields (`super_group`,
+  `members`, `add`) and was getting `undefined` for all of them —
+  hence "super-group 0 · add" on every patch. New `PatchDTO`
+  mirrors the established DTO pattern (snake_case JSON tags),
+  `eventToDTO` dispatches to it, and the frontend cancel-detect
+  honours the wire field (`add: false`) alongside the existing
+  legacy fallbacks. SSE wire shape pinned by test using the values
+  from the issue report.
+- **Actionable "voice pool empty" diagnostic when no `role: voice`
+  SDR is attached (closes #379).** When an operator booted with a
+  trunked system but no voice SDR, every grant logged "voice pool
+  full but no actives" — which read as "pool full" while the pool
+  was in fact empty, and gave no clue that a second SDR or a
+  wideband channelizer is required. `HandleGrant` now distinguishes
+  the two cases: empty pool logs a one-shot actionable WARN
+  pointing at [docs/hardware.md](docs/hardware.md) and drops
+  subsequent grants at DEBUG; the genuine impossible state
+  (devices > 0 but no actives) becomes Error so the bug stays
+  visible. A new one-shot startup WARN from `Daemon.Run` surfaces
+  the problem before the first grant arrives. Non-trunked
+  deployments (POCSAG, conventional FM scanner, wideband T2
+  capture-only, baseband recording) still run cleanly because the
+  warning is gated on `len(systems) > 0`.
+
+## [v0.2.3] — 2026-05-26
+
+The "multi-consumer SDR + new operator panels" release. The new
+iqtap broker (#365) made multi-consumer SDR fan-out possible without
+forking IQ streams in each subscriber, which immediately unlocked a
+batch of new operator-console capabilities: a Constellation viewer
+that renders live IQ scatter alongside decode (#370), a CC Activity
+panel that filters the events stream down to control-channel chatter
+(#369), a UI-managed Bookmarks frequency manager backed by a new
+SQLite table (#368), spectrum-panel click-to-tune + bookmark markers
+(#371), a Hamlib `rigctld` TCP server for external amateur tooling
+(Cloudlog, GridTracker, PSTRotator, `rigctl(1)` — #367), and a
+remote `rtl_tcp` driver mounting any number of remote SDR servers as
+virtual tuners alongside locally-attached USB dongles (#366). POCSAG
+paging landed as the first two slices of Phase 3 of the
+trunking-adjacent feature plan (#365): the BCH(31,21) FEC + codeword
+wrapper + numeric / alphanumeric message decoders shipped as a
+pure-protocol slice (#372), and the syncer + page assembler + bus /
+log / REST / web panel scaffold plugged it into the operator surface
+(#373); the DSP receiver wiring landed the following day in v0.2.4.
+The wideband channelizer gained DMR Tier III control-channel support
+(#363) and per-channel `ClockGain` matching the dedicated-dongle
+path (#364) so wideband-hosted DMR repeaters lock as cleanly.
+Windows 11 RTL-SDR driver-binding woes got a diagnostic answer
+(`gophertrunk sdr doctor` — #359) since Windows has no equivalent
+of `USBDEVFS_DISCONNECT`. Airspy R2 open ordering on Windows fixed
+(#358) so it stops failing with `device disconnected` when
+`sdr list` did detect the dongle. And the stuck voice-chain footgun
+(#356) closed: the four voice composers now gate `Engine.Touch` on
+actual decoder progress so the 30 s inactivity watchdog can fire
+and release the bound voice SDR when transmission stops.
+
+### Added
+
 - **POCSAG syncer + page assembler + bus event + SQLite log +
   web panel.** Second slice of Phase 3 (#365), building on the
   protocol layer landed in #372. The new `pocsag.Syncer`
@@ -173,51 +356,6 @@ for tagged releases.
   sources just like local ones. Plaintext on the wire — restrict
   to trusted networks or wrap with SSH/WireGuard/Tailscale. See
   [docs/hardware.md](docs/hardware.md).
-
-### Fixed
-
-- **RTL-SDR cold-boot stall on Windows: deeper recovery for wedged
-  clone dongles.** The previous fix mapped `ERROR_GEN_FAILURE (0x1F)`
-  to `ErrPipeStalled` and ran one clear-halt + re-claim retry, which
-  recovers a stale endpoint halt but not a wedged firmware state from
-  a prior crashed process. WinUSB `Transport.Reset()` now matches
-  what `libusb_reset_device` does on Windows: clear-halt the control
-  endpoint, drop the WinUSB handles, then re-open the device via
-  `CreateFile` + `WinUsb_Initialize` (a true device-object re-bind,
-  not just a pipe reset). The open-time bring-up envelope now allows
-  up to two such resets per `Open` with 100ms / 200ms backoff, giving
-  clones that need two settles to come back a chance to recover
-  before surfacing the Zadig / port-choice / `gophertrunk sdr doctor`
-  hint. Healthy dongles still open with zero resets and zero delay.
-- **RTL-SDR cold-boot stall on Windows now self-recovers.** Clone
-  dongles (and some power-marginal hubs) latch the first
-  USB_SYSCTL=0x09 vendor-OUT write, then NAK the byte-identical
-  second write in `init baseband` step 0 with `ERROR_GEN_FAILURE
-  (0x1F)`. The Linux equivalent (`EPIPE`) was already covered by the
-  bring-up reset+retry envelope; the Windows path wasn't because (a)
-  `ERROR_GEN_FAILURE` wasn't classified as resetable, and (b) the
-  WinUSB `Transport.Reset()` was a no-op. WinUSB now clears the
-  control-pipe halt via `WinUsb_ResetPipe(0)` (USB
-  `CLEAR_FEATURE(ENDPOINT_HALT)`), the new `usb.ErrPipeStalled`
-  sentinel keys the existing retry envelope, and a clone-dongle hint
-  pointing at Zadig / port choice / `gophertrunk sdr doctor` is
-  appended when the second attempt still fails.
-- **Wideband DMR receiver loop-gain now matches the single-channel
-  ccdecoder path.** The Stage 2 / Stage 3 wideband engine was
-  instantiating `dmr/receiver.Receiver` with the default
-  `ClockGain: 0.05`, which the existing ccdecoder pipelines
-  explicitly lowered (0.015 for Tier II, 0.025 for Tier III) because
-  the default doesn't reliably lock the Mueller-Müller clock loop on
-  T2/T3 symbol distributions. The wideband engine now picks the
-  right value per channel based on the system's tier, so wideband-
-  hosted DMR repeaters lock as cleanly as the dedicated-dongle path.
-  Verified by a new in-package end-to-end test in
-  `internal/scanner/widebandt2/engine_e2e_test.go` that feeds
-  synthesized Voice LC Header IQ through the engine and asserts a
-  grant event lands on the bus.
-
-### Added
-
 - **`role: wideband` SDR devices — one dongle, many DMR Tier II
   repeaters and DMR Tier III control channels.** A single SDR pinned
   to a centre frequency now decodes every conventional DMR repeater
@@ -237,7 +375,8 @@ for tagged releases.
   and `samples/dmr-tier2-multichannel/`. Tier III voice grants still
   route through the existing physical voice pool (a `role: voice`
   SDR follows the call); decoding T3 voice directly on the wideband
-  dongle via a virtual voice pool is the next planned step.
+  dongle via a virtual voice pool is the next planned step (landed
+  in v0.2.4 as #386).
 - **`gophertrunk sdr doctor` — per-dongle driver-binding report.**
   Many Windows 11 users reported their RTL-SDR dongles weren't being
   recognized despite appearing in Device Manager, mirroring the
@@ -267,6 +406,19 @@ for tagged releases.
 
 ### Fixed
 
+- **Wideband DMR receiver loop-gain now matches the single-channel
+  ccdecoder path.** The Stage 2 / Stage 3 wideband engine was
+  instantiating `dmr/receiver.Receiver` with the default
+  `ClockGain: 0.05`, which the existing ccdecoder pipelines
+  explicitly lowered (0.015 for Tier II, 0.025 for Tier III) because
+  the default doesn't reliably lock the Mueller-Müller clock loop on
+  T2/T3 symbol distributions. The wideband engine now picks the
+  right value per channel based on the system's tier, so wideband-
+  hosted DMR repeaters lock as cleanly as the dedicated-dongle path.
+  Verified by a new in-package end-to-end test in
+  `internal/scanner/widebandt2/engine_e2e_test.go` that feeds
+  synthesized Voice LC Header IQ through the engine and asserts a
+  grant event lands on the bus.
 - **trunking/composer**: Voice chains no longer keep a call alive
   forever via an unconditional 1 s heartbeat. The four chains
   (P25 Phase 1, P25 Phase 2, DMR, NBFM) now gate `Engine.Touch` on
@@ -283,7 +435,6 @@ for tagged releases.
   systems with consistently clean signaling (lower for snappier
   teardown) or chatty channels with long transmission pauses
   (higher). Issue #356.
-
 - **airspy**: Defer `SET_SAMPLE_TYPE` from `Open()` to `StreamIQ()`,
   matching libairspy's open ordering (`GET_SAMPLERATES` IN first,
   no vendor OUT during open). Fixes Airspy R2 failing to open on
