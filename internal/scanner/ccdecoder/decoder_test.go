@@ -986,10 +986,10 @@ func TestMPT1327FactoryAppliesBCHFromSystem(t *testing.T) {
 // tests can assert the decoder's pump-side observation pipeline
 // without depending on the real Prometheus collector.
 type recordingPower struct {
-	sets       []powerSample
-	cleared    []string
-	dcSets     []dcSample
-	dcCleared  []string
+	sets      []powerSample
+	cleared   []string
+	dcSets    []dcSample
+	dcCleared []string
 }
 
 type powerSample struct {
