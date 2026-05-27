@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useShared } from "../store/shared";
 import type { EventDTO } from "../api/types";
 
@@ -31,8 +32,26 @@ interface Row {
   kind: string;
   label: string;
   system: string;
-  details: string;
+  // details can be a plain string or JSX so RID chips (etc.) can be
+  // rendered as react-router Links into /rids/{id} without escaping
+  // the surrounding text.
+  details: React.ReactNode;
   raw: unknown;
+}
+
+// ridLink renders an inline link to the per-RID detail page, styled
+// like the surrounding mono text but underlined on hover so it reads
+// as actionable in the CC Activity feed.
+function ridLink(rid: number) {
+  return (
+    <Link
+      to={`/rids/${rid}`}
+      className="font-mono text-accent hover:underline"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {rid}
+    </Link>
+  );
 }
 
 export function CCActivity() {
@@ -149,12 +168,22 @@ function renderRow(ev: EventDTO, label: string): Row | null {
       if (g.encrypted) tag.push("ENC");
       if (g.emergency) tag.push("EMERG");
       if (g.data_call) tag.push("DATA");
-      const details =
-        `TG ${groupID}` +
-        (sourceID ? ` ← ${sourceID}` : "") +
+      const suffix =
         (freq ? ` @ ${(freq / 1e6).toFixed(4)} MHz` : "") +
         (protocol ? ` · ${protocol}` : "") +
         (tag.length ? ` · ${tag.join(" ")}` : "");
+      const details = (
+        <>
+          {`TG ${groupID}`}
+          {sourceID ? (
+            <>
+              {" ← "}
+              {ridLink(sourceID)}
+            </>
+          ) : null}
+          {suffix}
+        </>
+      );
       return { ts: ev.timestamp, kind: ev.kind, label, system, details, raw: ev.payload };
     }
     case "call.end": {
@@ -171,10 +200,16 @@ function renderRow(ev: EventDTO, label: string): Row | null {
       const radio = num(payload.radio_id ?? payload.source_id ?? payload.source);
       const group = num(payload.group_id ?? payload.talkgroup_id);
       const code = num(payload.response_code ?? payload.response);
-      const details =
-        `radio ${radio}` +
+      const suffix =
         (group ? ` → TG ${group}` : "") +
         (code !== 0 ? ` · resp ${code}` : "");
+      const details = (
+        <>
+          {"radio "}
+          {radio ? ridLink(radio) : "?"}
+          {suffix}
+        </>
+      );
       return { ts: ev.timestamp, kind: ev.kind, label, system, details, raw: ev.payload };
     }
     case "patch": {
@@ -192,7 +227,13 @@ function renderRow(ev: EventDTO, label: string): Row | null {
       const system = str(payload.system);
       const source = num(payload.source ?? payload.radio_id);
       const alias = str(payload.alias);
-      const details = `radio ${source}: "${alias}"`;
+      const details = (
+        <>
+          {"radio "}
+          {source ? ridLink(source) : "?"}
+          {`: "${alias}"`}
+        </>
+      );
       return { ts: ev.timestamp, kind: ev.kind, label, system, details, raw: ev.payload };
     }
     case "cc.locked":

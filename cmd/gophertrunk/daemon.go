@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -91,6 +92,7 @@ type Daemon struct {
 	bus          *events.Bus
 	pool         *sdr.Pool
 	talkgroups   *trunking.TalkgroupDB
+	rids         *trunking.RIDDB
 	systems      []trunking.System
 	engine       *trunking.Engine
 	voicePool    *trunking.VoicePool
@@ -263,6 +265,10 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 
 	// Talkgroup DB — populated below from per-system CSVs.
 	d.talkgroups = trunking.NewTalkgroupDB()
+	// RID alias DB — populated below from per-system rid_alias_file
+	// entries. Empty when no system has the key set; live observations
+	// still flow through the affiliation tracker regardless.
+	d.rids = trunking.NewRIDDB()
 
 	// Systems pulled from config; talkgroup CSVs loaded eagerly so the
 	// API can serve them immediately.
@@ -323,6 +329,18 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 					sys.TalkgroupFile, sys.Name, err))
 			} else {
 				log.Info("daemon: talkgroups loaded", "system", sys.Name, "count", n)
+			}
+		}
+		if sys.RIDAliasFile != "" {
+			n, err := loadRIDFile(d.rids, sys.RIDAliasFile)
+			if err != nil {
+				log.Warn("daemon: rid alias load failed",
+					"system", sys.Name, "file", sys.RIDAliasFile, "err", err)
+				d.addWarning(fmt.Sprintf(
+					"rid_alias_file %q for system %q failed to load (%v) — radios on this system will have no operator aliases",
+					sys.RIDAliasFile, sys.Name, err))
+			} else {
+				log.Info("daemon: rids loaded", "system", sys.Name, "count", n)
 			}
 		}
 	}
@@ -993,6 +1011,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			Engine:         d.engine,
 			Mutator:        d.engine,
 			Talkgroups:     d.talkgroups,
+			RIDs:           d.rids,
 			Systems:        d.systems,
 			Log:            log,
 			Version:        version,
@@ -1111,16 +1130,24 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 
 	// gRPC — optional.
 	if cfg.API.GRPCAddr != "" {
-		gsrv, err := api.NewGRPCServer(api.GRPCServerOptions{
+		grpcOpts := api.GRPCServerOptions{
 			Addr:       cfg.API.GRPCAddr,
 			Systems:    d.systems,
 			Talkgroups: d.talkgroups,
+			RIDs:       d.rids,
 			Engine:     d.engine,
 			Audio:      d.audioPub,
 			Log:        log,
 			TLSCert:    cfg.API.TLSCert,
 			TLSKey:     cfg.API.TLSKey,
-		})
+		}
+		if d.affiliations != nil {
+			grpcOpts.Affiliations = affiliationProvider{d.affiliations}
+		}
+		if d.db != nil {
+			grpcOpts.History = api.HistoryFromStorage(d.db)
+		}
+		gsrv, err := api.NewGRPCServer(grpcOpts)
 		if err != nil {
 			return nil, fmt.Errorf("daemon: grpc api: %w", err)
 		}
@@ -2074,4 +2101,15 @@ type aprsProvider struct{ log *storage.APRSLog }
 
 func (a aprsProvider) RecentAPRSPackets(limit int) ([]storage.APRSPacket, error) {
 	return a.log.Recent(limit)
+}
+
+// loadRIDFile dispatches a per-system rid_alias_file load to the JSON
+// or CSV reader based on extension. JSON if the path ends in ".json"
+// (case-insensitive), CSV otherwise — matches the talkgroup loader's
+// expectation that the operator already knows the file format.
+func loadRIDFile(db *trunking.RIDDB, path string) (int, error) {
+	if strings.EqualFold(filepath.Ext(path), ".json") {
+		return db.LoadJSONFile(path)
+	}
+	return db.LoadCSVFile(path)
 }

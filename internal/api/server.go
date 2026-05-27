@@ -226,6 +226,7 @@ type Server struct {
 	imports      *importStaging
 	webAssets    fs.FS
 	talkgroups   *trunking.TalkgroupDB
+	rids         *trunking.RIDDB
 	systems      []trunking.System
 	history      HistoryQuery
 	locations    LocationQuery
@@ -322,6 +323,7 @@ type AffiliationProvider interface {
 type HistoryFilter struct {
 	System    string
 	GroupID   uint32
+	SourceID  uint32
 	Since     time.Time
 	Until     time.Time
 	Limit     int
@@ -355,7 +357,12 @@ type ServerOptions struct {
 	Bus        *events.Bus
 	Engine     EngineSnapshot
 	Talkgroups *trunking.TalkgroupDB
-	Systems    []trunking.System
+	// RIDs is the operator-configured radio-ID alias table. When nil
+	// the server allocates an empty one so the routes serve a stable
+	// shape; the daemon passes a populated DB loaded from each
+	// system's rid_alias_file.
+	RIDs    *trunking.RIDDB
+	Systems []trunking.System
 	// History is optional. When non-nil the server exposes
 	// GET /api/v1/calls/history.
 	History HistoryQuery
@@ -509,6 +516,9 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if opts.Talkgroups == nil {
 		opts.Talkgroups = trunking.NewTalkgroupDB()
 	}
+	if opts.RIDs == nil {
+		opts.RIDs = trunking.NewRIDDB()
+	}
 	authCfg := opts.Auth
 	// Legacy migration: AllowMutations: true with no explicit Auth
 	// config maps to AuthModeDisabled so the existing wide-open
@@ -555,6 +565,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		imports:        newImportStaging(5 * time.Minute),
 		webAssets:      opts.WebAssets,
 		talkgroups:     opts.Talkgroups,
+		rids:           opts.RIDs,
 		systems:        append([]trunking.System(nil), opts.Systems...),
 		history:        opts.History,
 		locations:      opts.Locations,
@@ -683,6 +694,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/calls/history", s.handleCallHistory)
 	mux.HandleFunc("GET /api/v1/locations", s.handleLocations)
 	mux.HandleFunc("GET /api/v1/affiliations", s.handleAffiliations)
+	mux.HandleFunc("GET /api/v1/rids", s.handleListRIDs)
+	mux.HandleFunc("GET /api/v1/rids/{id}", s.handleGetRID)
+	mux.HandleFunc("GET /api/v1/rids/{id}/history", s.handleRIDHistory)
 	mux.HandleFunc("GET /api/v1/devices", s.handleListDevices)
 	mux.HandleFunc("GET /api/v1/events", s.handleSSE)
 	mux.HandleFunc("GET /api/v1/events/ws", s.handleWS)
@@ -697,6 +711,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/mutations", s.handleMutationStatus)
 	mux.HandleFunc("POST /api/v1/calls/{deviceSerial}/end", s.gate(s.handleEndCall))
 	mux.HandleFunc("PATCH /api/v1/talkgroups/{id}", s.gate(s.handleUpdateTalkgroup))
+	mux.HandleFunc("PATCH /api/v1/rids/{id}", s.gate(s.handleUpdateRID))
 	mux.HandleFunc("POST /api/v1/retention/sweep", s.gate(s.handleRetentionSweep))
 	mux.HandleFunc("POST /api/v1/devices/{serial}/tone-reset", s.gate(s.handleToneReset))
 

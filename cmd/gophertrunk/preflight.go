@@ -82,6 +82,34 @@ func preflight(cfg config.Config) ([]string, error) {
 		}
 	}
 
+	// RID alias file existence — same non-fatal stat-only check as the
+	// talkgroup file. Empty / missing leaves operators without RID
+	// aliases on this system; live observations still surface via the
+	// affiliation tracker.
+	for _, sys := range cfg.Trunking.Systems {
+		if sys.RIDAliasFile == "" {
+			continue
+		}
+		info, err := os.Stat(sys.RIDAliasFile)
+		if err != nil {
+			warnings = append(warnings,
+				fmt.Sprintf("trunking.systems[%s].rid_alias_file: cannot stat %q (%v) — radios on this system will have no operator aliases",
+					sys.Name, sys.RIDAliasFile, err))
+			continue
+		}
+		if info.IsDir() {
+			warnings = append(warnings,
+				fmt.Sprintf("trunking.systems[%s].rid_alias_file: %q is a directory; expected a CSV or JSON file",
+					sys.Name, sys.RIDAliasFile))
+			continue
+		}
+		if info.Size() == 0 {
+			warnings = append(warnings,
+				fmt.Sprintf("trunking.systems[%s].rid_alias_file: %q is empty — radios on this system will have no operator aliases",
+					sys.Name, sys.RIDAliasFile))
+		}
+	}
+
 	return warnings, nil
 }
 

@@ -105,6 +105,18 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 					c.log.Debug("composer: p25p1 link control",
 						"serial", serial, "lcf", lc.LCFormat,
 						"tg", lc.TalkgroupID, "src", lc.SourceID)
+					// Surface the standard TIA-102 voice-channel
+					// talker-alias LCOs at Info so operators whose
+					// system uses them can see they're flowing on
+					// the wire even though we don't yet reassemble
+					// them. The Motorola vendor TSBK form is handled
+					// by the control channel today (see
+					// phase1.OpVendorTalkerAlias); the standard
+					// voice-channel form is issue #376 follow-up.
+					if phase1.IsTalkerAliasLCO(lc.LCFormat) {
+						c.log.Info("composer: p25p1 standard talker-alias LC observed (not yet decoded — see issue #376)",
+							"serial", serial, "lcf", lc.LCFormat)
+					}
 				}
 			case phase1.DUIDLogicalLink2:
 				if es, _, lerr := phase1.ParseEncryptionSync(blocks); lerr == nil && es.Encrypted() {

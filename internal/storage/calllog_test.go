@@ -158,19 +158,19 @@ func TestHistoryFilters(t *testing.T) {
 	go cl.Run(ctx)
 
 	now := time.Now().UTC().Truncate(time.Second)
-	publish := func(sys string, grp uint32, dt time.Duration, dev string) {
+	publish := func(sys string, grp, src uint32, dt time.Duration, dev string) {
 		bus.Publish(events.Event{
 			Kind: events.KindCallStart,
 			Payload: trunking.CallStart{
-				Grant:        trunking.Grant{System: sys, GroupID: grp, FrequencyHz: 1},
+				Grant:        trunking.Grant{System: sys, GroupID: grp, SourceID: src, FrequencyHz: 1},
 				DeviceSerial: dev,
 				StartedAt:    now.Add(dt),
 			},
 		})
 	}
-	publish("Alpha", 100, -3*time.Hour, "A")
-	publish("Alpha", 200, -2*time.Hour, "B")
-	publish("Bravo", 100, -1*time.Hour, "C")
+	publish("Alpha", 100, 7, -3*time.Hour, "A")
+	publish("Alpha", 200, 8, -2*time.Hour, "B")
+	publish("Bravo", 100, 7, -1*time.Hour, "C")
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -192,6 +192,23 @@ func TestHistoryFilters(t *testing.T) {
 	rows, _ = db.History(context.Background(), HistoryFilter{GroupID: 100})
 	if len(rows) != 2 {
 		t.Errorf("group=100 rows = %d, want 2", len(rows))
+	}
+
+	// SourceID filter picks both calls from RID 7 across the two systems.
+	rows, _ = db.History(context.Background(), HistoryFilter{SourceID: 7})
+	if len(rows) != 2 {
+		t.Errorf("source=7 rows = %d, want 2", len(rows))
+	}
+	for _, r := range rows {
+		if r.SourceID != 7 {
+			t.Errorf("source=7 returned row with SourceID=%d", r.SourceID)
+		}
+	}
+
+	// Source + group together — only Alpha/100/7.
+	rows, _ = db.History(context.Background(), HistoryFilter{SourceID: 7, GroupID: 100})
+	if len(rows) != 2 {
+		t.Errorf("source=7 group=100 rows = %d, want 2", len(rows))
 	}
 
 	rows, _ = db.History(context.Background(), HistoryFilter{Since: now.Add(-90 * time.Minute)})

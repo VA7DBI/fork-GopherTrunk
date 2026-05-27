@@ -1,10 +1,21 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 
 import { useShared } from "../store/shared";
 import type { EventDTO } from "../api/types";
 import { CCActivity } from "./CCActivity";
+
+// CCActivity embeds react-router <Link> for clickable RIDs, so every
+// render() needs a Router context.
+function renderPanel() {
+  return render(
+    <MemoryRouter>
+      <CCActivity />
+    </MemoryRouter>,
+  );
+}
 
 function setEvents(events: EventDTO[]) {
   useShared.setState({
@@ -31,7 +42,7 @@ describe("CCActivity panel", () => {
   });
 
   it("renders the empty state when no CC events are in the store", () => {
-    render(<CCActivity />);
+    renderPanel();
     expect(screen.getByText(/Nothing here yet/)).toBeInTheDocument();
   });
 
@@ -48,7 +59,7 @@ describe("CCActivity panel", () => {
         payload: { serial: "rtl-1" },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     expect(screen.getByText(/Nothing here yet/)).toBeInTheDocument();
   });
 
@@ -67,7 +78,7 @@ describe("CCActivity panel", () => {
         },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     // "Grant" appears in both the kind-filter <option> and the row's
     // Kind cell; assert via the row containing the system label.
     const row = screen.getByText("Metro P25").closest("tr");
@@ -91,7 +102,7 @@ describe("CCActivity panel", () => {
         },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     const row = screen.getByText("Metro P25").closest("tr");
     expect(row).not.toBeNull();
     expect(row!.textContent).toMatch(/Affiliation/);
@@ -113,7 +124,7 @@ describe("CCActivity panel", () => {
         payload: { system: "Sys-A", radio_id: 100, group_id: 1 },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     // Two rows initially.
     expect(screen.getByText("2 matching events")).toBeInTheDocument();
 
@@ -134,7 +145,7 @@ describe("CCActivity panel", () => {
         payload: { system: "County DMR", group_id: 2 },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     expect(screen.getByText("Metro P25")).toBeInTheDocument();
     expect(screen.getByText("County DMR")).toBeInTheDocument();
 
@@ -155,7 +166,7 @@ describe("CCActivity panel", () => {
         },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     const row = screen.getByText("Metro P25").closest("tr");
     expect(row).not.toBeNull();
     expect(row!.textContent).toMatch(/Patch/);
@@ -175,7 +186,7 @@ describe("CCActivity panel", () => {
         },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     const row = screen.getByText("Metro P25").closest("tr");
     expect(row).not.toBeNull();
     expect(row!.textContent).toMatch(/Talker alias/);

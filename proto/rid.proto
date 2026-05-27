@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package gophertrunk.v1;
+
+option go_package = "github.com/MattCheramie/GopherTrunk/internal/api/pb/v1;apiv1";
+
+// RID is the per-radio-unit (subscriber unit) identifier as exposed by
+// /api/v1/rids — the operator-configured static catalogue merged with
+// the affiliation tracker's live observation. Configured rows carry
+// alias / tag / owner / etc. from the per-system rid_alias_file; live
+// rows carry the over-the-air observation overlay.
+message RID {
+  uint32 id              = 1;
+  string alias           = 2;
+  string description     = 3;
+  string tag             = 4;
+  string group           = 5;
+  string owner           = 6;
+  uint32 priority        = 7;
+  bool   lockout         = 8;
+  bool   watch           = 9;
+  string icon            = 10;
+  // Configured is true when the row is backed by an rid_alias_file
+  // entry; false for radios only ever seen over the air.
+  bool   configured      = 11;
+  // Live observation overlay — empty/zero when the RID has not been
+  // observed since the daemon started (or since the tracker swept it).
+  string system          = 12;
+  string protocol        = 13;
+  uint32 last_talkgroup  = 14;
+  string talker_alias    = 15;
+  string talker_alias_at = 16; // RFC3339
+  uint64 call_count      = 17;
+  string first_seen      = 18; // RFC3339
+  string last_seen       = 19; // RFC3339
+}
+
+message ListRIDsRequest {}
+
+message ListRIDsResponse {
+  repeated RID rids = 1;
+}
+
+message GetRIDRequest {
+  uint32 id = 1;
+}
+
+message GetRIDResponse {
+  RID rid = 1;
+}
+
+message ListRIDHistoryRequest {
+  uint32 id     = 1;
+  uint32 limit  = 2; // 0 = server default
+  string system = 3; // optional system filter
+}
+
+message RIDCallRow {
+  int64  id              = 1;
+  string system          = 2;
+  string protocol        = 3;
+  uint32 group_id        = 4;
+  uint32 source_id       = 5;
+  uint32 frequency_hz    = 6;
+  bool   encrypted       = 7;
+  bool   emergency       = 8;
+  bool   data_call       = 9;
+  string device_serial   = 10;
+  string started_at      = 11; // RFC3339
+  string ended_at        = 12; // RFC3339, empty if still active
+  int64  duration_ms     = 13;
+  string end_reason      = 14;
+  string talkgroup_alpha = 15;
+}
+
+message ListRIDHistoryResponse {
+  repeated RIDCallRow calls = 1;
+}
+
+service RIDService {
+  rpc ListRIDs(ListRIDsRequest)             returns (ListRIDsResponse);
+  rpc GetRID(GetRIDRequest)                 returns (GetRIDResponse);
+  rpc ListRIDHistory(ListRIDHistoryRequest) returns (ListRIDHistoryResponse);
+}
