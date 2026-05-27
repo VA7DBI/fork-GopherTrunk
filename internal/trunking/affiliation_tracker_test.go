@@ -85,7 +85,7 @@ func TestAffiliationTrackerExpiry(t *testing.T) {
 
 	// observe is the internal record path; drive it directly so the
 	// test controls the clock without racing the event loop.
-	tr.observe(1, 100, "S", "p25", false, false)
+	tr.observe(1, 100, "S", "p25", false, false, true)
 	if tr.Len() != 1 {
 		t.Fatalf("unit not recorded")
 	}
@@ -116,5 +116,100 @@ func TestAffiliationTrackerIgnoresDeniedAffiliation(t *testing.T) {
 func TestAffiliationTrackerRequiresBus(t *testing.T) {
 	if _, err := NewAffiliationTracker(AffiliationTrackerOptions{}); err == nil {
 		t.Fatal("NewAffiliationTracker without a bus should error")
+	}
+}
+
+func TestAffiliationTrackerCountsGrantsAndStampsFirstSeen(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	clock := time.Now()
+	tr, _ := NewAffiliationTracker(AffiliationTrackerOptions{
+		Bus: bus,
+		Now: func() time.Time { return clock },
+	})
+	defer tr.Close()
+
+	tr.handle(events.Event{
+		Kind:    events.KindGrant,
+		Payload: Grant{System: "Metro", Protocol: "p25", SourceID: 7, GroupID: 100},
+	})
+	firstAt := clock
+	clock = clock.Add(30 * time.Second)
+	tr.handle(events.Event{
+		Kind:    events.KindGrant,
+		Payload: Grant{System: "Metro", Protocol: "p25", SourceID: 7, GroupID: 100},
+	})
+
+	snap := tr.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("snapshot len = %d, want 1", len(snap))
+	}
+	u := snap[0]
+	if u.CallCount != 2 {
+		t.Errorf("CallCount = %d, want 2", u.CallCount)
+	}
+	if !u.FirstSeen.Equal(firstAt) {
+		t.Errorf("FirstSeen = %v, want %v", u.FirstSeen, firstAt)
+	}
+	if u.LastSeen.Equal(firstAt) {
+		t.Error("LastSeen should advance with the second grant")
+	}
+}
+
+func TestAffiliationTrackerObservesTalkerAlias(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	clock := time.Now()
+	tr, _ := NewAffiliationTracker(AffiliationTrackerOptions{
+		Bus: bus,
+		Now: func() time.Time { return clock },
+	})
+	defer tr.Close()
+
+	tr.handle(events.Event{
+		Kind: events.KindTalkerAlias,
+		Payload: TalkerAlias{
+			System: "Metro", Protocol: "p25-phase1", SourceID: 4242,
+			Alias: "ENGINE-12", At: clock,
+		},
+	})
+	snap := tr.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("snapshot len = %d, want 1", len(snap))
+	}
+	if snap[0].TalkerAlias != "ENGINE-12" {
+		t.Errorf("TalkerAlias = %q, want ENGINE-12", snap[0].TalkerAlias)
+	}
+	if snap[0].TalkerAliasAt.IsZero() {
+		t.Error("TalkerAliasAt should be stamped")
+	}
+
+	// A grant later should keep the alias intact.
+	clock = clock.Add(time.Minute)
+	tr.handle(events.Event{
+		Kind:    events.KindGrant,
+		Payload: Grant{System: "Metro", Protocol: "p25-phase1", SourceID: 4242, GroupID: 50},
+	})
+	snap = tr.Snapshot()
+	if snap[0].TalkerAlias != "ENGINE-12" {
+		t.Errorf("TalkerAlias clobbered by grant: %q", snap[0].TalkerAlias)
+	}
+	if snap[0].Talkgroup != 50 {
+		t.Errorf("grant should set Talkgroup=50, got %d", snap[0].Talkgroup)
+	}
+}
+
+func TestAffiliationTrackerIgnoresEmptyAlias(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	tr, _ := NewAffiliationTracker(AffiliationTrackerOptions{Bus: bus})
+	defer tr.Close()
+
+	tr.handle(events.Event{
+		Kind:    events.KindTalkerAlias,
+		Payload: TalkerAlias{SourceID: 1, Alias: ""},
+	})
+	if tr.Len() != 0 {
+		t.Fatal("empty alias must not create a unit row")
 	}
 }
