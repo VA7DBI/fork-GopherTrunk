@@ -33,6 +33,8 @@ groups:
         url: /bookmarks.html
       - title: CC Activity
         url: /cc-activity.html
+      - title: Radio IDs
+        url: /radio-ids.html
       - title: Constellation
         url: /constellation.html
       - title: rigctld integration

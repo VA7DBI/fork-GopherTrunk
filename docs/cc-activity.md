@@ -19,7 +19,12 @@ want to watch live while a trunked system is being decoded:
 - **Patches / dynamic regroups** — the super-group plus member
   count, "add" vs "cancel" verb
 - **Talker aliases** — the decoded display-name string per radio
-  ID
+  ID. Two paths feed this: the Motorola vendor TSBK form on the
+  control channel, and the standard TIA-102.AABF voice-channel
+  Link Control opcodes (P25 Phase 1 LDU1 LCO 0x15 HEADER, 0x16
+  BLOCK1, 0x17 BLOCK2). Each completed alias is bound to the
+  current call's source ID so the Radio IDs panel can persist it
+  next to the operator-configured catalogue.
 - **CC lock / loss** — control-channel acquisition + recovery
 - **Call start / end** — actively-decoded voice transitions
 
@@ -82,3 +87,9 @@ matching event with payload-specific formatting:
 When more event payload shapes land (e.g. encryption metadata
 arrives mid-call via `call.encryption`), extending the panel is a
 matter of adding a switch arm in `CCActivity.tsx`'s `renderRow`.
+
+Radio IDs in the feed (the `<src>` in a grant row, the `<id>` in an
+affiliation / registration / talker-alias row) are rendered as
+clickable links into the Radio IDs panel's per-radio detail view —
+one click pivots from the live chatter to the radio's recent call
+history.
