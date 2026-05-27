@@ -9,6 +9,20 @@ for tagged releases.
 
 ### Added
 
+- **P25 Phase 2 voice-channel talker-alias decode.** Resolves the
+  follow-up half of #376: on Motorola MMR (and any Phase 2 system
+  whose CC never emits talker-alias PDUs), display names ride MAC
+  sub-frames that interleave with voice sub-frames on the traffic
+  channel. The voice composer's Phase 2 chain now runs the same
+  MAC-PDU dispatch the CC does — refactored into the new exported
+  `phase2.DecodeSuperframeMACPDUs` — and publishes
+  `events.KindTalkerAlias` when a fragment sequence completes. The
+  CC's per-channel FEC config (trellis / RS / interleave /
+  scrambler mode + 44-bit PN44 seed) rides on the published Grant
+  via a new `trunking.P25Phase2Decode` field so the composer can
+  decode MAC PDUs without owning a CC reference. Field-reporter
+  re-test on MMR is the real verifier; #397's Phase 1
+  Motorola-form path is unchanged.
 - **APRS HDLC framer + receiver.** Fourth slice of Phase 5 (#365).
   `internal/radio/aprs/hdlc` is the bit-stream → frame-bytes
   layer: sliding-flag detector with bit-stuffing reversal,

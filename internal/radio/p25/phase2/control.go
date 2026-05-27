@@ -576,21 +576,36 @@ func (c *ControlChannel) publishGrant(g GroupVoiceChannelGrant, op Opcode, group
 		}
 		c.mu.Unlock()
 	}
+	// Snapshot the per-channel FEC config so the voice composer can run
+	// the same MAC dispatch on MAC subframes that interleave with voice
+	// on the traffic channel — that path is how talker-alias fragments
+	// reach the receiver on Phase 2 systems that do not emit them on
+	// the CC (see internal/voice/composer/p25p2_voice.go).
+	c.mu.Lock()
+	dec := trunking.P25Phase2Decode{
+		Trellis:    uint8(c.trellisMode),
+		RS:         uint8(c.rsMode),
+		Interleave: uint8(c.interleaveMode),
+		Scrambler:  uint8(c.scramblerMode),
+		Seed:       c.scramblerSeed,
+	}
+	c.mu.Unlock()
 	c.bus.Publish(events.Event{
 		Kind: events.KindGrant,
 		Payload: trunking.Grant{
-			System:      c.systemName,
-			Protocol:    "p25-phase2",
-			GroupID:     groupID,
-			SourceID:    g.SourceID,
-			FrequencyHz: freq,
-			ChannelID:   g.ChannelID,
-			ChannelNum:  g.ChannelNumber,
-			Encrypted:   so.Encrypted(),
-			Emergency:   so.Emergency(),
-			AlgorithmID: algID,
-			KeyID:       keyID,
-			At:          c.now(),
+			System:          c.systemName,
+			Protocol:        "p25-phase2",
+			GroupID:         groupID,
+			SourceID:        g.SourceID,
+			FrequencyHz:     freq,
+			ChannelID:       g.ChannelID,
+			ChannelNum:      g.ChannelNumber,
+			Encrypted:       so.Encrypted(),
+			Emergency:       so.Emergency(),
+			AlgorithmID:     algID,
+			KeyID:           keyID,
+			P25Phase2Decode: dec,
+			At:              c.now(),
 		},
 	})
 	args := []any{
