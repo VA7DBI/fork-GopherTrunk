@@ -163,8 +163,8 @@ func (b *MotorolaTalkerAliasBuf) AddFragment(lcf uint8, content [lcContentOctets
 		// (40 bits) = 44 bits total. Pack into 6 bytes left-aligned
 		// for later bit-stream concatenation.
 		frag := make([]byte, 6)
-		frag[0] = content[3] & 0x0F          // 4 bits of payload
-		copy(frag[1:6], content[4:9])         // 40 bits of payload
+		frag[0] = content[3] & 0x0F   // 4 bits of payload
+		copy(frag[1:6], content[4:9]) // 40 bits of payload
 		b.blocks[blockNum-1] = frag
 	default:
 		return "", false
