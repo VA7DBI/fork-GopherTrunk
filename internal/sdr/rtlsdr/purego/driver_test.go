@@ -245,13 +245,16 @@ func TestOpenDevice_WarmupEPIPETriggersResetAndRetry(t *testing.T) {
 	}
 }
 
-// Regression for issue #248: when both warmup attempts return EPIPE,
+// Regression for issue #248: when every warmup attempt returns EPIPE,
 // openDevice must surface the wrapped error with the tunerBringupHint
 // appended — that's the actionable message the user sees and which
-// points them at the DVB / power / cable workarounds.
-func TestOpenDevice_WarmupEPIPEThriceReturnsHintError(t *testing.T) {
+// points them at the DVB / power / cable workarounds. The envelope
+// runs 5 attempts (4 resets) since #395.
+func TestOpenDevice_WarmupEPIPEFiveTimesReturnsHintError(t *testing.T) {
 	m := usb.NewMockTransport()
 	m.Script = []usb.CtrlExchange{
+		warmupUSBSysctlExchange(syscall.EPIPE),
+		warmupUSBSysctlExchange(syscall.EPIPE),
 		warmupUSBSysctlExchange(syscall.EPIPE),
 		warmupUSBSysctlExchange(syscall.EPIPE),
 		warmupUSBSysctlExchange(syscall.EPIPE),
@@ -259,7 +262,7 @@ func TestOpenDevice_WarmupEPIPEThriceReturnsHintError(t *testing.T) {
 	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-warmup-fail"}
 	_, err := openDevice(m, desc, 0)
 	if err == nil {
-		t.Fatal("openDevice succeeded; expected EPIPE-thrice to fail open")
+		t.Fatal("openDevice succeeded; expected EPIPE-five-times to fail open")
 	}
 	if !errors.Is(err, syscall.EPIPE) {
 		t.Errorf("err = %v, want errors.Is(err, syscall.EPIPE) (the underlying cause must remain inspectable)", err)
@@ -270,8 +273,8 @@ func TestOpenDevice_WarmupEPIPEThriceReturnsHintError(t *testing.T) {
 	if !strings.Contains(err.Error(), "dvb_usb_rtl28xxu") {
 		t.Errorf("err = %v, want substring \"dvb_usb_rtl28xxu\" (proves tunerBringupHint was appended)", err)
 	}
-	if m.ResetCalls != 2 {
-		t.Errorf("ResetCalls = %d, want 2 (envelope retries twice before surfacing the error)", m.ResetCalls)
+	if m.ResetCalls != 4 {
+		t.Errorf("ResetCalls = %d, want 4 (envelope retries four times before surfacing the error)", m.ResetCalls)
 	}
 }
 
@@ -311,9 +314,9 @@ func TestOpenDevice_BringupEPIPE_TriggersFullReset(t *testing.T) {
 
 // Regression for issue #248: when EPIPE recurs on every retry pass of
 // the bring-up, openDevice must surface the wrapped error with the
-// tunerBringupHint appended. Up to two USBDEVFS_RESETs are allowed per
-// Open call — the envelope is bounded, never an unbounded loop.
-func TestOpenDevice_BringupEPIPEThrice_ReturnsHintError(t *testing.T) {
+// tunerBringupHint appended. Up to four USBDEVFS_RESETs are allowed
+// per Open call — the envelope is bounded, never an unbounded loop.
+func TestOpenDevice_BringupEPIPEFiveTimes_ReturnsHintError(t *testing.T) {
 	m := usb.NewMockTransport()
 	m.Script = []usb.CtrlExchange{
 		warmupUSBSysctlExchange(nil),           // pass 1: warmup OK
@@ -321,12 +324,16 @@ func TestOpenDevice_BringupEPIPEThrice_ReturnsHintError(t *testing.T) {
 		warmupUSBSysctlExchange(nil),           // pass 2: warmup OK
 		warmupUSBSysctlExchange(syscall.EPIPE), // pass 2: InitBaseband EPIPE
 		warmupUSBSysctlExchange(nil),           // pass 3: warmup OK
-		warmupUSBSysctlExchange(syscall.EPIPE), // pass 3: InitBaseband EPIPE again
+		warmupUSBSysctlExchange(syscall.EPIPE), // pass 3: InitBaseband EPIPE
+		warmupUSBSysctlExchange(nil),           // pass 4: warmup OK
+		warmupUSBSysctlExchange(syscall.EPIPE), // pass 4: InitBaseband EPIPE
+		warmupUSBSysctlExchange(nil),           // pass 5: warmup OK
+		warmupUSBSysctlExchange(syscall.EPIPE), // pass 5: InitBaseband EPIPE again
 	}
 	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-bringup-fail"}
 	_, err := openDevice(m, desc, 0)
 	if err == nil {
-		t.Fatal("openDevice succeeded; expected EPIPE-thrice to fail open")
+		t.Fatal("openDevice succeeded; expected EPIPE-five-times to fail open")
 	}
 	if !errors.Is(err, syscall.EPIPE) {
 		t.Errorf("err = %v, want errors.Is(err, syscall.EPIPE)", err)
@@ -337,11 +344,11 @@ func TestOpenDevice_BringupEPIPEThrice_ReturnsHintError(t *testing.T) {
 	if !strings.Contains(err.Error(), "dvb_usb_rtl28xxu") {
 		t.Errorf("err = %v, want substring \"dvb_usb_rtl28xxu\" (proves tunerBringupHint was appended)", err)
 	}
-	if m.ResetCalls != 2 {
-		t.Errorf("ResetCalls = %d, want 2 (bounded envelope: two resets, three attempts)", m.ResetCalls)
+	if m.ResetCalls != 4 {
+		t.Errorf("ResetCalls = %d, want 4 (bounded envelope: four resets, five attempts)", m.ResetCalls)
 	}
-	if m.ClaimCalls != 3 {
-		t.Errorf("ClaimCalls = %d, want 3 (initial claim + two post-reset re-claims)", m.ClaimCalls)
+	if m.ClaimCalls != 5 {
+		t.Errorf("ClaimCalls = %d, want 5 (initial claim + four post-reset re-claims)", m.ClaimCalls)
 	}
 }
 
@@ -507,10 +514,15 @@ func TestOpenDevice_BringupPipeStalled_TriggersFullReset(t *testing.T) {
 }
 
 // When ErrPipeStalled recurs on every retry pass, the surfaced error
-// must carry the clone-dongle / Zadig hint.
-func TestOpenDevice_BringupPipeStalledThrice_ReturnsHintError(t *testing.T) {
+// must carry the clone-dongle / Zadig / unplug-and-replug hint pointing
+// at issue #395.
+func TestOpenDevice_BringupPipeStalledFiveTimes_ReturnsHintError(t *testing.T) {
 	m := usb.NewMockTransport()
 	m.Script = []usb.CtrlExchange{
+		warmupUSBSysctlExchange(nil),
+		warmupUSBSysctlExchange(usb.ErrPipeStalled),
+		warmupUSBSysctlExchange(nil),
+		warmupUSBSysctlExchange(usb.ErrPipeStalled),
 		warmupUSBSysctlExchange(nil),
 		warmupUSBSysctlExchange(usb.ErrPipeStalled),
 		warmupUSBSysctlExchange(nil),
@@ -521,7 +533,7 @@ func TestOpenDevice_BringupPipeStalledThrice_ReturnsHintError(t *testing.T) {
 	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-bringup-pipestalled-fail"}
 	_, err := openDevice(m, desc, 0)
 	if err == nil {
-		t.Fatal("openDevice succeeded; expected ErrPipeStalled-thrice to fail open")
+		t.Fatal("openDevice succeeded; expected ErrPipeStalled-five-times to fail open")
 	}
 	if !errors.Is(err, usb.ErrPipeStalled) {
 		t.Errorf("err = %v, want errors.Is(err, usb.ErrPipeStalled)", err)
@@ -532,20 +544,28 @@ func TestOpenDevice_BringupPipeStalledThrice_ReturnsHintError(t *testing.T) {
 	if !strings.Contains(err.Error(), "Zadig") {
 		t.Errorf("err = %v, want substring \"Zadig\"", err)
 	}
-	if m.ResetCalls != 2 {
-		t.Errorf("ResetCalls = %d, want 2 (bounded envelope: two resets, three attempts)", m.ResetCalls)
+	if !strings.Contains(err.Error(), "unplug the dongle") {
+		t.Errorf("err = %v, want substring \"unplug the dongle\" (proves the #395 hint was appended)", err)
 	}
-	if m.ClaimCalls != 3 {
-		t.Errorf("ClaimCalls = %d, want 3 (initial claim + two post-reset re-claims)", m.ClaimCalls)
+	if !strings.Contains(err.Error(), "#395") {
+		t.Errorf("err = %v, want substring \"#395\" (proves the issue ref was appended)", err)
+	}
+	if m.ResetCalls != 4 {
+		t.Errorf("ResetCalls = %d, want 4 (bounded envelope: four resets, five attempts)", m.ResetCalls)
+	}
+	if m.ClaimCalls != 5 {
+		t.Errorf("ClaimCalls = %d, want 5 (initial claim + four post-reset re-claims)", m.ClaimCalls)
 	}
 }
 
 // Regression: when ErrTimeout recurs on every warmup retry pass, the
 // surfaced error must carry the Windows-aware hint that points at the
-// WinUSB / Zadig step. Bounded to two USBDEVFS_RESETs per Open call.
-func TestOpenDevice_WarmupTimeoutThriceReturnsHintError(t *testing.T) {
+// WinUSB / Zadig step. Bounded to four USBDEVFS_RESETs per Open call.
+func TestOpenDevice_WarmupTimeoutFiveTimesReturnsHintError(t *testing.T) {
 	m := usb.NewMockTransport()
 	m.Script = []usb.CtrlExchange{
+		warmupUSBSysctlExchange(usb.ErrTimeout),
+		warmupUSBSysctlExchange(usb.ErrTimeout),
 		warmupUSBSysctlExchange(usb.ErrTimeout),
 		warmupUSBSysctlExchange(usb.ErrTimeout),
 		warmupUSBSysctlExchange(usb.ErrTimeout),
@@ -553,7 +573,7 @@ func TestOpenDevice_WarmupTimeoutThriceReturnsHintError(t *testing.T) {
 	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-warmup-timeout-fail"}
 	_, err := openDevice(m, desc, 0)
 	if err == nil {
-		t.Fatal("openDevice succeeded; expected ErrTimeout-thrice to fail open")
+		t.Fatal("openDevice succeeded; expected ErrTimeout-five-times to fail open")
 	}
 	if !errors.Is(err, usb.ErrTimeout) {
 		t.Errorf("err = %v, want errors.Is(err, usb.ErrTimeout) (the underlying cause must remain inspectable)", err)
@@ -564,8 +584,8 @@ func TestOpenDevice_WarmupTimeoutThriceReturnsHintError(t *testing.T) {
 	if !strings.Contains(err.Error(), "Zadig") {
 		t.Errorf("err = %v, want substring \"Zadig\" (proves the Windows-aware tunerBringupHint was appended)", err)
 	}
-	if m.ResetCalls != 2 {
-		t.Errorf("ResetCalls = %d, want 2 (bounded envelope: two resets, three attempts)", m.ResetCalls)
+	if m.ResetCalls != 4 {
+		t.Errorf("ResetCalls = %d, want 4 (bounded envelope: four resets, five attempts)", m.ResetCalls)
 	}
 }
 
@@ -595,6 +615,36 @@ func TestOpenDevice_WarmupRecoversOnSecondRetry(t *testing.T) {
 	}
 	if m.ClaimCalls != 3 {
 		t.Errorf("ClaimCalls = %d, want 3 (initial claim + two post-reset re-claims)", m.ClaimCalls)
+	}
+}
+
+// Regression for issue #395: pins that the new attempt-4 slot in the
+// retry envelope is actually consulted. The prior 3-attempt envelope
+// surfaced an error here; the 5-attempt envelope must let the bring-up
+// succeed on attempt 4 (zero-indexed) after four warmup stalls.
+func TestOpenDevice_BringupPipeStalledRecoversOnFifthAttempt(t *testing.T) {
+	m := usb.NewMockTransport()
+	m.Script = []usb.CtrlExchange{
+		warmupUSBSysctlExchange(usb.ErrPipeStalled), // pass 1: stalls
+		warmupUSBSysctlExchange(usb.ErrPipeStalled), // pass 2: stalls
+		warmupUSBSysctlExchange(usb.ErrPipeStalled), // pass 3: stalls
+		warmupUSBSysctlExchange(usb.ErrPipeStalled), // pass 4: stalls
+		warmupUSBSysctlExchange(nil),                // pass 5: warmup OK
+		warmupUSBSysctlExchange(usb.ErrClosed),      // pass 5: non-resetable terminator
+	}
+	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-bringup-fifth-attempt"}
+	_, err := openDevice(m, desc, 0)
+	if err == nil {
+		t.Fatal("openDevice succeeded; expected init-baseband terminator to fail the test")
+	}
+	if !strings.Contains(err.Error(), "init baseband") {
+		t.Errorf("err = %v, want substring \"init baseband\" (proves the fifth attempt reached InitBaseband)", err)
+	}
+	if m.ResetCalls != 4 {
+		t.Errorf("ResetCalls = %d, want 4 (one reset after each of the first four failed warmups)", m.ResetCalls)
+	}
+	if m.ClaimCalls != 5 {
+		t.Errorf("ClaimCalls = %d, want 5 (initial claim + four post-reset re-claims)", m.ClaimCalls)
 	}
 }
 
