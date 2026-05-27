@@ -7,6 +7,25 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Added
+
+- **APRS HDLC framer + receiver.** Fourth slice of Phase 5 (#365).
+  `internal/radio/aprs/hdlc` is the bit-stream → frame-bytes
+  layer: sliding-flag detector with bit-stuffing reversal,
+  shared-flag packing tolerance, and 7+-ones abort sequence
+  handling. `internal/radio/aprs/receiver` is the orchestrator
+  that threads bits through the framer, parses each emitted
+  frame with `ax25.Parse`, decodes the info field with
+  `aprs.Decode`, and publishes one `events.KindAPRSPacket` per
+  successfully-decoded UI frame. The bus payload is a
+  `storage.APRSPacket` carrying the AX.25 envelope + APRS
+  sub-type label + summary + (for position-bearing types)
+  lat/lon, so the SQLite log + REST endpoint + `/aprs` web
+  panel from #384 light up the moment a DSP layer pushes wire
+  bits at `receiver.Push`. `DropBadFCS` / `DropNonUI` opt-ins;
+  in/parsed/CRC-failed/emitted counters for future `/metrics`.
+  See [docs/aprs.md](docs/aprs.md).
+
 ### Fixed
 
 - **P25 Phase 1 voice chain now honours `p25_phase1_demod_mode`
