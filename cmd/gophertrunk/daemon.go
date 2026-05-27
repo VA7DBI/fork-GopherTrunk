@@ -1086,16 +1086,24 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 
 	// gRPC — optional.
 	if cfg.API.GRPCAddr != "" {
-		gsrv, err := api.NewGRPCServer(api.GRPCServerOptions{
+		grpcOpts := api.GRPCServerOptions{
 			Addr:       cfg.API.GRPCAddr,
 			Systems:    d.systems,
 			Talkgroups: d.talkgroups,
+			RIDs:       d.rids,
 			Engine:     d.engine,
 			Audio:      d.audioPub,
 			Log:        log,
 			TLSCert:    cfg.API.TLSCert,
 			TLSKey:     cfg.API.TLSKey,
-		})
+		}
+		if d.affiliations != nil {
+			grpcOpts.Affiliations = affiliationProvider{d.affiliations}
+		}
+		if d.db != nil {
+			grpcOpts.History = api.HistoryFromStorage(d.db)
+		}
+		gsrv, err := api.NewGRPCServer(grpcOpts)
 		if err != nil {
 			return nil, fmt.Errorf("daemon: grpc api: %w", err)
 		}
