@@ -1,7 +1,10 @@
 package conventional
 
 import (
+	"bytes"
+	"log/slog"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -166,14 +169,14 @@ func TestValidateTone(t *testing.T) {
 }
 
 func TestBuildDetector_CTCSSReturnsDetector(t *testing.T) {
-	d := buildDetector(ToneConfig{Mode: "ctcss", CTCSSHz: 100}, 48_000)
+	d := buildDetector(ToneConfig{Mode: "ctcss", CTCSSHz: 100}, 48_000, nil)
 	if d == nil {
 		t.Fatal("expected detector for ctcss/100Hz")
 	}
 }
 
 func TestBuildDetector_DCSReturnsDetector(t *testing.T) {
-	d := buildDetector(ToneConfig{Mode: "dcs", DCSCode: "023"}, 48_000)
+	d := buildDetector(ToneConfig{Mode: "dcs", DCSCode: "023"}, 48_000, nil)
 	if d == nil {
 		t.Fatal("expected detector for dcs/023")
 	}
@@ -186,13 +189,52 @@ func TestBuildDetector_DCSReturnsDetector(t *testing.T) {
 }
 
 func TestBuildDetector_NoneReturnsNil(t *testing.T) {
-	if buildDetector(ToneConfig{}, 48_000) != nil {
+	if buildDetector(ToneConfig{}, 48_000, nil) != nil {
 		t.Error("empty mode should yield nil")
 	}
 }
 
 func TestBuildDetector_NoSampleRateReturnsNil(t *testing.T) {
-	if buildDetector(ToneConfig{Mode: "ctcss", CTCSSHz: 100}, 0) != nil {
+	if buildDetector(ToneConfig{Mode: "ctcss", CTCSSHz: 100}, 0, nil) != nil {
 		t.Error("zero SampleHz should yield nil so the scanner runs without tone gating")
+	}
+}
+
+// TestBuildDetector_WarnsOnZeroSampleRateWithToneConfigured guards the
+// issue #356 follow-up: previously buildDetector silently returned nil
+// when SampleHz<=0 even though the channel had Mode="ctcss", leaving
+// operators unable to tell from logs why their CTCSS gate wasn't
+// engaging. The warn-log path is wired through Scanner.opts.Log, so
+// here we capture into a buffer and assert the message fires.
+func TestBuildDetector_WarnsOnZeroSampleRateWithToneConfigured(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if d := buildDetector(ToneConfig{Mode: "ctcss", CTCSSHz: 100}, 0, log); d != nil {
+		t.Fatalf("expected nil detector on zero sample rate, got %T", d)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "tone gating configured but scanner sample rate is zero") {
+		t.Errorf("expected warn log about zero sample rate, got %q", out)
+	}
+	if !strings.Contains(out, "ctcss") {
+		t.Errorf("warn log should include the configured tone mode; got %q", out)
+	}
+}
+
+// TestBuildDetector_SilentForUngatedChannel pins down the other half
+// of the contract: the warn ONLY fires when tone gating is actually
+// configured. The hot path through New() calls buildDetector on every
+// channel (ungated or not), so a noisy warn here would flood the
+// startup log on a 200-channel scan list.
+func TestBuildDetector_SilentForUngatedChannel(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if d := buildDetector(ToneConfig{}, 0, log); d != nil {
+		t.Fatalf("expected nil detector for empty mode, got %T", d)
+	}
+	if out := buf.String(); out != "" {
+		t.Errorf("ungated channel should emit no log output; got %q", out)
 	}
 }

@@ -9,6 +9,22 @@ for tagged releases.
 
 ### Fixed
 
+- **P25 Phase 1 voice chain now honours `p25_phase1_demod_mode`
+  (issue #356 follow-up, reporter @v2maldo).** The per-call P25
+  Phase 1 voice receiver was hardcoded to the C4FM
+  FM-discriminator path regardless of the system-level
+  `trunking.systems[].p25_phase1_demod_mode` setting. On a
+  simulcast / LSM site the control channel decoded fine (the
+  ccdecoder connector already honoured the setting) but every
+  voice grant landed in an FM-discriminator that couldn't sync on
+  LSM-modulated dibits — the LDU sink never fired, the
+  frame-activity counter from #356's earlier fix never advanced,
+  and the watchdog reaped the call at `call_timeout_ms` with an
+  empty WAV. The mode string is now plumbed through
+  `trunking.Grant` and the voice composer passes it into
+  `p25p1rx.Options.DemodMode`. Empty / unrecognised values warn-log
+  and fall back to C4FM so a typo doesn't silently kill a
+  previously-working system.
 - **RTL-SDR cold-boot stall on Windows: wider recovery envelope for the
   most stubborn clone dongles (issue #395).** A Windows 10 reporter on
   v0.2.4 still hit `rtlsdr: init baseband: init baseband step 0 ...
@@ -28,6 +44,23 @@ for tagged releases.
 
 ### Changed
 
+- **Operator-visible warnings for two silent-degradation paths
+  surfaced by issue #356 triage.** Both fix observability gaps
+  rather than behaviour, so a working config keeps working but a
+  misconfigured one now logs a single line at startup pointing
+  the operator at the fix.
+  - `sdr: no gain configured for device ... use \`gain: auto\` for
+    AGC or a specific tenth-dB value` — fires once per device that
+    has a `sdr.devices[]` entry but no `gain:` key. The librtlsdr
+    default isn't safe across every tuner / antenna / LNA chain;
+    on some clones it leaves the SDR deaf and the symptom looks
+    like a broken voice chain. See [docs/hardware.md](docs/hardware.md).
+  - `conv: tone gating configured but scanner sample rate is zero;
+    tone gate disabled` — fires when a conventional-scanner channel
+    has `tone.mode: ctcss` or `dcs` but `sdr.sample_rate` is
+    unset. The channel previously appeared in scan rotation with
+    the gate silently bypassed (every signal passing), with no log
+    explaining why CTCSS / DCS wasn't engaging.
 - **Motorola voice-channel talker-alias decoder (issue #376
   follow-up).** Field-testing on a real MMR system surfaced that
   the standard TIA-102.AABF HEADER + BLOCK1 + BLOCK2 form #389
