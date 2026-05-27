@@ -112,8 +112,9 @@ Silicon and Intel. Full per-OS recipes at
   the RID from the persisted call log. Web panel at `/rids`; REST
   at `/api/v1/rids`; gRPC `RIDService`. Talker-alias decoders
   cover the Motorola vendor TSBK form (control channel) and the
-  standard TIA-102.AABF voice-channel LCs (P25 Phase 1 LDU1 LCO
-  0x15/0x16/0x17).
+  Motorola voice-channel LCs (P25 Phase 1 LDU1 LCO 0x15 header
+  + N × LCO 0x17 data blocks, run through Motorola's
+  reverse-engineered alias cipher).
 - **Constellation viewer** — live IQ scatter visualization that
   taps the same broker the trunking decoder reads. Useful for
   identifying signal shape (PSK / QPSK / FSK / C4FM / AM /

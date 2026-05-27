@@ -20,9 +20,10 @@ want to watch live while a trunked system is being decoded:
   count, "add" vs "cancel" verb
 - **Talker aliases** — the decoded display-name string per radio
   ID. Two paths feed this: the Motorola vendor TSBK form on the
-  control channel, and the standard TIA-102.AABF voice-channel
-  Link Control opcodes (P25 Phase 1 LDU1 LCO 0x15 HEADER, 0x16
-  BLOCK1, 0x17 BLOCK2). Each completed alias is bound to the
+  control channel, and the Motorola voice-channel form (P25
+  Phase 1 LDU1 LCO 0x15 header + N × LCO 0x17 data blocks, run
+  through Motorola's reverse-engineered alias cipher). Each
+  completed alias is bound to the
   current call's source ID so the Radio IDs panel can persist it
   next to the operator-configured catalogue.
 - **CC lock / loss** — control-channel acquisition + recovery
