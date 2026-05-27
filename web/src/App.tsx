@@ -18,6 +18,7 @@ import { Import } from "./panels/Import";
 import { APRS } from "./panels/APRS";
 import { Metrics } from "./panels/Metrics";
 import { Pagers } from "./panels/Pagers";
+import { RadioIDs } from "./panels/RadioIDs";
 import { Scanner } from "./panels/Scanner";
 import { Settings } from "./panels/Settings";
 import { Spectrum } from "./panels/Spectrum";
@@ -35,6 +36,7 @@ const TABS: Tab[] = [
 const EXTRA_TABS: Tab[] = [
   { to: "/systems", label: "Systems", icon: "❖" },
   { to: "/talkgroups", label: "Talkgroups", icon: "☷" },
+  { to: "/rids", label: "Radio IDs", icon: "⌖" },
   { to: "/history", label: "History", icon: "↺" },
   { to: "/events", label: "Events", icon: "≣" },
   { to: "/cc", label: "CC Activity", icon: "⌁" },
@@ -146,6 +148,7 @@ export function App() {
           <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/systems" element={<Systems />} />
           <Route path="/talkgroups" element={<Talkgroups />} />
+          <Route path="/rids" element={<RadioIDs />} />
           <Route path="/history" element={<History />} />
           <Route path="/events" element={<Events />} />
           <Route path="/cc" element={<CCActivity />} />

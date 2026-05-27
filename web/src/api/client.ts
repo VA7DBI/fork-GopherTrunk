@@ -11,6 +11,7 @@ import type {
   DeviceDTO,
   Health,
   Mutations,
+  RIDDTO,
   RuntimeDTO,
   ScannerStatusDTO,
   SystemDTO,
@@ -121,6 +122,22 @@ export const api = {
       "GET",
       "/api/v1/talkgroups",
     ).then((r) => r.talkgroups),
+  rids: (c: ClientConfig) =>
+    request<{ rids: RIDDTO[] }>(c, "GET", "/api/v1/rids").then((r) => r.rids),
+  ridHistory: (
+    c: ClientConfig,
+    id: number,
+    opts: { limit?: number } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (opts.limit != null) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return request<{ calls: CallRow[] }>(
+      c,
+      "GET",
+      `/api/v1/rids/${id}/history${qs ? `?${qs}` : ""}`,
+    ).then((r) => r.calls ?? []);
+  },
   activeCalls: (c: ClientConfig) =>
     request<{ calls: ActiveCallDTO[] }>(
       c,
