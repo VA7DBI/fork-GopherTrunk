@@ -34,6 +34,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/equalizer"
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/filter"
 	"github.com/MattCheramie/GopherTrunk/internal/events"
+	p25p2 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase2"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
@@ -401,7 +402,14 @@ func (c *Composer) handleStart(parent context.Context, cs trunking.CallStart) {
 		}
 		go c.runDMRVoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
 	case isP25P2Voice:
-		go c.runP25Phase2VoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
+		macCfg := p25p2.MACDecodeConfig{
+			Trellis:    p25p2.TrellisMode(cs.Grant.P25Phase2Decode.Trellis),
+			RS:         p25p2.RSMode(cs.Grant.P25Phase2Decode.RS),
+			Interleave: p25p2.InterleaveMode(cs.Grant.P25Phase2Decode.Interleave),
+			Scrambler:  p25p2.ScramblerMode(cs.Grant.P25Phase2Decode.Scrambler),
+			Seed:       cs.Grant.P25Phase2Decode.Seed,
+		}
+		go c.runP25Phase2VoiceChain(chainCtx, cs.DeviceSerial, cs.Grant.System, macCfg, iqCh, ch.done)
 	case isP25P1Voice:
 		go c.runP25Phase1VoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
 	default:

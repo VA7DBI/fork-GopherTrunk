@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/filter"
+	"github.com/MattCheramie/GopherTrunk/internal/events"
 	p25p2 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase2"
 	p25p2rx "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase2/receiver"
+	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
 // p25p2VoiceIntermediateHz is the rate the wideband IQ is decimated to
@@ -28,11 +30,20 @@ const p25p2VoiceGardnerGain = 0.005
 // and for every voice-bearing sub-frame FEC-decodes its AMBE+2 frames
 // and appends them to the recorder's .raw sidecar.
 //
+// In parallel it dispatches the MAC-typed sub-frames that ride the same
+// superframe (Phase 2 voice traffic channels interleave MAC PDUs —
+// talker alias, encryption sync, in-call signalling — with voice).
+// macCfg pins the FEC pipeline DecodeSuperframeMACPDUs runs on those
+// sub-frames; on a completed talker-alias the chain publishes a
+// trunking.TalkerAlias event itself, mirroring the CC's
+// publishTalkerAlias path. This is the only way display names surface
+// on Phase 2 systems whose CCs never emit alias fragments (e.g. MMR).
+//
 // The recorder maps protocol "p25-phase2" to the pure-Go AMBE+2
 // vocoder (voice.DefaultVocoderForProtocol), so WriteRawFrame here
 // decodes each 7-byte frame to PCM and into the call's WAV — unlike the
 // DMR chain, whose pre-FEC frames the vocoder cannot consume.
-func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, iqCh <-chan []complex64, done chan<- struct{}) {
+func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, system string, macCfg p25p2.MACDecodeConfig, iqCh <-chan []complex64, done chan<- struct{}) {
 	defer close(done)
 
 	decim := int(c.iqHz) / p25p2VoiceIntermediateHz
@@ -53,6 +64,7 @@ func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, iq
 
 	rs, _ := c.sink.(rawFrameSink)
 	sfDec := p25p2.NewSuperframeDecoder()
+	aliasAsm := p25p2.NewTalkerAliasAssembler(nil)
 	// voiceSubframes counts P25 Phase 2 voice-bearing subframes the
 	// receiver delivered — i.e. real voice activity. The touch ticker
 	// (below) only refreshes the engine's LastHeardAt when this counter
@@ -89,6 +101,17 @@ func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, iq
 						}
 					}
 				}
+				for _, pdu := range p25p2.DecodeSuperframeMACPDUs(sf, macCfg) {
+					f, ok := pdu.AsTalkerAliasFragment()
+					if !ok {
+						continue
+					}
+					alias, src, complete := aliasAsm.Add(f)
+					if !complete {
+						continue
+					}
+					c.publishP25Phase2TalkerAlias(system, src, alias)
+				}
 			}
 		},
 	})
@@ -118,4 +141,26 @@ func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, iq
 			rx.Process(samples)
 		}
 	}
+}
+
+// publishP25Phase2TalkerAlias mirrors phase2.ControlChannel.publishTalkerAlias
+// for the voice-channel MAC dispatch path: a completed alias the
+// composer reassembled off the traffic channel surfaces on the bus
+// with the same payload shape as one decoded on the CC.
+func (c *Composer) publishP25Phase2TalkerAlias(system string, sourceID uint32, alias string) {
+	if c.bus == nil {
+		return
+	}
+	c.bus.Publish(events.Event{
+		Kind: events.KindTalkerAlias,
+		Payload: trunking.TalkerAlias{
+			System:   system,
+			Protocol: "p25-phase2",
+			SourceID: sourceID,
+			Alias:    alias,
+			At:       time.Now().UTC(),
+		},
+	})
+	c.log.Info("composer: p25p2 talker alias",
+		"system", system, "src", sourceID, "alias", alias)
 }

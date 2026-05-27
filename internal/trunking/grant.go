@@ -43,7 +43,29 @@ type Grant struct {
 	// it from its PatchRegistry so the call can be attributed to every
 	// member. Empty for an ordinary (non-patched) grant.
 	PatchedGroups []uint32
-	At            time.Time
+	// P25Phase2Decode carries the per-channel FEC parameters the voice
+	// composer's Phase 2 chain needs to decode MAC PDUs that
+	// interleave with voice subframes on the traffic channel (talker
+	// alias, in-call signalling). Populated by the Phase 2 control
+	// channel when publishing the grant; zero on non-Phase-2 grants.
+	P25Phase2Decode P25Phase2Decode
+	At              time.Time
+}
+
+// P25Phase2Decode is the protocol-neutral mirror of
+// p25/phase2.MACDecodeConfig: primitive fields so this struct lives
+// in the trunking package without pulling a Phase 2 import. The
+// composer translates back to phase2.MACDecodeConfig at use time.
+//
+// Trellis / RS / Interleave / Scrambler are numerically aligned to
+// the phase2 enum constants of the same name (TrellisOff = 0,
+// TrellisOn = 1, etc.). The composer round-trips them by casting.
+type P25Phase2Decode struct {
+	Trellis    uint8
+	RS         uint8
+	Interleave uint8
+	Scrambler  uint8
+	Seed       uint64
 }
 
 // String renders a one-line summary of a Grant for log output.
