@@ -163,6 +163,7 @@ describe("CCActivity panel", () => {
           system: "Metro P25",
           super_group: 999,
           members: [101, 102, 103],
+          add: true,
         },
       },
     ]);
@@ -172,6 +173,27 @@ describe("CCActivity panel", () => {
     expect(row!.textContent).toMatch(/Patch/);
     expect(row!.textContent).toMatch(/super-group 999/);
     expect(row!.textContent).toMatch(/3 members/);
+    expect(row!.textContent).toMatch(/· add/);
+  });
+
+  it("renders patch cancel events when add is false", () => {
+    setEvents([
+      {
+        kind: "patch",
+        timestamp: "2026-05-26T12:00:00Z",
+        payload: {
+          system: "Metro P25",
+          super_group: 999,
+          members: [101],
+          add: false,
+        },
+      },
+    ]);
+    renderPanel();
+    const row = screen.getByText("Metro P25").closest("tr");
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toMatch(/super-group 999/);
+    expect(row!.textContent).toMatch(/· cancel/);
   });
 
   it("renders talker alias events", () => {
