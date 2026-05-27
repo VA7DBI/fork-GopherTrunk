@@ -93,7 +93,10 @@ func TestListRIDsEmptyWhenNothingWired(t *testing.T) {
 	base, teardown := mkServer(t, ServerOptions{Bus: bus})
 	defer teardown()
 
-	resp, _ := http.Get(base + "/api/v1/rids")
+	resp, err := http.Get(base + "/api/v1/rids")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	var body struct {
 		RIDs []RIDDTO `json:"rids"`
@@ -113,7 +116,10 @@ func TestGetRIDReturnsConfiguredOnlyRow(t *testing.T) {
 	base, teardown := mkServer(t, ServerOptions{Bus: bus, RIDs: db})
 	defer teardown()
 
-	resp, _ := http.Get(base + "/api/v1/rids/42")
+	resp, err := http.Get(base + "/api/v1/rids/42")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -134,7 +140,10 @@ func TestGetRIDReturnsLiveOnlyRow(t *testing.T) {
 	base, teardown := mkServer(t, ServerOptions{Bus: bus, Affiliations: live})
 	defer teardown()
 
-	resp, _ := http.Get(base + "/api/v1/rids/7")
+	resp, err := http.Get(base + "/api/v1/rids/7")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -152,7 +161,10 @@ func TestGetRIDNotFound(t *testing.T) {
 	base, teardown := mkServer(t, ServerOptions{Bus: bus})
 	defer teardown()
 
-	resp, _ := http.Get(base + "/api/v1/rids/999")
+	resp, err := http.Get(base + "/api/v1/rids/999")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
@@ -165,7 +177,10 @@ func TestGetRIDInvalidID(t *testing.T) {
 	base, teardown := mkServer(t, ServerOptions{Bus: bus})
 	defer teardown()
 
-	resp, _ := http.Get(base + "/api/v1/rids/notanumber")
+	resp, err := http.Get(base + "/api/v1/rids/notanumber")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
@@ -223,7 +238,10 @@ func TestRIDHistoryReturnsSourceFilteredRows(t *testing.T) {
 	})
 	defer teardown()
 
-	resp, _ := http.Get(base + "/api/v1/rids/4242/history")
+	resp, err := http.Get(base + "/api/v1/rids/4242/history")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -248,7 +266,10 @@ func TestRIDHistory503WithoutHistoryWired(t *testing.T) {
 	base, teardown := mkServer(t, ServerOptions{Bus: bus})
 	defer teardown()
 
-	resp, _ := http.Get(base + "/api/v1/rids/1/history")
+	resp, err := http.Get(base + "/api/v1/rids/1/history")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
@@ -301,7 +322,10 @@ func TestUpdateRIDRejectsEmptyBody(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodPatch, base+"/api/v1/rids/1", bytes.NewReader([]byte(`{}`)))
 	req.Header.Set("Content-Type", "application/json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
@@ -324,7 +348,10 @@ func TestUpdateRIDLiveOnlyReturns404(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"alias": "NEW"})
 	req, _ := http.NewRequest(http.MethodPatch, base+"/api/v1/rids/5", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
