@@ -9,6 +9,19 @@ for tagged releases.
 
 ### Added
 
+- **AX.25 frame parser + APRS info-field decoder.** Third slice
+  of Phase 5 (#365), the protocol layer that plugs into the
+  bus/log/REST/UI scaffolding from #384. Pure-Go AX.25 frame
+  parser (`internal/radio/aprs/ax25`): 7-byte address packing,
+  up to 8 digipeater path entries, HDLC CRC-16-CCITT validation,
+  conventional `W1AW-9` / `WIDE2-1*` display helpers. Plus an
+  APRS info-field decoder (`internal/radio/aprs`) for positions
+  (`!`, `=`, `/`, `@`), messages (`:`) with ack/rej + bulletins,
+  status (`>`); Mic-E / weather / telemetry / object types are
+  type-tagged with payloads stashed for follow-up decoders. The
+  DSP receiver (Bell-202 AFSK demod → HDLC de-stuff → frame
+  delivery → bus event) is the next focused PR. See
+  [docs/aprs.md](docs/aprs.md).
 - **Radio IDs as first-class entities (#387, #376).** New
   `trunking.RIDDB` operator-configured alias catalogue mirroring
   `TalkgroupDB`: per-system `rid_alias_file` (CSV or JSON, dispatched

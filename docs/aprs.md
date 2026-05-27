@@ -57,15 +57,40 @@ pending" below.
 - Polls every 5 s. Frames with `fcs_ok = false` highlight in
   yellow as a marginal-signal indicator.
 
+## Protocol layer (`internal/radio/aprs`)
+
+Pure-Go AX.25 frame parser + APRS info-field decoder that turn
+bit-de-stuffed AX.25 frames into the `events.KindAPRSPacket`
+payload the bus / log / REST / UI scaffolding above expects.
+
+- **`internal/radio/aprs/ax25`** — AX.25 UI-frame parser:
+  7-byte address packing with the spec's bit-shifted ASCII
+  callsigns, up to 8 digipeater path entries, HDLC CRC-16-CCITT
+  validation via the standard 0x8408 reflected-bit polynomial,
+  conventional `W1AW-9` / `WIDE2-1*` display helpers. HBit
+  handling is only meaningful for path entries; dst + src use
+  that bit position for the C-bit (Command/Response indicator),
+  which the APRS console convention ignores.
+- **`internal/radio/aprs`** — info-field decoder. Recognised
+  packet types (data-type indicator → decoded fields):
+  - `!` / `=` — position without timestamp; messaging flag set
+    on `=`
+  - `/` / `@` — position with raw 7-char timestamp; messaging
+    flag set on `@`
+  - `:` — message (9-char trimmed addressee, body, optional
+    `{seqno}`, `ack` / `rej` short-form) or bulletin
+    (`BLN`-prefixed addressee → `Bulletin` struct)
+  - `>` — status (free-text)
+  - `;` / `_` / `T#` / Mic-E — type-tagged with payloads
+    stashed for follow-up decoders
+  - anything else — `TypeUnknown`, raw bytes preserved
+- Position parsing covers both hemispheres (N/S, E/W), the
+  spec's "ambiguity space" convention (low-precision digits as
+  space — treated as 0), and the standard `DDMM.hhH` /
+  `DDDMM.hhH` hundredths-of-a-minute encoding.
+
 ## What's pending
 
-- **AX.25 frame parser + APRS info-field decoder.** Pure-Go
-  parsers that turn bit-de-stuffed AX.25 frames into the
-  `events.KindAPRSPacket` payload this pipeline expects. Mirrors
-  the POCSAG protocol-layer split (#372 → #373) — the bus / log
-  / REST / UI ship in their own PR (this one) so the protocol
-  layer can be reviewed against its own concerns. Until that
-  ships, no events fire and the panel stays at the empty state.
 - **DSP receiver.** 1200 Bd Bell-202 AFSK demodulation, HDLC
   bit-stuffing reversal, 0x7E flag-delimited frame extraction.
   Plugs into the AX.25 parser the moment both pieces land.
