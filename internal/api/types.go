@@ -116,6 +116,76 @@ func talkgroupToDTO(tg *trunking.TalkGroup) *TalkgroupDTO {
 	}
 }
 
+// RIDDTO mirrors trunking.RID plus the live affiliation-tracker
+// fields (last_seen, last_talkgroup, talker_alias, call_count). When
+// a row is purely live (no configured static RID), the configured
+// fields are zero / empty and Live is true.
+type RIDDTO struct {
+	ID          uint32 `json:"id"`
+	Alias       string `json:"alias,omitempty"`
+	Description string `json:"description,omitempty"`
+	Tag         string `json:"tag,omitempty"`
+	Group       string `json:"group,omitempty"`
+	Owner       string `json:"owner,omitempty"`
+	Priority    int    `json:"priority,omitempty"`
+	Lockout     bool   `json:"lockout,omitempty"`
+	Watch       bool   `json:"watch"`
+	Icon        string `json:"icon,omitempty"`
+
+	// Configured is true when this row is backed by an entry in the
+	// static RIDDB (rid_alias_file). Used by the UI to distinguish
+	// known radios from RIDs only ever seen over the air.
+	Configured bool `json:"configured"`
+
+	// Live observation fields — empty/zero when the RID has not been
+	// seen since the daemon started (or since the affiliation tracker
+	// swept it).
+	System        string    `json:"system,omitempty"`
+	Protocol      string    `json:"protocol,omitempty"`
+	LastTalkgroup uint32    `json:"last_talkgroup,omitempty"`
+	TalkerAlias   string    `json:"talker_alias,omitempty"`
+	TalkerAliasAt time.Time `json:"talker_alias_at,omitempty"`
+	CallCount     uint64    `json:"call_count,omitempty"`
+	FirstSeen     time.Time `json:"first_seen,omitempty"`
+	LastSeen      time.Time `json:"last_seen,omitempty"`
+}
+
+func ridToDTO(r *trunking.RID) *RIDDTO {
+	if r == nil {
+		return nil
+	}
+	return &RIDDTO{
+		ID:          r.ID,
+		Alias:       r.Alias,
+		Description: r.Description,
+		Tag:         r.Tag,
+		Group:       r.Group,
+		Owner:       r.Owner,
+		Priority:    r.Priority,
+		Lockout:     r.Lockout,
+		Watch:       r.Watch,
+		Icon:        r.Icon,
+		Configured:  true,
+	}
+}
+
+// mergeRIDLive applies the live UnitActivity fields to the DTO. If
+// dto is nil a fresh, non-Configured DTO is returned for the live row.
+func mergeRIDLive(dto *RIDDTO, u trunking.UnitActivity) *RIDDTO {
+	if dto == nil {
+		dto = &RIDDTO{ID: u.RadioID, Watch: true}
+	}
+	dto.System = u.System
+	dto.Protocol = u.Protocol
+	dto.LastTalkgroup = u.Talkgroup
+	dto.TalkerAlias = u.TalkerAlias
+	dto.TalkerAliasAt = u.TalkerAliasAt
+	dto.CallCount = u.CallCount
+	dto.FirstSeen = u.FirstSeen
+	dto.LastSeen = u.LastSeen
+	return dto
+}
+
 // GrantDTO mirrors trunking.Grant.
 type GrantDTO struct {
 	System        string `json:"system"`

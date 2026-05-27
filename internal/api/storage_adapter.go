@@ -61,6 +61,7 @@ func (s *storageHistory) History(ctx context.Context, f HistoryFilter) ([]CallRo
 	rows, err := s.db.History(ctx, storage.HistoryFilter{
 		System:    f.System,
 		GroupID:   f.GroupID,
+		SourceID:  f.SourceID,
 		Since:     f.Since,
 		Until:     f.Until,
 		Limit:     f.Limit,
