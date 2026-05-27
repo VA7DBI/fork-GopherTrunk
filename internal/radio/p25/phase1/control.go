@@ -90,6 +90,15 @@ type ControlChannel struct {
 	// Options falls back to NIDSearchSpan, so production wiring is
 	// unaffected.
 	nidSearchSpan int
+
+	// p25Phase1DemodMode is the system-level operator-set demod-mode
+	// string (e.g. "cqpsk" / "c4fm"). Stamped onto every published
+	// trunking.Grant so the voice composer can route the voice IQ
+	// through the matching symbol-recovery path; without this an LSM
+	// simulcast site's voice grants would land in a hardcoded C4FM
+	// voice receiver and never decode (issue #356 follow-up). Empty
+	// string preserves the C4FM default in the voice chain.
+	p25Phase1DemodMode string
 }
 
 // NetworkSnapshot returns the system topology accumulated from the
@@ -136,6 +145,14 @@ type Options struct {
 	// the search reach a true alignment that lies past the default
 	// edge.
 	NIDSearchSpan int
+
+	// P25Phase1DemodMode is the raw system-level demod-mode string
+	// (e.g. "cqpsk" / "c4fm") from the system config. Stamped onto
+	// every published trunking.Grant so the voice composer can route
+	// the voice IQ through the matching symbol-recovery path. Empty
+	// preserves the C4FM default in the voice chain — and is what the
+	// existing replay / unit tests pass.
+	P25Phase1DemodMode string
 }
 
 // New constructs a ControlChannel from Options. SystemName ends up on
@@ -163,16 +180,17 @@ func New(opts Options) *ControlChannel {
 		span = NIDSearchSpan
 	}
 	return &ControlChannel{
-		bus:           opts.Bus,
-		log:           log,
-		det:           det,
-		systemName:    opts.SystemName,
-		freqHz:        opts.FrequencyHz,
-		bandPlan:      bp,
-		now:           now,
-		aliasAsm:      NewTalkerAliasAssembler(now),
-		rotations:     resolveRotations(opts.Rotations),
-		nidSearchSpan: span,
+		bus:                opts.Bus,
+		log:                log,
+		det:                det,
+		systemName:         opts.SystemName,
+		freqHz:             opts.FrequencyHz,
+		bandPlan:           bp,
+		now:                now,
+		aliasAsm:           NewTalkerAliasAssembler(now),
+		rotations:          resolveRotations(opts.Rotations),
+		nidSearchSpan:      span,
+		p25Phase1DemodMode: opts.P25Phase1DemodMode,
 	}
 }
 
@@ -893,17 +911,18 @@ func (c *ControlChannel) publishVoiceGrant(g voiceGrant, nac uint16) {
 	c.bus.Publish(events.Event{
 		Kind: events.KindGrant,
 		Payload: trunking.Grant{
-			System:      c.systemName,
-			Protocol:    "p25",
-			GroupID:     g.groupID,
-			SourceID:    g.sourceID,
-			FrequencyHz: freq,
-			ChannelID:   g.channelID,
-			ChannelNum:  g.channelNumber,
-			Encrypted:   so.Encrypted(),
-			Emergency:   so.Emergency(),
-			DataCall:    g.dataCall,
-			At:          c.now(),
+			System:             c.systemName,
+			Protocol:           "p25",
+			GroupID:            g.groupID,
+			SourceID:           g.sourceID,
+			FrequencyHz:        freq,
+			ChannelID:          g.channelID,
+			ChannelNum:         g.channelNumber,
+			Encrypted:          so.Encrypted(),
+			Emergency:          so.Emergency(),
+			DataCall:           g.dataCall,
+			P25Phase1DemodMode: c.p25Phase1DemodMode,
+			At:                 c.now(),
 		},
 	})
 	c.log.Debug("p25: grant",
