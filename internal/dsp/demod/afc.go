@@ -112,6 +112,9 @@ type DecisionDirectedAFC struct {
 	dc                float64 // current bias estimate (rad/sample at input)
 	clampRadPerSample float64 // |dc| safety bound
 	gateNorm          float64 // skip updates with |residual_norm| > gateNorm
+
+	residMeanBeta float64 // smoothing coefficient for residMean
+	residMean     float64 // EMA of accepted residuals (normalised, signed)
 }
 
 // ddaSymbols is the DDA averaging time constant in symbol periods.
@@ -119,6 +122,14 @@ type DecisionDirectedAFC struct {
 // errors and short bursts of slicer overshoot without losing real
 // thermal-drift tracking on an RTL-SDR.
 const ddaSymbols = 1024
+
+// ddaResidMeanSymbols is the time constant (in accepted symbols) of the
+// running mean the receiver reads via AcceptedResidualMean to tell a
+// genuinely open eye (mean ≈ 0) from a uniformly-biased false lock
+// (sustained non-zero mean). Shorter than ddaSymbols so the estimate is
+// trustworthy by the time the handoff fires (~256 accepted updates).
+// Issue #402.
+const ddaResidMeanSymbols = 128
 
 // NewDecisionDirectedAFC builds a decision-directed tracker calibrated
 // for a slicer whose outer-symbol nominal value (in the post-AGC
@@ -142,6 +153,7 @@ func NewDecisionDirectedAFC(maxOffsetHz, sampleRateHz, slicerScaleNorm float64) 
 		beta:              1.0 / float64(ddaSymbols),
 		clampRadPerSample: 2.0 * math.Pi * maxOffsetHz / sampleRateHz,
 		gateNorm:          slicerScaleNorm / 3.0,
+		residMeanBeta:     1.0 / float64(ddaResidMeanSymbols),
 	}
 }
 
@@ -177,8 +189,21 @@ func (a *DecisionDirectedAFC) Update(softNorm, expectedNorm, agcUnscale float32)
 	} else if a.dc < -a.clampRadPerSample {
 		a.dc = -a.clampRadPerSample
 	}
+	// Track the running mean of accepted residuals (in normalised
+	// units). On correct decisions this is ~0 for any symbol
+	// distribution; a uniformly-biased eye that still slips inside the
+	// gate leaves a sustained non-zero mean — the signal a count-only
+	// handoff gate can't see. Issue #402.
+	a.residMean += a.residMeanBeta * (residualNorm - a.residMean)
 	return true
 }
+
+// AcceptedResidualMean returns the EMA of accepted residuals in the
+// post-AGC normalised space (signed). It is ~0 when decisions are
+// correct (the DDA's data-immunity premise) and trends toward the
+// slicer bias when the eye is uniformly off-centre — the receiver uses
+// it to refuse a handoff onto a biased false lock. Issue #402.
+func (a *DecisionDirectedAFC) AcceptedResidualMean() float64 { return a.residMean }
 
 // Apply subtracts the current bias estimate from buf in place. Called
 // once per matched-filter buffer alongside CoarseAFC's correction.
@@ -208,4 +233,7 @@ func (a *DecisionDirectedAFC) AddOffset(v float64) {
 }
 
 // Reset clears the estimate. Call on stream re-tune.
-func (a *DecisionDirectedAFC) Reset() { a.dc = 0 }
+func (a *DecisionDirectedAFC) Reset() {
+	a.dc = 0
+	a.residMean = 0
+}

@@ -78,7 +78,39 @@ const ddaHandoffSymbols = 256
 // 0.157 outer threshold), the wrong-decision residual lands inside
 // the DDA's gate, and the contaminated estimate breaks lock once it
 // folds into the post-handoff loop. Issue #402.
+//
+// Once warmup completes the receiver freezes CoarseAFC (subtract-only)
+// for the whole learning window so the eye is stationary while the DDA
+// integrates: the handoff then folds in exactly the CoarseAFC value the
+// DDA learned against, with no "instantaneous − average" error. The
+// earlier code kept CoarseAFC adapting through the learning window, so
+// the fold-in captured a wandering data-mean value and the DDA settled
+// onto a stable-but-wrong offset that broke lock (issue #402 regression
+// after the first DDA cut).
 const ddaWarmupSymbols = 512
+
+// Handoff is committed only when the eye also looks genuinely open, not
+// just when enough within-gate updates have accrued: a uniformly-biased
+// eye still produces within-gate ("accepted") residuals, so the count
+// alone can't tell a real lock from a biased false lock. Issue #402.
+const (
+	// ddaHandoffMinAcceptRate is the minimum fraction of learning-window
+	// symbols that must land inside the DDA gate before handoff. Catches
+	// a grossly-broken eye (many out-of-gate decisions); the residual-
+	// mean test catches the subtler within-gate bias.
+	ddaHandoffMinAcceptRate = 0.66
+
+	// ddaMaxDriftHz bounds how far the DDA's estimate may wander from the
+	// value it carried at handoff before the receiver reverts to
+	// CoarseAFC-alone. A locked transmitter's residual drift is a tuner-
+	// ppm affair (tens to low hundreds of Hz); a DDA that walks kilohertz
+	// away from a gate-verified handoff is tracking something it
+	// shouldn't, so falling back to the open-loop tracker can only help.
+	// This is the reversibility guarantee: the post-handoff error is
+	// bounded by the handoff gate plus this drift, so the DDA can never
+	// strand the receiver below the pre-DDA behaviour. Issue #402.
+	ddaMaxDriftHz = 4000.0
+)
 
 // P25 Phase 1 on-air parameters.
 const (
@@ -185,8 +217,15 @@ type Receiver struct {
 	clock            *sync.MuellerMuller
 	agc              c4fmSymbolAGC
 	ddaNominal       [4]float32 // post-AGC nominal value for sliced ±1, ±3
+	ddaResidMeanGate float64    // max |AcceptedResidualMean| for handoff (slicerScale units)
+	ddaMaxDrift      float64    // max |DDA − handoff estimate| before re-arm (rad/sample)
+	ddaLearning      bool       // true once the DDA is integrating: CoarseAFC frozen (subtract-only)
 	ddaActive        bool       // true after handoff: afc frozen, dda carries the estimate
-	ddaValidUpdates  int        // accepted-update count; when it crosses ddaHandoffSymbols the handoff fires
+	ddaValidUpdates  int        // accepted-update count this learning attempt; crossing ddaHandoffSymbols arms the handoff
+	ddaTotalUpdates  int        // total DDA updates this learning attempt; with ddaValidUpdates gives the accept-rate
+	ddaWarmupDoneAt  int        // c4fmSymbolsTotal at which learning may (re)start; bumped on a watchdog re-arm
+	afcAtHandoff     float64    // total AFC estimate the DDA carried at handoff; the watchdog bounds drift from this
+	ddaRearms        int        // number of watchdog re-arms (diagnostic)
 	c4fmSymbolsTotal int        // symbols processed; the DDA waits ddaWarmupSymbols of these before learning
 
 	// CQPSK / LSM path: complex RRC + Gardner + DQPSK quadrant
@@ -320,6 +359,16 @@ func New(opts Options) *Receiver {
 				float32(+slicerScale / 3), // sliced = +1
 				float32(+slicerScale),     // sliced = +3
 			}
+			// Refuse a handoff when the mean accepted residual sits
+			// further than an eighth of the slicer scale off zero —
+			// a quarter of the gate (slicerScale/3). A converged,
+			// correctly-decided eye sits well inside this; a
+			// uniformly-biased false lock does not. Issue #402.
+			r.ddaResidMeanGate = slicerScale / 8.0
+			// Drift bound in matched-filter output units (same sps-gain
+			// scale as the CoarseAFC/DDA estimates — see the clamp).
+			r.ddaMaxDrift = 2.0 * math.Pi * ddaMaxDriftHz * sps / opts.SampleRateHz
+			r.ddaWarmupDoneAt = ddaWarmupSymbols
 		}
 	}
 	if opts.Sink != nil {
@@ -345,14 +394,25 @@ func (r *Receiver) Process(iq []complex64) {
 	} else {
 		r.disc = r.fm.Process(r.disc, iq)
 		r.matched = r.mf.MatchedFilter(r.matched, r.disc)
+		// Freeze CoarseAFC the moment the DDA is eligible to learn
+		// (warmup complete, AGC seeded). Once frozen the eye is
+		// stationary for the whole learning window, so the value
+		// folded into the DDA at handoff is exactly the one the DDA
+		// learned against — no wandering-data-mean error. Latched
+		// here, before the CoarseAFC step, so the freeze takes effect
+		// from the first learning batch. Issue #402.
+		if r.dda != nil && !r.ddaActive && !r.ddaLearning &&
+			r.agc.seeded && r.agc.target > 0 && r.c4fmSymbolsTotal >= r.ddaWarmupDoneAt {
+			r.ddaLearning = true
+		}
 		// Coarse AFC: track and subtract the residual carrier-offset
 		// DC bias before the symbol clock + slicer see it, so a real
 		// tuner's frequency error doesn't shift the 4-level eye off
-		// the slicer's fixed thresholds (issue #275). Once the DDA
-		// has handed off (issue #402), CoarseAFC is frozen at zero
-		// — Subtract is a no-op then — and the DDA carries the
-		// estimate via its Apply call below.
-		if r.ddaActive {
+		// the slicer's fixed thresholds (issue #275). While the DDA is
+		// learning or has handed off (issue #402), CoarseAFC is frozen
+		// — Subtract keeps removing its held value while the DDA
+		// carries any further drift via its Apply call below.
+		if r.ddaActive || r.ddaLearning {
 			r.afc.Subtract(r.matched)
 		} else {
 			r.afc.Process(r.matched)
@@ -364,11 +424,11 @@ func (r *Receiver) Process(iq []complex64) {
 		if len(r.symbols) == 0 {
 			return
 		}
-		// Snapshot the AGC's pre-process level so the DDA's
-		// un-normalisation matches the gain *this* batch was
-		// scaled by, not the gain the next sample is about to see.
-		// AGC.process mutates level in place per sample.
-		r.agc.process(r.symbols)
+		// agcLevel is the mean gain level this batch was actually
+		// scaled against (process mutates level per sample), so the
+		// DDA's un-normalisation matches the gain its residuals were
+		// formed under rather than the next sample's gain. Issue #402.
+		agcLevel := r.agc.process(r.symbols)
 		if r.softSink != nil {
 			r.softSink(r.symbols)
 		}
@@ -381,37 +441,60 @@ func (r *Receiver) Process(iq []complex64) {
 		for i, sym := range r.sliced {
 			r.dibits[i] = phase1.SymbolToDibit(sym)
 		}
-		// Decision-directed AFC update + handoff. Three gates:
+		// Decision-directed AFC update, handoff, and watchdog. Gates
+		// for learning:
 		//
-		//   - c4fmSymbolsTotal ≥ ddaWarmupSymbols: CoarseAFC has
-		//     had time to converge; before that, the slicer
-		//     mis-decides inner symbols at any offset above ~1 kHz
-		//     and the DDA would learn from those wrong-decision
-		//     residuals.
-		//   - agc.seeded: the un-normalisation factor
-		//     (level/target) is valid; without that the DDA folds
-		//     gain noise into the estimate.
+		//   - c4fmSymbolsTotal ≥ ddaWarmupDoneAt: CoarseAFC has had
+		//     time to converge; before that, the slicer mis-decides
+		//     inner symbols at any offset above ~1 kHz and the DDA
+		//     would learn from those wrong-decision residuals. The
+		//     threshold is bumped past a watchdog re-arm so CoarseAFC
+		//     gets to re-converge before the DDA tries again.
+		//   - agc.seeded: the un-normalisation factor (level/target)
+		//     is valid; without that the DDA folds gain noise in.
 		//   - r.dda non-nil: skipped on the CQPSK / legacy-fixture
 		//     paths the receiver doesn't allocate it on.
-		//
-		// Each accepted update is a within-gate sample, i.e. a
-		// decision the loop trusts; ddaHandoffSymbols of them is
-		// the receiver's "decisions are reliable" signal and
-		// triggers the freeze-CoarseAFC / fold-into-DDA handoff
-		// so the open-loop tracker stops drifting on data.
 		r.c4fmSymbolsTotal += len(r.sliced)
-		if r.dda != nil && r.c4fmSymbolsTotal >= ddaWarmupSymbols && r.agc.seeded && r.agc.target > 0 && r.agc.level > 0 {
-			agcUnscale := r.agc.level / r.agc.target
+		if r.dda != nil && r.c4fmSymbolsTotal >= r.ddaWarmupDoneAt && r.agc.seeded && r.agc.target > 0 && agcLevel > 0 {
+			agcUnscale := float32(agcLevel) / r.agc.target
 			for i, sym := range r.sliced {
 				idx := (sym + 3) / 2 // -3,-1,+1,+3 → 0,1,2,3
 				if r.dda.Update(r.symbols[i], r.ddaNominal[idx], agcUnscale) {
 					r.ddaValidUpdates++
 				}
+				r.ddaTotalUpdates++
 			}
-			if !r.ddaActive && r.ddaValidUpdates >= ddaHandoffSymbols {
-				r.dda.AddOffset(r.afc.Offset())
-				r.afc.SetOffset(0)
-				r.ddaActive = true
+			if !r.ddaActive {
+				// Commit the handoff only when decisions are both
+				// plentiful (count + accept-rate) and unbiased
+				// (mean accepted residual near zero). The CoarseAFC
+				// value is folded in exactly, since it has been
+				// frozen for the whole learning window.
+				if r.ddaHandoffReady() {
+					r.dda.AddOffset(r.afc.Offset())
+					r.afc.SetOffset(0)
+					r.afcAtHandoff = r.dda.Offset()
+					r.ddaActive = true
+				}
+			} else if math.Abs(r.dda.Offset()-r.afcAtHandoff) > r.ddaMaxDrift {
+				// Post-handoff watchdog: the DDA has walked too far
+				// from the gate-verified handoff estimate to still be
+				// tracking the same carrier — revert to CoarseAFC-
+				// alone (the pre-DDA behaviour) so the receiver can
+				// never end up worse than it was before the DDA. Hand
+				// the DDA's current estimate back to CoarseAFC so the
+				// eye stays continuous, then re-arm warmup so
+				// CoarseAFC re-converges before the DDA tries again.
+				// Issue #402.
+				r.afc.SetOffset(r.dda.Offset())
+				r.dda.Reset()
+				r.ddaActive = false
+				r.ddaLearning = false
+				r.ddaValidUpdates = 0
+				r.ddaTotalUpdates = 0
+				r.afcAtHandoff = 0
+				r.ddaWarmupDoneAt = r.c4fmSymbolsTotal + ddaWarmupSymbols
+				r.ddaRearms++
 			}
 		}
 	}
@@ -426,6 +509,42 @@ func (r *Receiver) Process(iq []complex64) {
 		r.assembler.Process(r.dibits)
 	}
 }
+
+// ddaHandoffReady reports whether the learning window has produced
+// decisions trustworthy enough to fold CoarseAFC into the DDA and let
+// the DDA carry the estimate alone. It requires three things, not just
+// the raw accepted-update count the first cut used (issue #402):
+//
+//   - enough accepted (within-gate) updates — the loop has data;
+//   - a high accept-rate over the learning window — the eye isn't
+//     grossly broken (many out-of-gate decisions);
+//   - a mean accepted residual near zero — the eye isn't uniformly
+//     biased. A biased eye still yields within-gate "accepted"
+//     residuals, so the count + accept-rate alone can't see it; the
+//     residual-mean gate is what stops the handoff from locking onto
+//     the stable-but-wrong offset that broke decode in #402.
+func (r *Receiver) ddaHandoffReady() bool {
+	if r.dda == nil || r.ddaValidUpdates < ddaHandoffSymbols || r.ddaTotalUpdates == 0 {
+		return false
+	}
+	if float64(r.ddaValidUpdates)/float64(r.ddaTotalUpdates) < ddaHandoffMinAcceptRate {
+		return false
+	}
+	return math.Abs(r.dda.AcceptedResidualMean()) <= r.ddaResidMeanGate
+}
+
+// DDAActive reports whether the decision-directed AFC has handed off
+// and is carrying the estimate alone (CoarseAFC frozen). On a healthy
+// lock this goes true shortly after warmup and stays true. Issue #402
+// diagnostic.
+func (r *Receiver) DDAActive() bool { return r.ddaActive }
+
+// DDARearms returns how many times the post-handoff watchdog has
+// reverted the DDA to CoarseAFC-alone (the DDA walked too far from its
+// gate-verified handoff value). 0 on a stable lock; a climbing count
+// means the DDA can't hold this signal and the receiver is repeatedly
+// falling back. Issue #402 diagnostic.
+func (r *Receiver) DDARearms() int { return r.ddaRearms }
 
 // AFCBiasRadPerSample returns the C4FM AFC's *total* current DC bias
 // estimate on the FM-discriminator output, in radians per sample at
@@ -507,8 +626,13 @@ func (r *Receiver) Reset() {
 	if r.dda != nil {
 		r.dda.Reset()
 	}
+	r.ddaLearning = false
 	r.ddaActive = false
 	r.ddaValidUpdates = 0
+	r.ddaTotalUpdates = 0
+	r.ddaWarmupDoneAt = ddaWarmupSymbols
+	r.afcAtHandoff = 0
+	r.ddaRearms = 0
 	r.c4fmSymbolsTotal = 0
 	r.agc.reset()
 	// FM discriminator's `last` is harmless to leave alone — the
@@ -540,10 +664,18 @@ type c4fmSymbolAGC struct {
 // regardless of how the IQ is chunked — the chunk-boundary
 // determinism the Mueller-Müller fix already guarantees on the
 // clock side (TestHarnessC4FMChunkBoundary, issue #275).
-func (a *c4fmSymbolAGC) process(symbols []float32) {
+//
+// Returns the mean level the batch was scaled against (the mean of the
+// per-sample EMA estimate). The DDA un-normalises its residuals by
+// level/target, so it needs the gain *this* batch saw, not the
+// post-batch level a later sample will see. Returns 0 when calibration
+// is disabled or no sample seeded the loop. Issue #402.
+func (a *c4fmSymbolAGC) process(symbols []float32) float64 {
 	if a.target <= 0 {
-		return // calibration disabled (legacy DeviationHz=0 path)
+		return 0 // calibration disabled (legacy DeviationHz=0 path)
 	}
+	var levelSum float64
+	var levelN int
 	for i, x := range symbols {
 		ax := x
 		if ax < 0 {
@@ -562,8 +694,14 @@ func (a *c4fmSymbolAGC) process(symbols []float32) {
 		if a.level > 1e-12 {
 			g := a.target / a.level
 			symbols[i] = x * g
+			levelSum += float64(a.level)
+			levelN++
 		}
 	}
+	if levelN == 0 {
+		return 0
+	}
+	return levelSum / float64(levelN)
 }
 
 // reset clears the level estimate so a stream re-sync starts from a

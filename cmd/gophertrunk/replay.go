@@ -215,7 +215,7 @@ FLAGS:`)
 	var nextStateLogAt float64 = stateLogIntervalSec
 	logReceiverState := func(at float64) {
 		fmt.Fprintf(os.Stderr,
-			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f\n",
+			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f  dda_active=%t  dda_rearms=%d\n",
 			at,
 			rx.AFCBiasRadPerSample(),
 			rx.AFCBiasRadPerSample()*receiverRate/(2*math.Pi),
@@ -223,7 +223,9 @@ FLAGS:`)
 			rx.AGCTarget(),
 			ratioOrZero(rx.AGCTarget(), rx.AGCLevel()),
 			rx.MMClockMu(),
-			rx.MMClockSPS())
+			rx.MMClockSPS(),
+			rx.DDAActive(),
+			rx.DDARearms())
 	}
 
 	const chunkSamples = 8192
