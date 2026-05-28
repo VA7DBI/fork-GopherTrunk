@@ -73,12 +73,14 @@ Silicon and Intel. Full per-OS recipes at
   See [docs/pocsag.md](docs/pocsag.md).
 - **APRS / AX.25 packet** — end-to-end pipeline for the
   amateur-radio APRS metadata bus (position beacons, messages,
-  bulletins, status). Bell-202 AFSK DSP frontend (FM demod →
-  FFSK tone discriminator → symbol-time recovery → NRZI →
-  HDLC framer), AX.25 frame parser with CRC-16-CCITT, APRS
-  info-field decoders, plus `events.KindAPRSPacket` bus event,
-  SQLite `aprs_log`, `GET /api/v1/aprs/packets`, and `/aprs`
-  web panel. See [docs/aprs.md](docs/aprs.md).
+  bulletins, status, Mic-E mobile-tracker compressed format).
+  Bell-202 AFSK DSP frontend (FM demod → FFSK tone discriminator
+  → symbol-time recovery → NRZI → HDLC framer), AX.25 frame
+  parser with CRC-16-CCITT, APRS info-field decoders including
+  full Mic-E (lat/lon, speed, course, altitude, message code),
+  plus `events.KindAPRSPacket` bus event, SQLite `aprs_log`,
+  `GET /api/v1/aprs/packets`, and `/aprs` web panel.
+  See [docs/aprs.md](docs/aprs.md).
 - **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25
   Phase 2 / DMR) vocoders in Go, no DVSI / mbelib dependency.
   Per-call WAV + raw-frame sidecars; live PCM playback via direct
