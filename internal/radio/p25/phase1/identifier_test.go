@@ -81,6 +81,7 @@ func TestIdentifierUpdateTDMARoundTripMtAnakieID10(t *testing.T) {
 		SpacingHz:   6_250,
 		TxOffsetHz:  -10_000_000,
 		BaseHz:      467_512_500,
+		AccessTDMA:  true,
 	}
 	out := ParseIdentifierUpdateTDMA(AssembleIdentifierUpdateTDMA(in))
 	if out != in {
@@ -97,6 +98,7 @@ func TestIdentifierUpdateTDMARoundTripPositiveOffset(t *testing.T) {
 		SpacingHz:   12_500,
 		TxOffsetHz:  5_000_000,
 		BaseHz:      420_000_000,
+		AccessTDMA:  true,
 	}
 	out := ParseIdentifierUpdateTDMA(AssembleIdentifierUpdateTDMA(in))
 	if out != in {
@@ -198,5 +200,62 @@ func TestBandPlanRejectsOverflow(t *testing.T) {
 	bp.Apply(IdentifierUpdate{ChannelID: 0, SpacingHz: 1_000_000, BaseHz: 4_000_000_000})
 	if _, err := bp.Frequency(0, 1000); err == nil {
 		t.Error("expected overflow error for >4.29 GHz resolved frequency")
+	}
+}
+
+// TestParseIdentifierUpdateTDMASetsAccessFlag confirms the TDMA
+// variant flips AccessTDMA so the Phase 1 control channel can route
+// grants on the channel ID into the Phase 2 voice chain (issue #376).
+// FDMA variants (the 0x3D and 0x34 forms) must leave it false.
+func TestParseIdentifierUpdateTDMASetsAccessFlag(t *testing.T) {
+	tdma := AssembleIdentifierUpdateTDMA(IdentifierUpdate{
+		ChannelID:   3,
+		BandwidthHz: 12500,
+		SpacingHz:   12_500,
+		BaseHz:      851_000_000,
+	})
+	if u := ParseIdentifierUpdateTDMA(tdma); !u.AccessTDMA {
+		t.Errorf("TDMA: AccessTDMA = false, want true")
+	}
+
+	fdma := AssembleIdentifierUpdate(IdentifierUpdate{
+		ChannelID: 4, SpacingHz: 12_500, BaseHz: 851_000_000,
+	})
+	if u := ParseIdentifierUpdate(fdma); u.AccessTDMA {
+		t.Errorf("FDMA 0x3D: AccessTDMA = true, want false")
+	}
+
+	vuhf := AssembleIdentifierUpdateVUHF(IdentifierUpdate{
+		ChannelID: 5, SpacingHz: 6_250, BaseHz: 460_000_000,
+	})
+	if u := ParseIdentifierUpdateVUHF(vuhf); u.AccessTDMA {
+		t.Errorf("VUHF 0x34: AccessTDMA = true, want false")
+	}
+}
+
+// TestBandPlanIsTDMA round-trips a TDMA IdentifierUpdate through Apply
+// and confirms IsTDMA reports true only for channel IDs advertised via
+// opcode 0x33. Unknown IDs return false (no false positives), and FDMA
+// slots return false even when they are Known.
+func TestBandPlanIsTDMA(t *testing.T) {
+	bp := &BandPlan{}
+	bp.Apply(IdentifierUpdate{
+		ChannelID: 1, SpacingHz: 12_500, BaseHz: 851_000_000, AccessTDMA: true,
+	})
+	bp.Apply(IdentifierUpdate{
+		ChannelID: 2, SpacingHz: 12_500, BaseHz: 851_500_000, // AccessTDMA defaults to false
+	})
+
+	if !bp.IsTDMA(1) {
+		t.Error("IsTDMA(1) = false, want true (TDMA slot)")
+	}
+	if bp.IsTDMA(2) {
+		t.Error("IsTDMA(2) = true, want false (FDMA slot)")
+	}
+	if bp.IsTDMA(7) {
+		t.Error("IsTDMA(7) = true on unknown ID, want false")
+	}
+	if bp.IsTDMA(99) {
+		t.Error("IsTDMA(99) = true on out-of-range ID, want false")
 	}
 }

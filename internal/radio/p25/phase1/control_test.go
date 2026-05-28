@@ -326,6 +326,79 @@ func TestControlChannelAppliesVUHFIdentifierUpdateAndPublishesGrant(t *testing.T
 	}
 }
 
+// TestControlChannelRoutesTDMAChannelGrantAsPhase2 confirms the fix
+// for issue #376: when the Phase 1 CC has accepted an IdentifierUpdate
+// for a Phase 2 TDMA channel (opcode 0x33), a subsequent voice grant
+// on that channel ID must publish with Protocol="p25-phase2" + a
+// populated P25Phase2Decode so the voice composer routes the call
+// into the Phase 2 MAC dispatch path. Before this fix, all Phase 1 CC
+// grants — including TDMA ones — published Protocol="p25", the
+// composer never entered runP25Phase2VoiceChain, and PR #409's MAC
+// PDU dispatch was dead code on MMR-class hybrid systems.
+func TestControlChannelRoutesTDMAChannelGrantAsPhase2(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	identTSBK := TSBK{LB: false, Opcode: OpIdentifierUpdateTDMA}
+	identTSBK.Payload = AssembleIdentifierUpdateTDMA(IdentifierUpdate{
+		ChannelID:   1,
+		BandwidthHz: 12_500,
+		SpacingHz:   12_500,
+		BaseHz:      851_000_000,
+	})
+
+	grantPayload := [8]byte{
+		0xC0,                  // service options: emergency + encrypted
+		(1 << 4) | 0x00, 0x10, // channel = ID 1, number 0x010 (=16)
+		0x12, 0x34,
+		0xAB, 0xCD, 0xEF,
+	}
+	grantTSBK := TSBK{LB: true, Opcode: OpGroupVoiceChannelGrant, Payload: grantPayload}
+
+	stream1 := buildLockedStreamWithTSBK(10, 0x293, DUIDTrunkingSignaling, identTSBK)
+	stream2 := buildLockedStreamWithTSBK(0, 0x293, DUIDTrunkingSignaling, grantTSBK)
+
+	cc := New(Options{
+		Bus:                bus,
+		SystemName:         "MMR",
+		FrequencyHz:        851_000_000,
+		P25Phase2Trellis:   1, // TrellisOn
+		P25Phase2Scrambler: 1, // ScramblerOn
+		Now:                func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	cc.Process(stream1, 0)
+	cc.Process(stream2, len(stream1))
+
+	var got *trunking.Grant
+	deadline := time.After(time.Second)
+	for got == nil {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindGrant {
+				g := ev.Payload.(trunking.Grant)
+				got = &g
+			}
+		case <-deadline:
+			t.Fatal("no grant event published")
+		}
+	}
+
+	if got.Protocol != "p25-phase2" {
+		t.Errorf("Protocol = %q, want %q", got.Protocol, "p25-phase2")
+	}
+	if got.P25Phase2Decode.Trellis != 1 {
+		t.Errorf("P25Phase2Decode.Trellis = %d, want 1 (TrellisOn)", got.P25Phase2Decode.Trellis)
+	}
+	if got.P25Phase2Decode.Scrambler != 1 {
+		t.Errorf("P25Phase2Decode.Scrambler = %d, want 1 (ScramblerOn)", got.P25Phase2Decode.Scrambler)
+	}
+	if got.FrequencyHz != 851_200_000 {
+		t.Errorf("FrequencyHz = %d, want 851_200_000", got.FrequencyHz)
+	}
+}
+
 // TestControlChannelLocksAndGrantsAcrossSmallChunks feeds a two-frame
 // stream (IdentifierUpdate then GroupVoiceChannelGrant) through Process
 // in 19-dibit batches — the dibit count a real RTL-SDR's 16 KiB USB
