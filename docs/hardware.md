@@ -377,8 +377,11 @@ out-of-band and the engine binds a physical `role: voice` SDR
 instead — if one is configured. So a typical mixed setup keeps a
 single physical voice SDR around as the spillover fallback while the
 wideband dongle handles the in-window majority. With no physical
-voice SDR present, out-of-window grants drop with the standard
-"no voice device available" log (issue #379).
+voice SDR present, out-of-window grants are dropped and the daemon
+logs a one-shot warning that the grant frequency falls outside every
+voice device's tuning window — widen `sample_rate` or move
+`center_freq_hz` so the repeaters fit, or add a `role: voice` SDR to
+cover the spillover (issues #379, #422).
 
 CPU is roughly linear in `voice_taps`: each tap runs one NCO mixer +
 polyphase resampler at the SDR rate during its call's lifetime;

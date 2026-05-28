@@ -163,13 +163,17 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 // state. Up to four resets per Open with exponential backoff
 // (200ms / 400ms / 800ms / 1200ms) between the failing attempt and
 // the next retry — gives the WinUSB stack and device firmware time
-// to settle before the next bring-up pass. Issue #395 surfaced a
-// reporter on v0.2.4 whose dongle still failed all three attempts
-// of the prior 3-attempt / 100ms+200ms envelope, so this widens
-// both the attempt count and the per-attempt settle window while
-// keeping healthy opens at zero delay (attempt 0 succeeds, no sleep
-// runs). Worst-case open delay for a permanently-broken dongle is
-// ~2.6s of sleep plus the per-reset rebind cost.
+// to settle before the next bring-up pass. Worst-case open delay
+// for a permanently-broken dongle is ~2.6s of sleep plus the
+// per-reset rebind cost.
+//
+// Inter-attempt backoff is the wrong tool for the issue #395
+// failure mode (warmup OK → step 0 immediately fails with
+// ERROR_GEN_FAILURE because the dongle's firmware can't handle the
+// back-to-back identical write at WinUSB-syscall speed); that's
+// handled inside runBringup via warmupSettleDuration before the
+// first attempt even runs.
+//
 // Non-resetable errors (validation failures, ErrClosed) return
 // immediately — reset is the wrong hammer for them.
 func openDevice(transport usb.Transport, desc usb.Descriptor, idx int) (*Device, error) {
@@ -249,19 +253,44 @@ func openDevice(transport usb.Transport, desc usb.Descriptor, idx int) (*Device,
 // the resampler's power-on default happens to be.
 const defaultOpenSampleRateHz uint32 = 2_048_000
 
+// warmupSettleDuration is the gap inserted between the WarmupUSBSysctl
+// probe and the first InitBaseband write — both of which target
+// (block=USB, addr=USBSysctl, val=0x09) on the wire. librtlsdr emits
+// the same byte-identical pair through libusb on every OS, but
+// libusb's WinUSB backend has multiple stack layers (libusb-1.0.dll
+// → winusb.dll → WinUSB.sys) and naturally spaces those two writes
+// by hundreds of microseconds. GopherTrunk's direct
+// procWinUsbControlTransfer.Call path is several layers thinner, so
+// on some clone dongles the second identical write arrives while the
+// firmware is still processing the first and gets NAK'd with
+// ERROR_GEN_FAILURE (issue #395). 10 ms is enough headroom for the
+// observed clone firmware to settle without being noticeable on
+// healthy hardware. The Linux / macOS USBDEVFS / IOKit paths have
+// their own per-transfer overhead, so the cost is functionally only
+// paid once per Open on every platform.
+//
+// It's a var rather than a const so tests can override it; production
+// callers must treat it as read-only.
+var warmupSettleDuration = 10 * time.Millisecond
+
 // runBringup executes the librtlsdr-parity init sequence on a fresh
-// Demod: USB-sysctl warmup probe → baseband init → tuner detect →
-// R820T-family demod prep (no-op for other tuners) → tuner.Init →
-// IF-freq programming (R820T-family programs its own IF inside
-// PrepareDemod, so non-R82xx tuners use the demod-side path) →
-// default sample-rate program (librtlsdr parity; see issue #275).
-// Returns the initialized tuner on success. All errors are wrapped
-// with a stage prefix so the outer openDevice can spot resetable
-// EPIPE / ErrDeviceGone via errors.Is.
+// Demod: USB-sysctl warmup probe → warmupSettleDuration sleep →
+// baseband init → tuner detect → R820T-family demod prep (no-op for
+// other tuners) → tuner.Init → IF-freq programming (R820T-family
+// programs its own IF inside PrepareDemod, so non-R82xx tuners use
+// the demod-side path) → default sample-rate program (librtlsdr
+// parity; see issue #275). Returns the initialized tuner on success.
+// All errors are wrapped with a stage prefix so the outer openDevice
+// can spot resetable EPIPE / ErrDeviceGone via errors.Is.
 func runBringup(demod *rtl2832u.Demod) (tuners.Tuner, error) {
 	if err := demod.WarmupUSBSysctl(); err != nil {
 		return nil, fmt.Errorf("rtlsdr: USB warmup: %w%s", err, tunerBringupHint(err))
 	}
+	// The first write inside InitBaseband is byte-identical to the
+	// warmup probe — give the dongle's firmware a moment to settle
+	// before re-sending it. See warmupSettleDuration above for the
+	// full reasoning (issue #395).
+	time.Sleep(warmupSettleDuration)
 	if err := demod.InitBaseband(); err != nil {
 		return nil, fmt.Errorf("rtlsdr: init baseband: %w%s", err, tunerBringupHint(err))
 	}
@@ -370,14 +399,15 @@ func tunerBringupHint(err error) string {
 			" See https://mattcheramie.github.io/GopherTrunk/install-linux.html#troubleshooting)"
 	}
 	if errors.Is(err, usb.ErrPipeStalled) {
-		return " (hint: the dongle's USB control pipe stalled on cold boot" +
-			" (Windows ERROR_GEN_FAILURE) — common with clone dongles or" +
-			" marginal USB power. If the automatic retry didn't recover," +
-			" unplug the dongle for 10 seconds and re-plug to clear the wedged" +
-			" firmware state, then re-run Zadig to confirm WinUSB is bound to" +
-			" interface 0, and try a different USB port (avoid hubs)." +
-			" Run `gophertrunk sdr doctor` to inspect the current driver binding." +
-			" If this keeps happening after a Windows sleep/resume, see issue #395." +
+		return " (hint: the dongle's USB control pipe stalled" +
+			" (Windows ERROR_GEN_FAILURE) — on Windows, the bring-up path" +
+			" already inserts a 10 ms settle between the warmup probe and" +
+			" the first InitBaseband write to absorb the clone-dongle" +
+			" firmware timing quirk reported in issue #395. If the failure" +
+			" persists, try a different USB controller (front vs rear ports" +
+			" often use different host controllers) and confirm" +
+			" `gophertrunk sdr doctor` reports WinUSB bound to interface 0." +
+			" Avoid USB hubs and powered extension cables." +
 			" See https://mattcheramie.github.io/GopherTrunk/install-linux.html#troubleshooting)"
 	}
 	return ""

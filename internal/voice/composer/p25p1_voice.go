@@ -65,6 +65,18 @@ func (c *Composer) runP25Phase1VoiceChain(ctx context.Context, serial string, iq
 
 	mode := c.resolveP25Phase1DemodMode(serial, demodMode)
 
+	// Surface the resolved demod mode + sample rates once per call so an
+	// operator can confirm from logs that voice grants are running the
+	// same demod mode the CC pipeline already prints at startup
+	// (ccdecoder: p25/phase1 pipeline configured demod=…). Issue #356
+	// follow-up: a field log showed the CC locked on cqpsk but gave no
+	// way to verify the voice chain wasn't silently still on c4fm.
+	// Mirrors the Phase 2 chain's "composer: p25p2 voice chain started"
+	// line.
+	c.log.Info("composer: p25p1 voice chain started",
+		"serial", serial, "demod_mode", mode,
+		"iq_rate_hz", iqHz, "symbol_rate_hz", symbolHz)
+
 	// Front-end LPF: doubles as the anti-aliasing filter for the
 	// decimation, so it is only needed when the IQ is actually
 	// decimated (decim == 1 only in tests that feed IQ already at the

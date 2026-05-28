@@ -40,7 +40,7 @@ this exist? Read **[The Story of GopherTrunk](https://gophertrunk.org/story.html
 
 ```sh
 # Linux x86_64 — see https://gophertrunk.org/downloads.html for macOS, Windows, ARM64.
-VERSION=v0.2.4
+VERSION=v0.2.5
 curl -L -o gophertrunk.tar.gz \
   https://github.com/MattCheramie/GopherTrunk/releases/download/${VERSION}/gophertrunk-${VERSION}-linux-amd64.tar.gz
 tar xzf gophertrunk.tar.gz && cd gophertrunk-${VERSION}-linux-amd64
@@ -73,12 +73,27 @@ Silicon and Intel. Full per-OS recipes at
   See [docs/pocsag.md](docs/pocsag.md).
 - **APRS / AX.25 packet** — end-to-end pipeline for the
   amateur-radio APRS metadata bus (position beacons, messages,
-  bulletins, status). Bell-202 AFSK DSP frontend (FM demod →
-  FFSK tone discriminator → symbol-time recovery → NRZI →
-  HDLC framer), AX.25 frame parser with CRC-16-CCITT, APRS
-  info-field decoders, plus `events.KindAPRSPacket` bus event,
-  SQLite `aprs_log`, `GET /api/v1/aprs/packets`, and `/aprs`
-  web panel. See [docs/aprs.md](docs/aprs.md).
+  bulletins, status, Mic-E mobile-tracker compressed format).
+  Bell-202 AFSK DSP frontend (FM demod → FFSK tone discriminator
+  → symbol-time recovery → NRZI → HDLC framer), AX.25 frame
+  parser with CRC-16-CCITT, APRS info-field decoders including
+  full Mic-E (lat/lon, speed, course, altitude, message code),
+  plus `events.KindAPRSPacket` bus event, SQLite `aprs_log`,
+  `GET /api/v1/aprs/packets`, and `/aprs` web panel.
+  See [docs/aprs.md](docs/aprs.md).
+- **AIS marine** — end-to-end pipeline for the Automatic
+  Identification System every commercial vessel broadcasts on
+  marine VHF 87B / 88B (161.975 / 162.025 MHz). 9600 Bd GMSK DSP
+  frontend (FM demod → GFSK matched filter at BT = 0.4 →
+  symbol-time recovery → NRZI → HDLC framer → CRC-CCITT
+  validation), ITU-R M.1371-5 message-type dispatch (Class A
+  position reports 1/2/3, Class B 18 + 19 extended, base-station
+  4, static + voyage 5, Class B static 24 A + B), signed-integer
+  lat/lon decoder (1/600000 minute resolution), 6-bit ASCII text
+  fields (vessel name, call-sign, destination), spec
+  "not-available" sentinels. Plus `events.KindAISMessage` bus
+  event, SQLite `vessel_log`, `GET /api/v1/ais/vessels`, and
+  `/ais` web panel. See [docs/ais.md](docs/ais.md).
 - **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25
   Phase 2 / DMR) vocoders in Go, no DVSI / mbelib dependency.
   Per-call WAV + raw-frame sidecars; live PCM playback via direct

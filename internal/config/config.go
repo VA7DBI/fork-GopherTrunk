@@ -28,6 +28,7 @@ type Config struct {
 	Baseband   BasebandConfig   `yaml:"baseband"`
 	Paging     PagingConfig     `yaml:"paging"`
 	APRS       APRSConfig       `yaml:"aprs"`
+	AIS        AISConfig        `yaml:"ais"`
 }
 
 // APRSConfig configures the APRS / AX.25 Bell-202 AFSK receiver.
@@ -56,6 +57,34 @@ type APRSChannelConfig struct {
 	FrequencyHz uint32 `yaml:"frequency_hz"`
 	DropBadFCS  bool   `yaml:"drop_bad_fcs"`
 	DropNonUI   bool   `yaml:"drop_non_ui"`
+}
+
+// AISConfig configures the marine-AIS GMSK receiver. Each entry
+// pins an SDR to one of the AIS channels (87B = 161.975 MHz,
+// 88B = 162.025 MHz — class A vessels alternate between them
+// every second) and runs the DSP frontend (FM demod → GFSK
+// matched filter → symbol-timing recovery → NRZI decode → HDLC
+// framer → ITU-R M.1371-5 message parser) against its full IQ
+// stream. Decoded messages publish on events.KindAISMessage;
+// storage.VesselLog persists them, the REST endpoint at
+// /api/v1/ais/vessels and the /ais web panel render them.
+type AISConfig struct {
+	Channels []AISChannelConfig `yaml:"channels"`
+}
+
+// AISChannelConfig describes one AIS channel to decode. Serial
+// picks the SDR; the daemon tunes it to FrequencyHz and runs the
+// GMSK receiver against its full IQ stream. Most operators pin
+// one SDR to 161.975 (channel 87B) and another to 162.025 (88B)
+// to catch both halves of the class-A alternation; one channel
+// is enough for class-B-only or quiet-area monitoring. The
+// DropBadFCS and DropNonPosition toggles match the receiver's
+// options.
+type AISChannelConfig struct {
+	Serial          string `yaml:"serial"`
+	FrequencyHz     uint32 `yaml:"frequency_hz"`
+	DropBadFCS      bool   `yaml:"drop_bad_fcs"`
+	DropNonPosition bool   `yaml:"drop_non_position"`
 }
 
 // PagingConfig configures pager decoders (POCSAG today, FLEX

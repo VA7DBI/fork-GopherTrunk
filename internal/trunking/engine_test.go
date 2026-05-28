@@ -403,10 +403,16 @@ loop:
 	}
 }
 
+// TestEngineWatchdogTimesOutSilentCall covers the true silent-decode
+// failure mode: a call that never received any frames (LastHeardAt
+// stayed at StartedAt) must reap as EndReasonTimeout — the
+// operator-actionable signal that the chain is broken.
 func TestEngineWatchdogTimesOutSilentCall(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
 	pool, _ := mkPool(1)
+	sub := bus.Subscribe()
+	defer sub.Close()
 	now := time.Unix(1000, 0)
 	clock := &fakeClock{t: now}
 	e, _ := NewEngine(EngineOptions{
@@ -428,6 +434,174 @@ func TestEngineWatchdogTimesOutSilentCall(t *testing.T) {
 	e.runWatchdog()
 	if got := e.ActiveCalls(); len(got) != 0 {
 		t.Errorf("watchdog should have ended the call; active = %+v", got)
+	}
+
+	// Reason must be EndReasonTimeout — no Touch ever fired, so
+	// LastHeardAt is still equal to StartedAt.
+	end := drainCallEnd(t, sub, 500*time.Millisecond)
+	if end.Reason != EndReasonTimeout {
+		t.Errorf("CallEnd.Reason = %v, want EndReasonTimeout (no frames decoded)", end.Reason)
+	}
+}
+
+// TestEngineWatchdogReapsTouchedCallAsNormal covers the carrier-drop
+// natural-end case: a call that received at least one Touch (an LDU
+// was decoded) but then went quiet must reap as EndReasonNormal, not
+// EndReasonTimeout. P25 trunking has no explicit channel-release on
+// the CC for most calls, so this watchdog path IS how a healthy call
+// ends — the operator-visible "timeout" label was a terminology bug
+// that made v2maldo's field report read as a decode failure when the
+// decode was actually working (issue #356 follow-up).
+func TestEngineWatchdogReapsTouchedCallAsNormal(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	pool, _ := mkPool(1)
+	sub := bus.Subscribe()
+	defer sub.Close()
+	clock := &fakeClock{t: time.Unix(1000, 0)}
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 1 * time.Second,
+		Now:         clock.Now,
+	})
+
+	e.HandleGrant(Grant{GroupID: 200, FrequencyHz: 852_000_000})
+	if len(e.ActiveCalls()) != 1 {
+		t.Fatal("call did not start")
+	}
+	serial := e.ActiveCalls()[0].Device.Serial
+
+	// Simulate the composer delivering frames: advance the clock,
+	// fire Touch (mirrors what runP25Phase1VoiceChain does when the
+	// receiver's LDU sink fires). Then advance past the grace window
+	// without any further Touch and run the watchdog.
+	clock.t = clock.t.Add(100 * time.Millisecond)
+	e.Touch(serial)
+	clock.t = clock.t.Add(2 * time.Second)
+	e.runWatchdog()
+
+	if got := e.ActiveCalls(); len(got) != 0 {
+		t.Errorf("watchdog should have ended the call; active = %+v", got)
+	}
+	end := drainCallEnd(t, sub, 500*time.Millisecond)
+	if end.Reason != EndReasonNormal {
+		t.Errorf("CallEnd.Reason = %v, want EndReasonNormal (frames received then carrier dropped)", end.Reason)
+	}
+}
+
+// drainCallEnd pulls events off sub until it sees a CallEnd or the
+// deadline fires. Tests use it to assert the reason published with a
+// natural-end / silent-timeout reap.
+func drainCallEnd(t *testing.T, sub *events.Subscription, deadline time.Duration) CallEnd {
+	t.Helper()
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	for {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindCallEnd {
+				ce, ok := ev.Payload.(CallEnd)
+				if !ok {
+					t.Fatalf("CallEnd payload type = %T", ev.Payload)
+				}
+				return ce
+			}
+		case <-timer.C:
+			t.Fatalf("no CallEnd event within %v", deadline)
+		}
+	}
+}
+
+// TestEngineHandleGrantDeduplicatesDuplicateGrant covers the issue
+// #356 follow-up where the Phase 1 CC repeats voice-grant TSBKs while
+// the call is active. Before the dedup, the engine bound a second
+// voice SDR to the same TG/freq, producing duplicate WAV files and
+// tying up a tuner the operator needed for other grants. After the
+// fix the second grant refreshes the existing bind's LastHeardAt
+// (treating the repeat as the CC re-asserting "this call is still
+// going") and does not allocate a second device.
+func TestEngineHandleGrantDeduplicatesDuplicateGrant(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	pool, tuners := mkPool(2)
+	clock := &fakeClock{t: time.Unix(1000, 0)}
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 5 * time.Second,
+		Now:         clock.Now,
+	})
+
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	g := Grant{System: "X", Protocol: "p25", GroupID: 32181, FrequencyHz: 773_431_250}
+	e.HandleGrant(g)
+	if got := len(e.ActiveCalls()); got != 1 {
+		t.Fatalf("first grant: active calls = %d, want 1", got)
+	}
+	firstHeard := e.ActiveCalls()[0].LastHeardAt
+	firstDevice := e.ActiveCalls()[0].Device.Serial
+
+	// Advance the clock so the dedup's Touch produces a distinguishable
+	// LastHeardAt and fire the identical grant. The second call must
+	// not allocate device #2 — only one tuner should ever be retuned.
+	clock.t = clock.t.Add(20 * time.Millisecond)
+	e.HandleGrant(g)
+
+	if got := len(e.ActiveCalls()); got != 1 {
+		t.Fatalf("after duplicate grant: active calls = %d, want 1", got)
+	}
+	if got := e.ActiveCalls()[0].Device.Serial; got != firstDevice {
+		t.Errorf("duplicate grant rebound device: got %q, want %q", got, firstDevice)
+	}
+	if got := e.ActiveCalls()[0].LastHeardAt; !got.After(firstHeard) {
+		t.Errorf("duplicate grant did not refresh LastHeardAt: got %v, want >%v", got, firstHeard)
+	}
+	// Verify the second device was never touched.
+	for i, tn := range tuners {
+		if i == 0 {
+			continue
+		}
+		if got := tn.tuned(); len(got) != 0 {
+			t.Errorf("device %d was retuned on duplicate grant: tuned=%v", i, got)
+		}
+	}
+
+	// Drain the bus and confirm exactly one CallStart was published —
+	// the second grant must not emit a second start event.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	starts := 0
+	for time.Now().Before(deadline) {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindCallStart {
+				starts++
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if starts != 1 {
+		t.Errorf("CallStart events = %d, want 1", starts)
+	}
+}
+
+// TestEngineHandleGrantAllowsDifferentFrequencyGrants is the
+// complement guard for the dedup: a same-TG grant on a different
+// frequency (rare but legitimate — e.g. site rebind on multi-site
+// systems) must NOT be suppressed.
+func TestEngineHandleGrantAllowsDifferentFrequencyGrants(t *testing.T) {
+	e, _, bus, _ := mkEngine(t, 2)
+	defer bus.Close()
+
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 100, FrequencyHz: 851_000_000})
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 100, FrequencyHz: 852_000_000})
+
+	if got := len(e.ActiveCalls()); got != 2 {
+		t.Errorf("active calls = %d, want 2 (different frequencies)", got)
 	}
 }
 
@@ -653,6 +827,100 @@ func TestEngineHandleCallSourceUpdateUnknownDeviceDoesNotPanic(t *testing.T) {
 		DeviceSerial: "no-such-device",
 		SourceID:     999,
 	})
+}
+
+func TestEngineWidebandOnlyOutOfWindowGrantWarnsNotEngineBug(t *testing.T) {
+	// Issue #422 follow-up: a wideband-only pool (one frequency-
+	// constrained tap, no physical voice SDR) that receives a grant
+	// outside its IQ window must not log the misleading "voice pool
+	// full but no actives (engine bug)" Error. It's a coverage gap:
+	// warn once, drop the rest at DEBUG.
+	bus := events.NewBus(8)
+	defer bus.Close()
+	tap := &constrainedTuner{lo: 851_000_000, hi: 852_000_000}
+	pool := NewVoicePool([]*VoiceDevice{{Tuner: tap, Serial: "wb:dev:tap-0"}})
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	e, err := NewEngine(EngineOptions{
+		Bus: bus, Log: log, VoicePool: pool, Talkgroups: NewTalkgroupDB(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 900 MHz is outside the tap's [851, 852] MHz window.
+	g := Grant{System: "X", Protocol: "p25", GroupID: 1, FrequencyHz: 900_000_000}
+	e.HandleGrant(g)
+	e.HandleGrant(g)
+	e.HandleGrant(g)
+
+	out := buf.String()
+	if strings.Contains(out, "engine bug") || strings.Contains(out, "voice pool full but no actives") {
+		t.Errorf("out-of-window grant mislogged as engine bug:\n%s", out)
+	}
+	if c := strings.Count(out, "level=WARN"); c != 1 {
+		t.Errorf("expected exactly one WARN, got %d:\n%s", c, out)
+	}
+	if !strings.Contains(out, "outside every voice device") {
+		t.Errorf("expected actionable coverage WARN:\n%s", out)
+	}
+	if c := strings.Count(out, `msg="dropping grant: no voice device covers frequency"`); c != 3 {
+		t.Errorf("expected 3 DEBUG drops, got %d:\n%s", c, out)
+	}
+	// The tap must never have been retuned to the out-of-window freq.
+	if len(tap.freqs) != 0 {
+		t.Errorf("constrained tap should not have been retuned, got %v", tap.freqs)
+	}
+}
+
+func TestEnginePreemptsFrequencyCapableDeviceNotLowestPriority(t *testing.T) {
+	// Issue #422 follow-up: preemption must target a device that can
+	// actually tune the incoming grant. Here the globally lowest-
+	// priority call sits on a wideband tap whose window excludes the
+	// grant; the engine must instead preempt the (higher-priority but
+	// frequency-capable) physical SDR, leaving the tap's call intact.
+	bus := events.NewBus(8)
+	defer bus.Close()
+	tap := &constrainedTuner{lo: 851_000_000, hi: 852_000_000}
+	phys := &fakeVoiceTuner{}
+	pool := NewVoicePool([]*VoiceDevice{
+		{Tuner: tap, Serial: "wb:dev:tap-0"}, // listed first; preferred in-window
+		{Tuner: phys, Serial: "phys-voice"},
+	})
+	e, err := NewEngine(EngineOptions{
+		Bus: bus, VoicePool: pool, Talkgroups: NewTalkgroupDB(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.talkgroups.Add(&TalkGroup{ID: 200, Priority: 9}) // tap call: lowest priority
+	e.talkgroups.Add(&TalkGroup{ID: 100, Priority: 5}) // phys call
+	e.talkgroups.Add(&TalkGroup{ID: 300, Priority: 1}) // incoming: high priority
+
+	// Bind the tap with an in-window call (group 200).
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 200, FrequencyHz: 851_500_000})
+	// Bind the physical SDR with an out-of-tap-window call (group 100).
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 100, FrequencyHz: 900_000_000})
+	// Incoming high-priority grant at 900 MHz — only the physical SDR
+	// can serve it. It must preempt the physical call (group 100), not
+	// the lower-priority tap call (group 200).
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 300, FrequencyHz: 900_000_001})
+
+	byGroup := map[uint32]*ActiveCall{}
+	for _, ac := range e.ActiveCalls() {
+		byGroup[ac.Grant.GroupID] = ac
+	}
+	if _, ok := byGroup[200]; !ok {
+		t.Error("tap's group-200 call should still be active (tap can't serve 900 MHz)")
+	}
+	if _, ok := byGroup[100]; ok {
+		t.Error("physical's group-100 call should have been preempted")
+	}
+	c300, ok := byGroup[300]
+	if !ok || c300.Device.Serial != "phys-voice" {
+		t.Errorf("incoming group-300 call should be bound to phys-voice, got %+v", c300)
+	}
 }
 
 func TestEngineEmptyVoicePoolWarnsOnceThenDebug(t *testing.T) {

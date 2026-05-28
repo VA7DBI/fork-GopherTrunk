@@ -47,6 +47,10 @@ vi.mock("./api/aprs", () => ({
   fetchAPRSPackets: vi.fn().mockResolvedValue([]),
 }));
 
+vi.mock("./api/ais", () => ({
+  fetchAISVessels: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("./api/bookmarks", () => ({
   bookmarks: {
     list: vi.fn().mockResolvedValue([]),

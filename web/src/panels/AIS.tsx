@@ -1,31 +1,30 @@
 import { useEffect, useState } from "react";
-import { fetchAPRSPackets, type APRSPacket } from "../api/aprs";
+import { fetchAISVessels, type AISMessage } from "../api/ais";
 import { selectClientConfig, useShared } from "../store/shared";
 
-// APRS panel — list of recent decoded APRS / AX.25 packets. Each
-// row shows the AX.25 envelope (src → dst + path), the decoded
-// APRS sub-type (position / message / status / bulletin / ...) and
-// a one-line summary body. Positions get a coordinate column;
-// CRC-failed frames are highlighted yellow.
+// AIS panel — list of recent decoded marine-AIS messages. Each row
+// shows the MMSI, the message-type tag, a short body summary, and
+// either lat/lon + SOG/COG (position-bearing types: 1/2/3/4/18/19)
+// or vessel-name / call-sign / destination (static types: 5/24).
 //
-// Polls /api/v1/aprs/packets every 5 s. Live SSE delivery via
-// KindAPRSPacket bus event is a follow-up once peer-edit churn
+// Polls /api/v1/ais/vessels every 5 s. Live SSE delivery via
+// KindAISMessage bus event is a follow-up once peer-edit churn
 // makes the poll cost visible.
 
 const POLL_INTERVAL_MS = 5_000;
 
-export function APRS() {
+export function AIS() {
   const cfg = useShared(selectClientConfig);
-  const [packets, setPackets] = useState<APRSPacket[]>([]);
+  const [messages, setMessages] = useState<AISMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancel = false;
     const refresh = async () => {
       try {
-        const list = await fetchAPRSPackets(cfg, 200);
+        const list = await fetchAISVessels(cfg, 200);
         if (cancel) return;
-        setPackets(list);
+        setMessages(list);
         setError(null);
       } catch (e) {
         if (cancel) return;
@@ -43,9 +42,9 @@ export function APRS() {
   return (
     <div className="space-y-3">
       <header className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">APRS</h2>
+        <h2 className="text-xl font-semibold">AIS</h2>
         <span className="text-xs text-muted">
-          {packets.length} packet{packets.length === 1 ? "" : "s"}
+          {messages.length} message{messages.length === 1 ? "" : "s"}
         </span>
       </header>
 
@@ -60,54 +59,62 @@ export function APRS() {
           <thead className="bg-surface text-muted">
             <tr>
               <th className="text-left px-3 py-1 font-normal w-24">Received</th>
-              <th className="text-left px-3 py-1 font-normal w-32">Src → Dst</th>
-              <th className="text-left px-3 py-1 font-normal w-24">Type</th>
+              <th className="text-left px-3 py-1 font-normal w-28">MMSI</th>
+              <th className="text-left px-3 py-1 font-normal w-28">Type</th>
               <th className="text-left px-3 py-1 font-normal">Body</th>
               <th className="text-right px-3 py-1 font-normal w-32">Lat / Lon</th>
+              <th className="text-right px-3 py-1 font-normal w-24">SOG / COG</th>
             </tr>
           </thead>
           <tbody>
-            {packets.length === 0 ? (
+            {messages.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-3 py-4 text-center text-muted">
-                  No APRS packets yet. Add an{" "}
-                  <code className="text-accent">aprs.channels</code>{" "}
-                  entry to your config (NA primary: 144.39 MHz · EU R1:
-                  144.800 MHz · JP: 144.64 MHz · ISS: 145.825 MHz) and
-                  decoded packets — position beacons, messages,
-                  bulletins, status, Mic-E — will land here as they
-                  arrive.
+                <td colSpan={6} className="px-3 py-4 text-center text-muted">
+                  No AIS messages yet. Add an{" "}
+                  <code className="text-accent">ais.channels</code>{" "}
+                  entry to your config (marine VHF 87B = 161.975 MHz · 88B =
+                  162.025 MHz) and decoded vessels — position reports,
+                  static + voyage data, base-station reports — will land
+                  here as they arrive.
                 </td>
               </tr>
             ) : (
-              packets.map((p) => (
+              messages.map((m) => (
                 <tr
-                  key={p.id}
+                  key={m.id}
                   className={
                     "border-t border-border/60 " +
-                    (p.fcs_ok ? "" : "bg-yellow-900/15")
+                    (m.fcs_ok ? "" : "bg-yellow-900/15")
                   }
                 >
                   <td className="px-3 py-1 font-mono text-muted">
-                    {formatTime(p.received_at)}
+                    {formatTime(m.received_at)}
                   </td>
                   <td className="px-3 py-1 font-mono">
-                    <span className="text-accent">{p.src}</span>
-                    <span className="text-muted"> → {p.dst}</span>
-                    {p.path && (
+                    <span className="text-accent">{m.mmsi}</span>
+                    {m.vessel_name && (
                       <div className="text-[10px] text-muted">
-                        via {p.path}
+                        {m.vessel_name}
                       </div>
                     )}
                   </td>
-                  <td className="px-3 py-1 uppercase">{p.type}</td>
+                  <td className="px-3 py-1 uppercase">{m.type}</td>
                   <td className="px-3 py-1">
-                    {p.body || <span className="text-muted">(no payload)</span>}
+                    {m.body || <span className="text-muted">(no payload)</span>}
                   </td>
                   <td className="px-3 py-1 text-right font-mono">
-                    {p.latitude || p.longitude ? (
+                    {m.has_position ? (
                       <span>
-                        {p.latitude?.toFixed(4)}, {p.longitude?.toFixed(4)}
+                        {m.latitude?.toFixed(4)}, {m.longitude?.toFixed(4)}
+                      </span>
+                    ) : (
+                      <span className="text-muted">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-1 text-right font-mono">
+                    {m.has_position && (m.sog || m.cog) ? (
+                      <span>
+                        {(m.sog ?? 0).toFixed(1)}kn / {(m.cog ?? 0).toFixed(0)}°
                       </span>
                     ) : (
                       <span className="text-muted">—</span>

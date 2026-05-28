@@ -9,6 +9,134 @@ for tagged releases.
 
 ### Added
 
+- **AIS DSP frontend + receiver glue — pipeline is now end-to-end.**
+  Second slice of Phase 5 AIS: `internal/radio/ais/receiver` is the
+  bit-stream orchestrator (HDLC framer → CRC-CCITT validation →
+  MSB-first bit unpack → `ais.Decode` → bus event); on top of it
+  `internal/radio/ais/gmsk` is the IQ-to-bits frontend (FM demod
+  → real resampler to 76,800 sps → GFSK matched filter at
+  BT = 0.4, span 4 symbols → Mueller-Müller symbol-timing
+  recovery → zero-threshold slicer → NRZI decode → `receiver.Push`).
+  New top-level `ais.channels` config schema mirroring
+  `aprs.channels` (serial, frequency_hz, drop_bad_fcs,
+  drop_non_position). The daemon constructs one `gmsk.Receiver`
+  per entry, subscribes each to its SDR's iqtap broker via the
+  standard spawn closure, and the AIS pipeline goes live the
+  moment an operator pins one SDR to 161.975 (channel 87B) or
+  162.025 (88B). Same `Inner()` accessor for frame-counter
+  metrics that `aprs/afsk` exposes. The bit-stream layer
+  validates the same HDLC FCS algorithm AX.25 uses (reflected
+  polynomial 0x8408, init 0xFFFF, final XOR 0xFFFF) — AIS
+  inherits the link-layer conventions verbatim per
+  ITU-R M.1371-5 §4.2. End-to-end synthetic test drives a real
+  AIVDM type-1 payload (gpsd canonical sample, lat 37.802 N,
+  lon -122.342 W, MMSI 366053209) through `buildAISFrame` →
+  `wrapHDLC` → `Receiver.Push` and asserts the bus event
+  carries the correct MMSI + decoded position. 9 new bit-stream
+  tests + 8 new DSP tests, all passing.
+
+- **AIS marine — protocol layer + bus / storage / REST / panel
+  scaffolding.** First slice of Phase 5 AIS: every SOLAS-covered
+  vessel (passenger ships, tankers, cargo > 300 GT) broadcasts an
+  AIS position every 2-10 s on marine VHF channels 87B / 88B
+  (161.975 / 162.025 MHz) — free wide-area positional data
+  GopherTrunk now has the protocol layer to decode. New
+  `internal/radio/ais` package decodes the operator-visible
+  majority of ITU-R M.1371-5 message types: Class A position
+  reports (types 1/2/3, layout in §3.3.1), Class B position
+  reports (type 18), Class B extended (type 19), base-station
+  reports (type 4), static + voyage data (type 5: vessel name,
+  IMO, call-sign, destination, ETA, ship type, dimensions), and
+  Class B static data (type 24 Parts A + B). MSB-first
+  bit-field readers (`readBitsUint`, `readBitsInt` with proper
+  two's-complement sign-extension) decode the spec's signed
+  lat/lon (28-bit longitude, 27-bit latitude, 1/600000 minute
+  resolution). The 6-bit ASCII text table (M.1371-5 Table 47)
+  unpacks vessel-name / call-sign / destination fields with
+  trailing-padding stripped. Spec "not available" sentinels
+  (lat 91°, lon 181°) collapse the `HasPosition` flag.
+  New `events.KindAISMessage` event + `storage.AISMessage`
+  payload + `vessel_log` SQLite table (one row per decoded
+  message, indexed on `(received_at)` and
+  `(mmsi, received_at)`). `storage.VesselLog` subscriber drains
+  the bus and writes one row per message; the daemon spawns it
+  alongside `aprsLog` / `pagerLog`. New REST endpoint
+  `GET /api/v1/ais/vessels?limit=N` (default 200, max 5000) and
+  web panel `/ais` with columns Received / MMSI / Type / Body /
+  Lat-Lon / SOG-COG. Static-data rows show vessel name + call-
+  sign + destination; position-data rows show lat/lon + SOG /
+  COG. CRC-failed messages highlight yellow. Decoder validated
+  against the gpsd AIVDM canonical samples (Class A position
+  matches lat 37.802118 N, lon -122.341618 W; static-voyage
+  decodes a non-empty vessel name + call-sign).
+  Tests: 14 protocol-layer (bit-readers, sign-extension, 6-bit
+  ASCII table, type dispatch, AIVDM round-trip for types 1, 18,
+  5, "not available" sentinel handling, hex round-trip), 4
+  storage (insert / static / filter / order), 3 REST (503 / list
+  / limit), 4 web (empty / position / static / error). All
+  passing.
+- DSP frontend (9600 Bd GMSK + HDLC framer) follows as the next
+  slice. See [docs/ais.md](docs/ais.md).
+
+## [v0.2.5] — 2026-05-28
+
+Issue #376 follow-up (Motorola MMR P25 talker alias) closes end-to-end +
+Phase-5 (APRS) goes live + issue #402 (RTL-SDR DC-spike on P25 control)
+three-phase investigation. The Motorola MMR talker-alias path now lands:
+#397 ports Motorola's vendor LCO 0x15 / 0x17 form for Phase 1 voice
+channels (the standard TIA-102.AABF form #389 implemented doesn't match
+what real MMR systems emit), #403 dispatches MAC PDUs on the Phase 2
+voice chain so MMR Phase 2 talker-alias decodes too, and #409 backfills
+source RID + ALGID / KID encryption from the voice channel by parsing
+`GROUP_VOICE_CHANNEL_USER_ABBREVIATED` (opcode 0x01, previously
+mis-named `OpMACPTT` and silently discarded). APRS reaches end-to-end
+live: #401 adds the HDLC framer + receiver glue, #411 wires the
+Bell-202 AFSK DSP frontend (IQ → FM → real resample → tone
+discriminator → Mueller-Müller timing → NRZI → HDLC → AX.25 + APRS
+info-field → events bus), so configuring `aprs.channels` with a serial
++ frequency lights up the bus, SQLite log, REST endpoint, and `/aprs`
+web panel from #384 / #390. Issue #402 (RTL-SDR DC-spike pulls the
+P25 control-channel offset estimator into the spike) lands in three
+slices: #406 adds CCStats + per-sample recording-power diagnostics,
+#408 mirrors the replay path through the production DDC and adds
+state-evolution diagnostics, and #412 swaps in a decision-directed AFC
+that defeats data-DC integration. Plus: #399 makes the P25 Phase 1
+voice composer honour `trunking.systems[].p25_phase1_demod_mode` so
+simulcast / LSM grants don't silently fail on FM-discriminator
+hardcode; #398 widens the Windows RTL-SDR cold-boot recovery envelope
+to 5 attempts with 200 / 400 / 800 / 1200 ms backoff and 150 ms
+WinUSB settle (issue #395); #400 surfaces two silent-degradation
+paths at startup (no `gain:` configured per SDR, conventional tone
+gating with zero `sdr.sample_rate`); #413 routes Phase 1 TDMA-channel
+grants to the Phase 2 voice chain; #407 promotes Motorola patch
+member talkgroups over the super-group in CC Activity (issue #405);
+and #396 adds a Markdown blog with per-category archives, RSS, and
+SEO meta to the Pages site.
+
+### Added
+
+- **APRS Mic-E decoder.** Mobile-tracker packets (Kenwood TH-D74,
+  Yaesu FT-3D, vehicle trackers) compressed-encode position +
+  speed + course + altitude + a 3-bit message code across the
+  7-byte AX.25 destination address and a 9-byte info field — a
+  third the size of an uncompressed beacon, which is why every
+  mobile tracker emits it. `aprs.DecodeWithDst(info, dst)` walks
+  the Table 10.5 destination-char encoding (six latitude digits +
+  message bits + N/S + lon-offset + W/E), then the §10.4
+  speed/course interleaved encoding with the standard 800/400
+  wrap corrections, then the optional base-91 `XXX}` altitude
+  marker. Resulting `MicE` carries Latitude / Longitude / Speed
+  (knots) / Course (deg) / SymbolTable / SymbolCode / MessageCode
+  (`"M3 Returning"`, `"Emergency"`, custom-code variants) /
+  Standard (std vs custom range) / Altitude (m) / HasAltitude /
+  Comment. Latitude + Longitude also surface through the standard
+  `Position` field so the storage row, the `/api/v1/aprs/packets`
+  payload, and the `/aprs` panel pick the coordinates up without
+  special-casing Mic-E. The bit-stream orchestrator
+  (`aprs/receiver`) calls `DecodeWithDst` with the AX.25
+  destination call so the path is wired end-to-end. Spec: APRS
+  Protocol Reference 1.0.1 §10. Refreshes the `/aprs` panel
+  empty-state copy now that the DSP frontend has shipped.
 - **APRS DSP frontend — pipeline is now end-to-end.** Fifth and
   load-bearing slice of Phase 5 (#365 plan): the
   `internal/radio/aprs/afsk` package wires an `afsk.Receiver`

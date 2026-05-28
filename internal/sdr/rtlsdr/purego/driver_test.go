@@ -6,6 +6,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/usb"
 )
@@ -211,6 +212,55 @@ func TestOpenDevice_WarmupSucceedsFirstTry(t *testing.T) {
 	}
 }
 
+// Regression for issue #395: WarmupUSBSysctl and the first InitBaseband
+// write are byte-identical (BlockUSB / USBSysctl / 0x09). On Windows
+// through the direct WinUsb_ControlTransfer syscall this back-to-back
+// pair races some clone-dongle firmware and trips ERROR_GEN_FAILURE on
+// the second write. runBringup must sleep warmupSettleDuration between
+// the two transfers so the dongle has time to settle. The test asserts
+// the wall-clock gap from openDevice entry to the InitBaseband
+// terminator error is at least warmupSettleDuration, then restores
+// the original value (the test temporarily widens it to 75 ms so the
+// timing observation stays robust above scheduler noise).
+func TestOpenDevice_WarmupToInitBasebandSettle_Issue395(t *testing.T) {
+	original := warmupSettleDuration
+	warmupSettleDuration = 75 * time.Millisecond
+	t.Cleanup(func() { warmupSettleDuration = original })
+
+	m := usb.NewMockTransport()
+	m.Script = []usb.CtrlExchange{
+		warmupUSBSysctlExchange(nil),
+		// Fail the first InitBaseband write with ErrClosed (non-resetable)
+		// so openDevice unwinds immediately on attempt 0 — we just want
+		// to measure that the settle ran between the warmup and step 0.
+		{
+			In:       false,
+			BRequest: 0,
+			WValue:   0x2000,
+			WIndex:   uint16(1)<<8 | 0x10,
+			Data:     []byte{0x09},
+			Err:      usb.ErrClosed,
+		},
+	}
+	desc := usb.Descriptor{VID: 0x0bda, PID: 0x2838, Serial: "test-warmup-settle"}
+	start := time.Now()
+	_, err := openDevice(m, desc, 0)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("openDevice succeeded; expected init-baseband terminator to fail the test")
+	}
+	if !strings.Contains(err.Error(), "init baseband") {
+		t.Errorf("err = %v, want substring \"init baseband\" (proves warmup passed and InitBaseband ran)", err)
+	}
+	if elapsed < warmupSettleDuration {
+		t.Errorf("openDevice took %v, want >= warmupSettleDuration (%v) — the inter-transfer settle did not run", elapsed, warmupSettleDuration)
+	}
+	if m.ResetCalls != 0 {
+		t.Errorf("ResetCalls = %d, want 0 (the settle path must not invoke reset; the failure here is non-resetable ErrClosed)", m.ResetCalls)
+	}
+}
+
 // Regression for issue #248: when the warmup write returns EPIPE, the
 // driver must call transport.Reset, re-claim interface 0, and retry the
 // warmup once. The retry succeeds and openDevice proceeds — we again
@@ -392,7 +442,7 @@ func TestTunerBringupHint(t *testing.T) {
 		{
 			name:    "ErrPipeStalled_through_wrap",
 			err:     fmt.Errorf("winusb: device rejected request: %w", usb.ErrPipeStalled),
-			wantSub: []string{"control pipe stalled", "Zadig", "sdr doctor", "install-linux.html#troubleshooting"},
+			wantSub: []string{"control pipe stalled", "ERROR_GEN_FAILURE", "issue #395", "sdr doctor", "install-linux.html#troubleshooting"},
 		},
 	}
 	for _, c := range cases {
@@ -541,14 +591,14 @@ func TestOpenDevice_BringupPipeStalledFiveTimes_ReturnsHintError(t *testing.T) {
 	if !strings.Contains(err.Error(), "control pipe stalled") {
 		t.Errorf("err = %v, want substring \"control pipe stalled\" (proves the clone-dongle hint was appended)", err)
 	}
-	if !strings.Contains(err.Error(), "Zadig") {
-		t.Errorf("err = %v, want substring \"Zadig\"", err)
+	if !strings.Contains(err.Error(), "ERROR_GEN_FAILURE") {
+		t.Errorf("err = %v, want substring \"ERROR_GEN_FAILURE\" (proves the Windows-specific hint was appended)", err)
 	}
-	if !strings.Contains(err.Error(), "unplug the dongle") {
-		t.Errorf("err = %v, want substring \"unplug the dongle\" (proves the #395 hint was appended)", err)
+	if !strings.Contains(err.Error(), "issue #395") {
+		t.Errorf("err = %v, want substring \"issue #395\" (proves the issue ref was appended)", err)
 	}
-	if !strings.Contains(err.Error(), "#395") {
-		t.Errorf("err = %v, want substring \"#395\" (proves the issue ref was appended)", err)
+	if !strings.Contains(err.Error(), "sdr doctor") {
+		t.Errorf("err = %v, want substring \"sdr doctor\" (proves the WinUSB-binding remediation was appended)", err)
 	}
 	if m.ResetCalls != 4 {
 		t.Errorf("ResetCalls = %d, want 4 (bounded envelope: four resets, five attempts)", m.ResetCalls)

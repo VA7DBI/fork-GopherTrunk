@@ -1,10 +1,13 @@
 package composer
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"math"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -341,4 +344,89 @@ func TestComposerP25Phase1TouchGatedOnLDUProgress(t *testing.T) {
 	if got := eng.touched.Load(); got != baseline {
 		t.Fatalf("expected no further touches after IQ stopped; baseline=%d got=%d", baseline, got)
 	}
+}
+
+// TestComposerP25Phase1VoiceChainLogsDemodMode is the operator-visible
+// diagnostic guard for issue #356: the CC pipeline logs the demod mode
+// it locked the control channel with, but until this log was added the
+// voice chain was silent — so on a field report it was impossible to
+// tell from logs whether voice grants were running c4fm or cqpsk. The
+// chain now emits one Info line at startup naming the resolved mode.
+func TestComposerP25Phase1VoiceChainLogsDemodMode(t *testing.T) {
+	const sampleRate = 48_000.0
+	buf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	src := newFakeSource()
+	bus := events.NewBus(8)
+	sink := &recordingSink{}
+	eng := &fakeEngine{}
+	c, err := New(Options{
+		Bus:           bus,
+		Log:           logger,
+		Devices:       &fakeDevices{src: map[string]IQSource{"VOICE-1": src}},
+		Sink:          sink,
+		Engine:        eng,
+		IQSampleRate:  uint32(sampleRate),
+		PCMSampleRate: 8000,
+		TouchInterval: 30 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	defer c.Close()
+	defer bus.Close()
+
+	bus.Publish(events.Event{
+		Kind: events.KindCallStart,
+		Payload: trunking.CallStart{
+			Grant: trunking.Grant{
+				System: "Simulcast-P25", Protocol: "p25",
+				GroupID: 42, FrequencyHz: 851_000_000,
+				P25Phase1DemodMode: "cqpsk",
+			},
+			DeviceSerial: "VOICE-1",
+			StartedAt:    time.Now().UTC(),
+		},
+	})
+
+	waitFor(t, 2*time.Second, func() bool { return len(c.ActiveChains()) == 1 })
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String(), "composer: p25p1 voice chain started") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "composer: p25p1 voice chain started") {
+		t.Fatalf("expected p25p1 startup log; got:\n%s", out)
+	}
+	if !strings.Contains(out, "demod_mode=cqpsk") {
+		t.Errorf("expected demod_mode=cqpsk in log; got:\n%s", out)
+	}
+}
+
+// syncBuffer is a bytes.Buffer guarded by a mutex so the test
+// goroutine can read the captured log output while the composer
+// chain goroutine concurrently writes to it via slog's handler.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

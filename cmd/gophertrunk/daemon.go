@@ -23,6 +23,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/conventional"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
 
+	aisgmsk "github.com/MattCheramie/GopherTrunk/internal/radio/ais/gmsk"
 	aprsafsk "github.com/MattCheramie/GopherTrunk/internal/radio/aprs/afsk"
 	pocsagrx "github.com/MattCheramie/GopherTrunk/internal/radio/pager/pocsag/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
@@ -110,6 +111,7 @@ type Daemon struct {
 	bookmarks    *storage.BookmarkStore
 	pagerLog     *storage.PagerLog
 	aprsLog      *storage.APRSLog
+	vesselLog    *storage.VesselLog
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -153,6 +155,12 @@ type Daemon struct {
 	// pinned-channel layout as POCSAG: one SDR per APRS frequency.
 	aprsReceivers []*aprsafsk.Receiver
 	aprsSpecs     []aprsSpec // index-aligned with aprsReceivers
+	// aisReceivers holds one AIS GMSK receiver per configured
+	// ais.channels entry. Same shape as the APRS receivers above:
+	// each subscribes to its assigned SDR's iqtap broker and
+	// publishes decoded vessel messages on KindAISMessage.
+	aisReceivers []*aisgmsk.Receiver
+	aisSpecs     []aisSpec // index-aligned with aisReceivers
 	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
 	// Primary consumers (CC decoder, conventional scanner) stream IQ
 	// through the broker so secondary observers (live spectrum,
@@ -441,7 +449,16 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 				log.Info("rtl_tcp endpoints mounted", "count", len(rspecs))
 			}
 		}
-		if err := d.pool.Open(cfg.SDR.SampleRate, hints); err != nil {
+		if err := d.pool.OpenWith(sdr.PoolOpenOptions{
+			SampleRateHz: cfg.SDR.SampleRate,
+			Hints:        hints,
+			// Strict mode: when the operator has listed devices in
+			// sdr.devices, treat that list as an allowlist. Devices
+			// that are physically connected but not named are left
+			// alone — they may belong to another process on the
+			// host (issue #264).
+			Strict: len(cfg.SDR.Devices) > 0,
+		}); err != nil {
 			log.Warn("daemon: SDR pool open failed", "err", err)
 			d.addWarning(fmt.Sprintf(
 				"SDR pool failed to open (%v) — no radios will demodulate; check device permissions / cabling / kernel modules",
@@ -456,6 +473,15 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		// the daemon will look healthy from a logs-only vantage but
 		// can't actually decode anything.
 		d.addWarning("trunking.systems configured but sdr.devices is empty — daemon has nothing to demodulate; add at least one device")
+	}
+
+	// Virtual voice taps on any `role: wideband` dongle, built before the
+	// voice pool (below) and the composer's virtualVoiceMap so a wideband-
+	// only topology actually has voice devices to follow grants with.
+	// Building these after the voice pool was the cause of issue #422
+	// (every grant dropped with "no voice SDR").
+	if err := d.buildVirtualVoiceTuners(cfg, log); err != nil {
+		return nil, err
 	}
 
 	// Metrics — constructed early so downstream components (notably
@@ -874,41 +900,10 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 				return nil, fmt.Errorf("daemon: widebandt2 %q: %w", devCfg.Serial, err)
 			}
 			d.widebandT2 = append(d.widebandT2, eng)
-			// Spin up virtual voice tuners on this wideband dongle so
-			// trunked voice grants whose frequency lands inside the
-			// IQ window can be followed without retuning a separate
-			// physical role: voice SDR. The taps subscribe to the
-			// dongle's iqtap broker on each StreamIQ call, run a
-			// single-tap DDC, and emit 48 kHz IQ to the composer.
-			// Out-of-window grants surface ErrOutOfBand and fall
-			// back to a physical voice SDR (when present) via the
-			// voice pool's bind retry.
-			taps := devCfg.VoiceTaps
-			if taps < 0 {
-				taps = 0
-			}
-			br := d.iqBrokers[entry.Info.Serial]
-			if br == nil && taps > 0 {
-				log.Warn("daemon: wideband: voice_taps requested but no iqtap broker; virtual voice disabled",
-					"serial", devCfg.Serial, "voice_taps", taps)
-				taps = 0
-			}
-			for i := 0; i < taps; i++ {
-				vt, err := wbvoice.New(wbvoice.Options{
-					Serial:           fmt.Sprintf("wb:%s:tap-%d", entry.Info.Serial, i),
-					Broker:           br,
-					WidebandCenterHz: devCfg.CenterFreqHz,
-					SDRSampleRateHz:  cfg.SDR.SampleRate,
-					Log:              log,
-				})
-				if err != nil {
-					return nil, fmt.Errorf("daemon: wbvoice %q tap %d: %w", devCfg.Serial, i, err)
-				}
-				d.virtualVoiceTuners = append(d.virtualVoiceTuners, vt)
-				log.Info("daemon: wideband: virtual voice tap registered",
-					"wideband_serial", entry.Info.Serial,
-					"tap_serial", vt.Serial())
-			}
+			// Virtual voice taps for this dongle are built earlier by
+			// buildVirtualVoiceTuners (before the voice pool and composer
+			// are constructed) so trunked grants inside the IQ window have
+			// a device to land on. See issue #422.
 		}
 	}
 
@@ -978,6 +973,39 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		d.aprsSpecs = append(d.aprsSpecs, spec)
 	}
 
+	// AIS GMSK receivers — one per configured ais.channels entry.
+	// Same construction shape as POCSAG / APRS above: per-entry
+	// validation in the receiver, failures surface as a startup
+	// warning and skip the entry (nil slot preserved for stable
+	// indexing).
+	for _, ac := range cfg.AIS.Channels {
+		spec := aisSpec{serial: ac.Serial, freq: ac.FrequencyHz}
+		if ac.Serial == "" || ac.FrequencyHz == 0 {
+			d.addWarning(fmt.Sprintf(
+				"ais.channels: entry missing serial or frequency_hz (serial=%q freq=%d) — skipped",
+				ac.Serial, ac.FrequencyHz))
+			d.aisReceivers = append(d.aisReceivers, nil)
+			d.aisSpecs = append(d.aisSpecs, spec)
+			continue
+		}
+		rcv, err := aisgmsk.New(aisgmsk.Options{
+			InputRateHz:     cfg.SDR.SampleRate,
+			SourceName:      ac.Serial,
+			Bus:             d.bus,
+			DropBadFCS:      ac.DropBadFCS,
+			DropNonPosition: ac.DropNonPosition,
+			Log:             log,
+		})
+		if err != nil {
+			d.addWarning(fmt.Sprintf("ais.channels[%s]: %v — skipped", ac.Serial, err))
+			d.aisReceivers = append(d.aisReceivers, nil)
+			d.aisSpecs = append(d.aisSpecs, spec)
+			continue
+		}
+		d.aisReceivers = append(d.aisReceivers, rcv)
+		d.aisSpecs = append(d.aisSpecs, spec)
+	}
+
 	// Storage / call log / retention — optional.
 	if cfg.Storage.Path != "" {
 		db, err := storage.Open(cfg.Storage.Path)
@@ -1019,6 +1047,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			return nil, fmt.Errorf("daemon: aprs log: %w", err)
 		}
 		d.aprsLog = al
+
+		vl, err := storage.NewVesselLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: vessel log: %w", err)
+		}
+		d.vesselLog = vl
 
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
@@ -1082,6 +1117,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.aprsLog != nil {
 			opts.APRS = aprsProvider{log: d.aprsLog}
+		}
+		if d.vesselLog != nil {
+			opts.AIS = aisProvider{log: d.vesselLog}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1255,6 +1293,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return d.aprsLog.Run(ctx)
 		})
 	}
+	if d.vesselLog != nil {
+		d.spawn(runCtx, "vessellog", false, func(ctx context.Context) error {
+			return d.vesselLog.Run(ctx)
+		})
+	}
 	if d.messageLog != nil {
 		d.spawn(runCtx, "messagelog", false, func(ctx context.Context) error {
 			return d.messageLog.Run(ctx)
@@ -1371,6 +1414,39 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			if err := br.SetCenterFreq(spec.freq); err != nil {
 				d.log.Warn("aprs: SetCenterFreq failed",
+					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
+				return nil
+			}
+			sub := br.Subscribe()
+			defer sub.Close()
+			return rcv.Process(ctx, sub.C)
+		})
+	}
+	// AIS receivers — same shape as APRS / POCSAG above. Each
+	// subscribes to its assigned SDR's iqtap broker and runs the
+	// GMSK pipeline (FM demod → GFSK matched filter → symbol-
+	// timing recovery → NRZI → HDLC framer → CRC validation →
+	// AIS message parser), publishing messages onto the events
+	// bus where the VesselLog subscriber persists them and the
+	// /ais panel renders them. Non-essential: a missing SDR or
+	// misconfigured frequency is logged but doesn't bring down
+	// the trunking pipeline.
+	for i, rcv := range d.aisReceivers {
+		if rcv == nil {
+			continue // skipped at construction; warning already logged
+		}
+		rcv := rcv
+		spec := d.aisSpecs[i]
+		name := fmt.Sprintf("ais-%s-%d", spec.serial, spec.freq)
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			br := d.iqBrokers[spec.serial]
+			if br == nil {
+				d.log.Warn("ais: SDR not found, skipping receiver",
+					"serial", spec.serial, "freq_hz", spec.freq)
+				return nil
+			}
+			if err := br.SetCenterFreq(spec.freq); err != nil {
+				d.log.Warn("ais: SetCenterFreq failed",
 					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
 				return nil
 			}
@@ -1510,6 +1586,9 @@ func (d *Daemon) Close() {
 		}
 		if d.aprsLog != nil {
 			_ = d.aprsLog.Close()
+		}
+		if d.vesselLog != nil {
+			_ = d.vesselLog.Close()
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
@@ -1721,6 +1800,61 @@ func (d *Daemon) spawn(ctx context.Context, name string, essential bool, fn func
 		}
 		d.log.Warn("daemon: component exited with error", "component", name, "err", err)
 	}()
+}
+
+// buildVirtualVoiceTuners spins up one wbvoice.VirtualTuner per voice tap
+// on every `role: wideband` dongle. The taps subscribe to the dongle's
+// iqtap broker on each StreamIQ call, run a single-tap DDC, and emit
+// 48 kHz IQ to the composer. Out-of-window grants surface ErrOutOfBand
+// and fall back to a physical voice SDR (when present) via the voice
+// pool's bind retry.
+//
+// This must run before the voice pool (collectVoiceDevices) and the
+// composer's virtualVoiceMap are built — otherwise a wideband-only
+// topology yields an empty voice pool and every grant is dropped with
+// "no voice SDR" (issue #422).
+func (d *Daemon) buildVirtualVoiceTuners(cfg config.Config, log *slog.Logger) error {
+	if d.pool == nil {
+		return nil
+	}
+	for _, devCfg := range cfg.SDR.Devices {
+		if devCfg.Role != "wideband" {
+			continue
+		}
+		entry := d.pool.FindBySerial(devCfg.Serial)
+		if entry == nil {
+			// The wideband engine loop logs the missing-dongle warning;
+			// stay quiet here to avoid duplicating it.
+			continue
+		}
+		taps := devCfg.VoiceTaps
+		if taps < 0 {
+			taps = 0
+		}
+		br := d.iqBrokers[entry.Info.Serial]
+		if br == nil && taps > 0 {
+			log.Warn("daemon: wideband: voice_taps requested but no iqtap broker; virtual voice disabled",
+				"serial", devCfg.Serial, "voice_taps", taps)
+			taps = 0
+		}
+		for i := 0; i < taps; i++ {
+			vt, err := wbvoice.New(wbvoice.Options{
+				Serial:           fmt.Sprintf("wb:%s:tap-%d", entry.Info.Serial, i),
+				Broker:           br,
+				WidebandCenterHz: devCfg.CenterFreqHz,
+				SDRSampleRateHz:  cfg.SDR.SampleRate,
+				Log:              log,
+			})
+			if err != nil {
+				return fmt.Errorf("daemon: wbvoice %q tap %d: %w", devCfg.Serial, i, err)
+			}
+			d.virtualVoiceTuners = append(d.virtualVoiceTuners, vt)
+			log.Info("daemon: wideband: virtual voice tap registered",
+				"wideband_serial", entry.Info.Serial,
+				"tap_serial", vt.Serial())
+		}
+	}
+	return nil
 }
 
 func (d *Daemon) collectVoiceDevices() []*trunking.VoiceDevice {
@@ -2193,11 +2327,29 @@ func (a aprsProvider) RecentAPRSPackets(limit int) ([]storage.APRSPacket, error)
 	return a.log.Recent(limit)
 }
 
+// aisProvider adapts storage.VesselLog into api.AISProvider so the
+// api package stays free of the storage import dependency. Read-only
+// — the decoder writes via the events bus.
+type aisProvider struct{ log *storage.VesselLog }
+
+func (a aisProvider) RecentAISMessages(limit int) ([]storage.AISMessage, error) {
+	return a.log.Recent(limit)
+}
+
 // aprsSpec captures the broker-side wiring info for one configured
 // APRS channel. Index-aligned with Daemon.aprsReceivers so the Run
 // loop can spawn each receiver without re-walking the YAML. Mirrors
 // pocsagSpec.
 type aprsSpec struct {
+	serial string
+	freq   uint32
+}
+
+// aisSpec captures the broker-side wiring info for one configured
+// AIS channel. Index-aligned with Daemon.aisReceivers so the Run
+// loop can spawn each receiver without re-walking the YAML. Mirrors
+// aprsSpec / pocsagSpec.
+type aisSpec struct {
 	serial string
 	freq   uint32
 }

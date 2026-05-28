@@ -166,6 +166,36 @@ CREATE TABLE IF NOT EXISTS aprs_log (
 
 CREATE INDEX IF NOT EXISTS idx_aprs_log_time ON aprs_log(received_at);
 CREATE INDEX IF NOT EXISTS idx_aprs_log_src  ON aprs_log(src, received_at);
+
+-- AIS / vessel messages persisted from the decoder pipeline. One
+-- row per decoded message: MMSI + type tag + position (lat/lon/COG/
+-- SOG/heading) for position-bearing types + static data (vessel
+-- name, callsign, destination, ship type, IMO) for static types.
+-- Wire-bit payload preserved as hex on raw_hex for round-tripping
+-- into offline decoders.
+CREATE TABLE IF NOT EXISTS vessel_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at  INTEGER NOT NULL,             -- unix nanoseconds
+    mmsi         INTEGER NOT NULL DEFAULT 0,   -- 9-digit Maritime Mobile Service Identity
+    type         TEXT    NOT NULL DEFAULT '',  -- "position-a" | "position-b" | "static-voyage" | ...
+    body         TEXT    NOT NULL DEFAULT '',  -- type-specific summary
+    latitude     REAL    NOT NULL DEFAULT 0,
+    longitude    REAL    NOT NULL DEFAULT 0,
+    sog          REAL    NOT NULL DEFAULT 0,   -- speed over ground (knots)
+    cog          REAL    NOT NULL DEFAULT 0,   -- course over ground (degrees)
+    heading      INTEGER NOT NULL DEFAULT 511, -- true heading (511 = not available)
+    has_position INTEGER NOT NULL DEFAULT 0,
+    vessel_name  TEXT    NOT NULL DEFAULT '',
+    callsign     TEXT    NOT NULL DEFAULT '',
+    destination  TEXT    NOT NULL DEFAULT '',
+    ship_type    INTEGER NOT NULL DEFAULT 0,
+    imo          INTEGER NOT NULL DEFAULT 0,
+    raw_hex      TEXT    NOT NULL DEFAULT '',
+    fcs_ok       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_vessel_log_time ON vessel_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_vessel_log_mmsi ON vessel_log(mmsi, received_at);
 `
 
 func (d *DB) migrate() error {

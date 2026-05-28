@@ -131,6 +131,14 @@ const (
 	// decoded sub-payload. Surfaced over SSE / WS for the live
 	// APRS panel.
 	KindAPRSPacket Kind = "aprs.packet"
+	// KindAISMessage fires when the AIS decoder finishes one
+	// message off the marine VHF channels (161.975 / 162.025 MHz).
+	// One bus event per parsed AIS message (positions, static +
+	// voyage data, base-station reports). Payload is a
+	// storage.AISMessage carrying MMSI + message type + decoded
+	// position + speed + course + vessel name (where available).
+	// Surfaced over SSE / WS for the live AIS panel.
+	KindAISMessage Kind = "ais.message"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol
