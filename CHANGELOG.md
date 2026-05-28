@@ -9,6 +9,33 @@ for tagged releases.
 
 ### Added
 
+- **APRS DSP frontend — pipeline is now end-to-end.** Fifth and
+  load-bearing slice of Phase 5 (#365 plan): the
+  `internal/radio/aprs/afsk` package wires an `afsk.Receiver`
+  per configured APRS channel between the iqtap broker and the
+  bit-stream orchestrator that shipped in #401. Pipeline: IQ →
+  `demod.FM` → real resampler down to 9600 sps → `demod.FFSK`
+  tone discriminator (mark 1200 Hz, space 2200 Hz) → Mueller-
+  Müller symbol-timing recovery → DC-tracking slicer → NRZI
+  decode → HDLC framer → AX.25 + APRS info-field parse →
+  `events.KindAPRSPacket`. New top-level `aprs.channels` config
+  schema (`internal/config.APRSChannelConfig`, mirroring
+  `paging.pocsag`); daemon constructs one receiver per entry,
+  subscribes each to its SDR's iqtap broker via the standard
+  spawn closure. `Stats()` surfaces IQ-samples-seen + bits-
+  emitted; the bit-stream layer's frame counters remain reachable
+  via `Inner().Stats()`. Operators add an entry like
+  `serial: antenna-pi, frequency_hz: 144_390_000` and packets
+  start landing on the bus, the `aprs_log` SQLite table,
+  `/api/v1/aprs/packets`, and the `/aprs` web panel.
+  Tests cover NRZI round-trip (transition / no-transition
+  polarity, clamping, reset), receiver option validation,
+  Process ctx-cancel + nil-input + clean-close, and stats
+  counter accumulation. The synthetic IQ end-to-end test is
+  currently `t.Skip`-ped pending a captured `samples/aprs/`
+  fixture (same posture as POCSAG #378 — the receiver code is
+  exercised by the unit-level coverage above and the orchestrator
+  tests from #401).
 - **P25 Phase 2 traffic-channel metadata backfill (issue #376
   follow-up).** Resolves the symptoms surfaced by @er-imagery's
   2026-05-28 MMR field test: Phase 2 grants on encrypted

@@ -256,6 +256,27 @@ sdr:
 #                                  #  dispatch / DAPNET / etc.
 #       baud_hz: 1200              # 512 / 1200 / 2400; default 1200
 
+# APRS / AX.25 Bell-202 AFSK receiver. Each entry pins one SDR to
+# an APRS frequency and runs the full DSP pipeline (FM demod →
+# FFSK tone discriminator → symbol-time recovery → NRZI decode →
+# HDLC framer → AX.25 + APRS info-field parser). Decoded packets
+# publish on events.KindAPRSPacket; storage.APRSLog persists them
+# to the aprs_log SQLite table, the REST endpoint at
+# /api/v1/aprs/packets returns the most recent N, and the /aprs
+# web panel renders them live with the FCS state highlighted.
+#
+# aprs:
+#   channels:
+#     - serial: "antenna-pi"          # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 144_390_000     # NA primary; EU R1 144.575,
+#                                     #  ISS digipeater 145.825
+#       drop_bad_fcs: false           # true to silently drop CRC-failed
+#                                     #  frames instead of publishing
+#                                     #  them with FCSOK=false
+#       drop_non_ui: false            # true to silently drop non-UI
+#                                     #  AX.25 frames
+
 trunking:
   # call_timeout_ms: inactivity window after which the engine's
   # watchdog ends a call (publishes CallEnd with EndReasonTimeout

@@ -91,11 +91,6 @@ payload the bus / log / REST / UI scaffolding above expects.
 
 ## Bit-stream pipeline (`internal/radio/aprs/hdlc` + `receiver`)
 
-Once a DSP layer produces LSB-first wire bits, the following
-glue turns them into operator-visible packets — no daemon changes
-required to wire it in (the receiver is a `Push(bit byte)`
-function).
-
 - **`internal/radio/aprs/hdlc`** — bit-stream framer. Tracks the
   sliding-flag detector (HDLC's 0x7E delimiter), reverses the
   bit-stuffing (after 5 consecutive 1s, drop the next 0),
@@ -104,10 +99,10 @@ function).
   body per (flag, ..., flag) sequence. Note: HDLC framing is
   the layer below the AX.25 frame parser — the bit-stuffing
   reversal happens here, not in `ax25`.
-- **`internal/radio/aprs/receiver`** — orchestrator. Threads
-  bits through the framer, hands frame bodies to `ax25.Parse`,
-  the info field to `aprs.Decode`, and publishes one
-  `events.KindAPRSPacket` per successfully-decoded UI frame.
+- **`internal/radio/aprs/receiver`** — bit-stream orchestrator.
+  Threads bits through the framer, hands frame bodies to
+  `ax25.Parse`, the info field to `aprs.Decode`, and publishes
+  one `events.KindAPRSPacket` per successfully-decoded UI frame.
   Bus payload is `storage.APRSPacket` carrying the AX.25
   envelope, the APRS sub-type label, the decoded summary
   string, and (for position-bearing types) lat/lon. The
@@ -116,14 +111,50 @@ function).
   `DropBadFCS` and `DropNonUI` toggles for operators who'd
   rather lose marginal frames than see them on the panel.
 
+## DSP frontend (`internal/radio/aprs/afsk`)
+
+The IQ-to-bits layer. One `afsk.Receiver` per configured APRS
+channel; the daemon subscribes each to its assigned SDR's iqtap
+broker. Pipeline:
+
+```
+IQ chunks (Fs Hz, complex64)
+  → FM demod (internal/dsp/demod/fm.FM)
+  → real resampler down to 9600 sps audio
+  → FFSK tone discriminator (mark=1200 Hz, space=2200 Hz)
+  → Mueller-Müller symbol-timing recovery (8 sps → 1 sample/symbol)
+  → DC-tracking slicer (raw NRZI bit)
+  → NRZI decode (transition = 0, no transition = 1)
+  → aprs/receiver.Push(bit)
+  → events.KindAPRSPacket on the bus
+```
+
+`Stats()` surfaces IQ-samples-seen + bits-emitted counters for
+`/metrics`. The bit-stream layer's own `Stats()` (frames in /
+parsed / CRC-failed / emitted) is reachable via `Inner()`.
+
+## Configuration
+
+```yaml
+aprs:
+  channels:
+    - serial: "antenna-pi"
+      frequency_hz: 144_390_000   # NA primary; EU R1 144.575, ISS 145.825
+      drop_bad_fcs: false         # default false; publishes CRC-failed
+                                  #  frames with FCSOK=false
+      drop_non_ui: false          # default false; APRS only emits UI
+```
+
+A misconfigured entry surfaces as a startup warning and is
+skipped — same non-essential treatment as `paging.pocsag`.
+
 ## What's pending
 
-- **DSP receiver.** 1200 Bd Bell-202 AFSK demodulation +
-  NRZI decoding to produce the LSB-first wire bits the HDLC
-  framer expects. Pattern matches the POCSAG receiver (#378):
-  iqtap broker subscriber → narrowband FM demod → bit slicer →
-  `receiver.Push(bit)`. Once that ships, the end-to-end
-  pipeline goes live.
+- **Real-fixture validation.** The synthetic IQ end-to-end test
+  is currently `t.Skip`-ped (same as POCSAG's synth test). A
+  captured `.wav` / `.cfile` from a real APRS channel under
+  `samples/aprs/` would let the test suite replay through
+  `internal/sdr/baseband` and assert the full chain.
 - **Mic-E decoder.** Compressed lat/lon format common on mobile
   trackers (Kenwood TH-D74, Yaesu FT-3D). ~200 LOC for base-91
   unpacking + speed / course / altitude decode.

@@ -23,6 +23,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/conventional"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
 
+	aprsafsk "github.com/MattCheramie/GopherTrunk/internal/radio/aprs/afsk"
 	pocsagrx "github.com/MattCheramie/GopherTrunk/internal/radio/pager/pocsag/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
@@ -145,6 +146,13 @@ type Daemon struct {
 	// is a planned follow-up.
 	pocsagReceivers []*pocsagrx.Receiver
 	pocsagSpecs     []pocsagSpec // index-aligned with pocsagReceivers
+	// aprsReceivers holds one APRS AFSK receiver per configured
+	// aprs.channels entry. Each subscribes to the iqtap broker
+	// for its assigned SDR and publishes packets onto the events
+	// bus on KindAPRSPacket. See internal/radio/aprs/afsk. Same
+	// pinned-channel layout as POCSAG: one SDR per APRS frequency.
+	aprsReceivers []*aprsafsk.Receiver
+	aprsSpecs     []aprsSpec // index-aligned with aprsReceivers
 	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
 	// Primary consumers (CC decoder, conventional scanner) stream IQ
 	// through the broker so secondary observers (live spectrum,
@@ -937,6 +945,39 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		d.pocsagSpecs = append(d.pocsagSpecs, spec)
 	}
 
+	// APRS / AX.25 Bell-202 AFSK receivers — one per configured
+	// aprs.channels entry. Same construction shape as POCSAG above:
+	// per-entry validation in the receiver, failures surface as a
+	// startup warning and skip the entry (nil slot preserved for
+	// stable indexing).
+	for _, ac := range cfg.APRS.Channels {
+		spec := aprsSpec{serial: ac.Serial, freq: ac.FrequencyHz}
+		if ac.Serial == "" || ac.FrequencyHz == 0 {
+			d.addWarning(fmt.Sprintf(
+				"aprs.channels: entry missing serial or frequency_hz (serial=%q freq=%d) — skipped",
+				ac.Serial, ac.FrequencyHz))
+			d.aprsReceivers = append(d.aprsReceivers, nil)
+			d.aprsSpecs = append(d.aprsSpecs, spec)
+			continue
+		}
+		rcv, err := aprsafsk.New(aprsafsk.Options{
+			InputRateHz: cfg.SDR.SampleRate,
+			SourceName:  ac.Serial,
+			Bus:         d.bus,
+			DropBadFCS:  ac.DropBadFCS,
+			DropNonUI:   ac.DropNonUI,
+			Log:         log,
+		})
+		if err != nil {
+			d.addWarning(fmt.Sprintf("aprs.channels[%s]: %v — skipped", ac.Serial, err))
+			d.aprsReceivers = append(d.aprsReceivers, nil)
+			d.aprsSpecs = append(d.aprsSpecs, spec)
+			continue
+		}
+		d.aprsReceivers = append(d.aprsReceivers, rcv)
+		d.aprsSpecs = append(d.aprsSpecs, spec)
+	}
+
 	// Storage / call log / retention — optional.
 	if cfg.Storage.Path != "" {
 		db, err := storage.Open(cfg.Storage.Path)
@@ -1298,6 +1339,38 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			if err := br.SetCenterFreq(spec.freq); err != nil {
 				d.log.Warn("pocsag: SetCenterFreq failed",
+					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
+				return nil
+			}
+			sub := br.Subscribe()
+			defer sub.Close()
+			return rcv.Process(ctx, sub.C)
+		})
+	}
+	// APRS receivers — same shape as POCSAG above. Each subscribes
+	// to its assigned SDR's iqtap broker and runs the AFSK pipeline
+	// (FM demod → FFSK discriminator → symbol-timing recovery →
+	// NRZI → HDLC framer → AX.25 + APRS parsing), publishing packets
+	// onto the events bus where the APRSLog subscriber persists them
+	// and the /aprs panel renders them. Non-essential: a missing SDR
+	// or misconfigured frequency is logged but doesn't bring down the
+	// trunking pipeline.
+	for i, rcv := range d.aprsReceivers {
+		if rcv == nil {
+			continue // skipped at construction; warning already logged
+		}
+		rcv := rcv
+		spec := d.aprsSpecs[i]
+		name := fmt.Sprintf("aprs-%s-%d", spec.serial, spec.freq)
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			br := d.iqBrokers[spec.serial]
+			if br == nil {
+				d.log.Warn("aprs: SDR not found, skipping receiver",
+					"serial", spec.serial, "freq_hz", spec.freq)
+				return nil
+			}
+			if err := br.SetCenterFreq(spec.freq); err != nil {
+				d.log.Warn("aprs: SetCenterFreq failed",
 					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
 				return nil
 			}
@@ -2118,6 +2191,15 @@ type aprsProvider struct{ log *storage.APRSLog }
 
 func (a aprsProvider) RecentAPRSPackets(limit int) ([]storage.APRSPacket, error) {
 	return a.log.Recent(limit)
+}
+
+// aprsSpec captures the broker-side wiring info for one configured
+// APRS channel. Index-aligned with Daemon.aprsReceivers so the Run
+// loop can spawn each receiver without re-walking the YAML. Mirrors
+// pocsagSpec.
+type aprsSpec struct {
+	serial string
+	freq   uint32
 }
 
 // loadRIDFile dispatches a per-system rid_alias_file load to the JSON
