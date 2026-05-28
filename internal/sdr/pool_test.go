@@ -39,8 +39,8 @@ func (d *fakeDevice) SetSampleRate(hz uint32) error {
 	d.sampleRate = hz
 	return nil
 }
-func (d *fakeDevice) SetGain(int) error      { return nil }
-func (d *fakeDevice) SetPPM(ppm int) error   { d.ppm = ppm; d.ppmSets++; return nil }
+func (d *fakeDevice) SetGain(int) error                                    { return nil }
+func (d *fakeDevice) SetPPM(ppm int) error                                 { d.ppm = ppm; d.ppmSets++; return nil }
 func (d *fakeDevice) SetBiasTee(on bool) error                             { d.biasTeeOn = on; d.biasTeeSets++; return nil }
 func (d *fakeDevice) StreamIQ(context.Context) (<-chan []complex64, error) { return nil, io.EOF }
 func (d *fakeDevice) Close() error {
