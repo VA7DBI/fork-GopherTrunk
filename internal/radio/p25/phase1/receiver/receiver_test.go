@@ -336,3 +336,66 @@ func TestC4FMSymbolAGCRescuesCollapsedSlicer(t *testing.T) {
 		}
 	}
 }
+
+// TestReceiverStateAccessorsReturnDefaults pins the contract for the
+// new diagnostic accessors (issue #402 Phase 2): on a freshly-
+// constructed C4FM Receiver, the AFC bias must read 0 (the IIR's
+// initial state), the MM clock's SPS must equal SampleRateHz /
+// SymbolRate, and AGCTarget must match the slicer calibration from
+// DeviationHz. AGCLevel starts at 0 (unseeded EMA) and MMClockMu
+// starts at sps (the constructor's initial state). These read-only
+// snapshots back the periodic state-evolution log in cmd/gophertrunk/
+// replay.go; if any default changes, the log lines change shape and
+// the operator-facing diagnostic gets confusing.
+func TestReceiverStateAccessorsReturnDefaults(t *testing.T) {
+	r := New(Options{
+		SampleRateHz: 48_000,
+		DeviationHz:  1800,
+		Sink:         func([]byte) {},
+	})
+	if got := r.AFCBiasRadPerSample(); got != 0 {
+		t.Errorf("AFCBiasRadPerSample on fresh receiver = %v, want 0", got)
+	}
+	if got := r.AGCLevel(); got != 0 {
+		t.Errorf("AGCLevel on fresh receiver = %v, want 0 (unseeded EMA)", got)
+	}
+	if got := r.AGCTarget(); got <= 0 {
+		t.Errorf("AGCTarget = %v, want > 0 (slicer calibrated from DeviationHz)", got)
+	}
+	wantSPS := 48_000.0 / SymbolRate
+	if got := r.MMClockSPS(); got != wantSPS {
+		t.Errorf("MMClockSPS = %v, want %v", got, wantSPS)
+	}
+	if got := r.MMClockMu(); got != wantSPS {
+		t.Errorf("MMClockMu on fresh receiver = %v, want %v (constructor's initial mu)", got, wantSPS)
+	}
+}
+
+// TestReceiverStateAccessorsZeroOnCQPSKPath: the CQPSK demod path has
+// no AFC or symbol-AGC and uses Gardner instead of Mueller-Müller, so
+// all the C4FM-state accessors must return 0 without panicking — the
+// replay state log relies on that to render a meaningful line on
+// either demod choice.
+func TestReceiverStateAccessorsZeroOnCQPSKPath(t *testing.T) {
+	r := New(Options{
+		SampleRateHz: 48_000,
+		DeviationHz:  1800,
+		DemodMode:    DemodCQPSK,
+		Sink:         func([]byte) {},
+	})
+	if got := r.AFCBiasRadPerSample(); got != 0 {
+		t.Errorf("CQPSK AFCBiasRadPerSample = %v, want 0", got)
+	}
+	if got := r.AGCLevel(); got != 0 {
+		t.Errorf("CQPSK AGCLevel = %v, want 0", got)
+	}
+	if got := r.AGCTarget(); got != 0 {
+		t.Errorf("CQPSK AGCTarget = %v, want 0", got)
+	}
+	if got := r.MMClockMu(); got != 0 {
+		t.Errorf("CQPSK MMClockMu = %v, want 0", got)
+	}
+	if got := r.MMClockSPS(); got != 0 {
+		t.Errorf("CQPSK MMClockSPS = %v, want 0", got)
+	}
+}

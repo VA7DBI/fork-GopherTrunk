@@ -1337,3 +1337,87 @@ func TestControlChannelDeferredGrantReplayedAfterTDMAIdentifierUpdate(t *testing
 		t.Errorf("freq = %d, want 468_612_500", got.FrequencyHz)
 	}
 }
+
+// TestControlChannelStatsCountsTrustedDecodes drives a clean TSDU
+// stream through Process and asserts the new CCStats counter for
+// NID-trusted accept + TSBK-decoded both increment per frame. Issue
+// #402 Phase 2: the replay EOF summary depends on these counts to
+// answer "of the FSW hits, what fraction made it through each gate"
+// without parsing every debug log line.
+func TestControlChannelStatsCountsTrustedDecodes(t *testing.T) {
+	bus := events.NewBus(64)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+	// Drain the bus so Publish doesn't block — we only care about the
+	// stats counters here, not the events.
+	go func() {
+		for range sub.C {
+		}
+	}()
+
+	cc := NewControlChannel(bus, nil, 851_000_000)
+	const frames = 5
+	stream := buildLockedStream(10, 0x293, DUIDTrunkingSignaling, OpRFSSStatusBroadcast)
+	// buildLockedStream emits one TSDU frame; concatenate to get N.
+	wide := make([]uint8, 0, len(stream)*frames)
+	for i := 0; i < frames; i++ {
+		wide = append(wide, stream...)
+	}
+	cc.Process(wide, 0)
+
+	got := cc.Stats()
+	if got.NIDTrusted < int64(frames) {
+		t.Errorf("NIDTrusted = %d, want ≥ %d (one per frame)", got.NIDTrusted, frames)
+	}
+	if got.NIDMarginal != 0 || got.NIDFailed != 0 {
+		t.Errorf("clean stream produced marginal/failed NIDs: marginal=%d failed=%d",
+			got.NIDMarginal, got.NIDFailed)
+	}
+	if got.TSBKDecoded < int64(frames) {
+		t.Errorf("TSBKDecoded = %d, want ≥ %d (one per frame)", got.TSBKDecoded, frames)
+	}
+	if got.TSBKTrellisFailed != 0 || got.TSBKCRCFailed != 0 {
+		t.Errorf("clean stream produced TSBK failures: trellis=%d crc=%d",
+			got.TSBKTrellisFailed, got.TSBKCRCFailed)
+	}
+}
+
+// TestControlChannelStatsCountsNIDFailure: a garbage NID after a clean
+// FSW (the same shape TestControlChannelPublishesDecodeErrorOnUncorrectableNID
+// drives) must increment NIDFailed and NOT increment any of the
+// success / TSBK counters.
+func TestControlChannelStatsCountsNIDFailure(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+	go func() {
+		for range sub.C {
+		}
+	}()
+
+	frame := make([]uint8, 24+32+98)
+	copy(frame, FrameSyncWord[:])
+	for i := 0; i < 32; i++ {
+		frame[24+i] = uint8(i*7) & 0x3
+	}
+	onAir := InjectControlStatusSymbols(frame)
+	stream := make([]uint8, 10+len(onAir)+16)
+	copy(stream[10:], onAir)
+
+	cc := NewControlChannel(bus, nil, 851_000_000)
+	cc.Process(stream, 0)
+
+	got := cc.Stats()
+	if got.NIDFailed == 0 {
+		t.Errorf("NIDFailed = 0, want ≥ 1 on a garbage-NID frame")
+	}
+	if got.NIDTrusted != 0 || got.NIDMarginal != 0 {
+		t.Errorf("garbage stream produced NID accepts: trusted=%d marginal=%d",
+			got.NIDTrusted, got.NIDMarginal)
+	}
+	if got.TSBKDecoded != 0 {
+		t.Errorf("garbage stream produced a TSBK decode: %d", got.TSBKDecoded)
+	}
+}
