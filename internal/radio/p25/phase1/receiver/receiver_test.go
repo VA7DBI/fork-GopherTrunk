@@ -399,3 +399,90 @@ func TestReceiverStateAccessorsZeroOnCQPSKPath(t *testing.T) {
 		t.Errorf("CQPSK MMClockSPS = %v, want 0", got)
 	}
 }
+
+// TestReceiverDDAHandoffFiresOnCleanLockedStream is the integration
+// guard: on a healthy synthetic stream + carrier offset, the
+// receiver must complete the warmup-then-handoff choreography
+// (issue #402) and the post-handoff AFCBiasRadPerSample must carry
+// the same sign as the carrier offset — the open-loop bootstrap
+// estimate has to make it across the freeze-CoarseAFC / fold-into-
+// DDA transition without being dropped or sign-flipped.
+//
+// The DDA's actual loop math (data-mean immunity, integrator
+// convergence under feedback, gate behaviour, clamp) lives in the
+// unit tests in internal/dsp/demod/afc_test.go.
+// TestHarnessC4FMToleratesCarrierOffset already pins that the
+// receiver chain locks at ±1.5 kHz offsets; this test pins that
+// the new handoff path runs and produces a sensible AFC reading on
+// the same kind of stream.
+func TestReceiverDDAHandoffFiresOnCleanLockedStream(t *testing.T) {
+	const (
+		sr       = 48_000.0
+		dev      = 1800.0
+		offsetHz = 1_500.0
+		nDibits  = 8_000
+	)
+	dibits := make([]uint8, nDibits)
+	for i := range dibits {
+		dibits[i] = uint8((i*7 + 3) & 3)
+	}
+	iq := demod.ModulateP25C4FM(dibits, sr, dev)
+	iq = demod.ApplyImpairments(iq, sr, demod.Impairments{FreqOffsetHz: offsetHz})
+
+	var totalDibits int
+	r := New(Options{
+		SampleRateHz: sr,
+		DeviationHz:  dev,
+		DibitSink:    func(d []uint8, _ int) { totalDibits += len(d) },
+	})
+	r.Process(iq)
+
+	if totalDibits == 0 {
+		t.Fatalf("receiver emitted no dibits")
+	}
+	if !r.ddaActive {
+		t.Errorf("DDA never handed off (ddaValidUpdates=%d, want ≥ %d, c4fmSymbolsTotal=%d, want ≥ %d) — the receiver's handoff plumbing is broken",
+			r.ddaValidUpdates, ddaHandoffSymbols, r.c4fmSymbolsTotal, ddaWarmupSymbols)
+	}
+	if got := r.AFCBiasRadPerSample(); got <= 0 {
+		t.Errorf("AFCBiasRadPerSample = %.4f on a +%g Hz offset stream, want > 0 (DDA dropped or flipped the bootstrap estimate)", got, offsetHz)
+	}
+}
+
+// TestReceiverDDAResetClearsHandoffState confirms Reset wipes the
+// DDA's integrator, the handoff flag, and the warmup counter — so a
+// stream re-sync (CC hunt success, IQ underrun recovery) doesn't
+// carry a stale offset that would mis-steer the next stream's
+// slicer.
+func TestReceiverDDAResetClearsHandoffState(t *testing.T) {
+	r := New(Options{
+		SampleRateHz: 48_000,
+		DeviationHz:  1800,
+		Sink:         func([]byte) {},
+	})
+	// Drive enough biased traffic through to push past handoff.
+	dibits := make([]uint8, 8000)
+	for i := range dibits {
+		dibits[i] = uint8((i*7 + 3) & 3)
+	}
+	iq := demod.ModulateP25C4FM(dibits, 48_000, 1800)
+	iq = demod.ApplyImpairments(iq, 48_000, demod.Impairments{FreqOffsetHz: 3000})
+	r.Process(iq)
+	if r.AFCBiasRadPerSample() == 0 {
+		t.Fatalf("AFC didn't accumulate any estimate on a 3 kHz-offset stream — receiver state setup is broken")
+	}
+
+	r.Reset()
+	if got := r.AFCBiasRadPerSample(); got != 0 {
+		t.Errorf("AFCBiasRadPerSample after Reset = %v, want 0", got)
+	}
+	if r.ddaActive {
+		t.Error("ddaActive remained true after Reset")
+	}
+	if r.ddaValidUpdates != 0 {
+		t.Errorf("ddaValidUpdates = %d after Reset, want 0", r.ddaValidUpdates)
+	}
+	if r.c4fmSymbolsTotal != 0 {
+		t.Errorf("c4fmSymbolsTotal = %d after Reset, want 0", r.c4fmSymbolsTotal)
+	}
+}

@@ -53,6 +53,33 @@ import (
 // ccdecoder/pipelines.go).
 const defaultGardnerGain = 0.03
 
+// maxAFCOffsetHz caps the DDA's integrator. Sized at ~25 kHz so a
+// 420 MHz / 50 ppm RTL-SDR (~21 kHz worst case) clears it
+// comfortably; the clamp engages only on adversarial input or a
+// runaway loop. Issue #402.
+const maxAFCOffsetHz = 25_000.0
+
+// ddaHandoffSymbols is the number of accepted DDA updates the
+// receiver waits for before freezing CoarseAFC and routing the
+// estimate through the DDA alone. ~256 symbols (~53 ms at 4800 baud)
+// is enough for the slicer to stabilise once the CC has locked and
+// the AGC has seeded, without giving CoarseAFC time to wander far
+// onto a sustained data-mean during the bootstrap window. Issue
+// #402.
+const ddaHandoffSymbols = 256
+
+// ddaWarmupSymbols is the number of symbols CoarseAFC is allowed to
+// converge for before the DDA starts integrating decisions. Sized at
+// 8× the CoarseAFC time constant (8 × 64 = 512 symbols, ~107 ms at
+// 4800 baud) — well past CoarseAFC's settling. Without this gate the
+// DDA learns from samples that are still biased by an un-converged
+// CoarseAFC: at carrier offsets ≥ ~1 kHz the slicer mis-decides
+// inner symbols as outer (the bias pushes a +0.0785 inner past the
+// 0.157 outer threshold), the wrong-decision residual lands inside
+// the DDA's gate, and the contaminated estimate breaks lock once it
+// folds into the post-handoff loop. Issue #402.
+const ddaWarmupSymbols = 512
+
 // P25 Phase 1 on-air parameters.
 const (
 	// SymbolRate is the channel symbol rate. Each symbol is one
@@ -148,12 +175,19 @@ type Receiver struct {
 	// C4FM path: FM discriminator → real RRC matched filter →
 	// coarse-AFC carrier-offset removal → Mueller-Müller →
 	// symbol-AGC → 4-level slicer. Allocated only when demodMode ==
-	// DemodC4FM.
-	fm    *demod.FM
-	mf    *demod.C4FM
-	afc   *demod.CoarseAFC
-	clock *sync.MuellerMuller
-	agc   c4fmSymbolAGC
+	// DemodC4FM. dda runs alongside afc once the slicer is producing
+	// trustworthy decisions (issue #402); see the handoff logic in
+	// Process for the bootstrap-then-refine choreography.
+	fm               *demod.FM
+	mf               *demod.C4FM
+	afc              *demod.CoarseAFC
+	dda              *demod.DecisionDirectedAFC
+	clock            *sync.MuellerMuller
+	agc              c4fmSymbolAGC
+	ddaNominal       [4]float32 // post-AGC nominal value for sliced ±1, ±3
+	ddaActive        bool       // true after handoff: afc frozen, dda carries the estimate
+	ddaValidUpdates  int        // accepted-update count; when it crosses ddaHandoffSymbols the handoff fires
+	c4fmSymbolsTotal int        // symbols processed; the DDA waits ddaWarmupSymbols of these before learning
 
 	// CQPSK / LSM path: complex RRC + Gardner + DQPSK quadrant
 	// decode + LSM dibit remap. Allocated only when demodMode ==
@@ -257,6 +291,36 @@ func New(opts Options) *Receiver {
 			target: float32(slicerScale * 2.0 / 3.0),
 			rate:   1.0 / 256.0,
 		}
+		// Decision-directed AFC: issue #402. Layered on top of
+		// CoarseAFC. After warmup the receiver folds afc.Offset()
+		// into dda.dc, sets afc.dc to zero, and switches afc to
+		// subtract-only — so the matched-filter buffer stops
+		// seeing two independent integrators fight each other and
+		// the DDA carries any further drift on its decision-fed
+		// loop, immune to the symbol-distribution mean that drives
+		// the open-loop tracker off carrier on a sustained
+		// unbalanced control-channel stream.
+		//
+		// maxOffsetHz=25 kHz is just above the RTL-SDR worst-case
+		// tuner accuracy at 420 MHz (50 ppm × 420 MHz ≈ 21 kHz);
+		// the clamp is a safety net, not a normal-operation limit.
+		// It's scaled by sps because the CoarseAFC tracks (and the
+		// DDA inherits) values in matched-filter output units,
+		// which carry a DC gain of ~sps relative to the
+		// FM-discriminator input — same scale factor that drives
+		// the existing AGC's target=slicerScale·2/3 calibration.
+		if slicerScale > 0 {
+			r.dda = demod.NewDecisionDirectedAFC(maxAFCOffsetHz*sps, opts.SampleRateHz, slicerScale)
+			// Nominal post-AGC values for the four slicer
+			// decisions. Indexed by ((sliced+3)/2) — maps
+			// −3,−1,+1,+3 to 0,1,2,3.
+			r.ddaNominal = [4]float32{
+				float32(-slicerScale),     // sliced = -3
+				float32(-slicerScale / 3), // sliced = -1
+				float32(+slicerScale / 3), // sliced = +1
+				float32(+slicerScale),     // sliced = +3
+			}
+		}
 	}
 	if opts.Sink != nil {
 		r.assembler = phase1.NewLDUAssembler(opts.Sink, opts.Tolerance)
@@ -284,12 +348,26 @@ func (r *Receiver) Process(iq []complex64) {
 		// Coarse AFC: track and subtract the residual carrier-offset
 		// DC bias before the symbol clock + slicer see it, so a real
 		// tuner's frequency error doesn't shift the 4-level eye off
-		// the slicer's fixed thresholds (issue #275).
-		r.afc.Process(r.matched)
+		// the slicer's fixed thresholds (issue #275). Once the DDA
+		// has handed off (issue #402), CoarseAFC is frozen at zero
+		// — Subtract is a no-op then — and the DDA carries the
+		// estimate via its Apply call below.
+		if r.ddaActive {
+			r.afc.Subtract(r.matched)
+		} else {
+			r.afc.Process(r.matched)
+		}
+		if r.dda != nil {
+			r.dda.Apply(r.matched)
+		}
 		r.symbols = r.clock.Process(r.symbols, r.matched)
 		if len(r.symbols) == 0 {
 			return
 		}
+		// Snapshot the AGC's pre-process level so the DDA's
+		// un-normalisation matches the gain *this* batch was
+		// scaled by, not the gain the next sample is about to see.
+		// AGC.process mutates level in place per sample.
 		r.agc.process(r.symbols)
 		if r.softSink != nil {
 			r.softSink(r.symbols)
@@ -302,6 +380,39 @@ func (r *Receiver) Process(iq []complex64) {
 		}
 		for i, sym := range r.sliced {
 			r.dibits[i] = phase1.SymbolToDibit(sym)
+		}
+		// Decision-directed AFC update + handoff. Three gates:
+		//
+		//   - c4fmSymbolsTotal ≥ ddaWarmupSymbols: CoarseAFC has
+		//     had time to converge; before that, the slicer
+		//     mis-decides inner symbols at any offset above ~1 kHz
+		//     and the DDA would learn from those wrong-decision
+		//     residuals.
+		//   - agc.seeded: the un-normalisation factor
+		//     (level/target) is valid; without that the DDA folds
+		//     gain noise into the estimate.
+		//   - r.dda non-nil: skipped on the CQPSK / legacy-fixture
+		//     paths the receiver doesn't allocate it on.
+		//
+		// Each accepted update is a within-gate sample, i.e. a
+		// decision the loop trusts; ddaHandoffSymbols of them is
+		// the receiver's "decisions are reliable" signal and
+		// triggers the freeze-CoarseAFC / fold-into-DDA handoff
+		// so the open-loop tracker stops drifting on data.
+		r.c4fmSymbolsTotal += len(r.sliced)
+		if r.dda != nil && r.c4fmSymbolsTotal >= ddaWarmupSymbols && r.agc.seeded && r.agc.target > 0 && r.agc.level > 0 {
+			agcUnscale := r.agc.level / r.agc.target
+			for i, sym := range r.sliced {
+				idx := (sym + 3) / 2 // -3,-1,+1,+3 → 0,1,2,3
+				if r.dda.Update(r.symbols[i], r.ddaNominal[idx], agcUnscale) {
+					r.ddaValidUpdates++
+				}
+			}
+			if !r.ddaActive && r.ddaValidUpdates >= ddaHandoffSymbols {
+				r.dda.AddOffset(r.afc.Offset())
+				r.afc.SetOffset(0)
+				r.ddaActive = true
+			}
 		}
 	}
 	if len(r.dibits) == 0 {
@@ -316,18 +427,28 @@ func (r *Receiver) Process(iq []complex64) {
 	}
 }
 
-// AFCBiasRadPerSample returns the C4FM coarse-AFC's current DC bias
+// AFCBiasRadPerSample returns the C4FM AFC's *total* current DC bias
 // estimate on the FM-discriminator output, in radians per sample at
 // the receiver's input rate. A clean signal converges to ~0; a static
 // carrier offset of Δf Hz leaves the AFC tracking 2π·Δf/SampleRateHz.
-// Returns 0 on the CQPSK path (no AFC stage). Issue #402 diagnostic
-// — exposed so the daemon and replay can periodically log the
-// estimate's evolution after CC lock.
+// Returns 0 on the CQPSK path (no AFC stage).
+//
+// During bootstrap (before the decision-directed AFC takes over) the
+// returned value is the CoarseAFC's open-loop estimate. After the
+// handoff (issue #402) it's the DDA's value — CoarseAFC has been
+// zeroed and its previous estimate folded into the DDA. The
+// diagnostic line stays meaningful across the handoff: whichever
+// stage is steering the matched-filter buffer, this is what the
+// slicer sees subtracted.
 func (r *Receiver) AFCBiasRadPerSample() float64 {
-	if r.afc == nil {
-		return 0
+	var sum float64
+	if r.afc != nil {
+		sum += r.afc.Offset()
 	}
-	return r.afc.Offset()
+	if r.dda != nil {
+		sum += r.dda.Offset()
+	}
+	return sum
 }
 
 // AGCLevel returns the C4FM symbol-AGC's current EMA estimate of
@@ -383,6 +504,12 @@ func (r *Receiver) Reset() {
 	if r.afc != nil {
 		r.afc.Reset()
 	}
+	if r.dda != nil {
+		r.dda.Reset()
+	}
+	r.ddaActive = false
+	r.ddaValidUpdates = 0
+	r.c4fmSymbolsTotal = 0
 	r.agc.reset()
 	// FM discriminator's `last` is harmless to leave alone — the
 	// next sample it processes will produce one slightly-wrong
