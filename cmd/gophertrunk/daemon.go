@@ -1490,6 +1490,23 @@ func (d *Daemon) HTTPListenAddr() string {
 // synthetic events.
 func (d *Daemon) Bus() *events.Bus { return d.bus }
 
+// IQBroker returns the iqtap.Broker for the SDR with the given serial,
+// or nil when no such SDR is in the pool. Used by the --iq-capture
+// flag in main.go to attach a raw-IQ file writer to a live control
+// SDR (issue #402 diagnostic).
+func (d *Daemon) IQBroker(serial string) *iqtap.Broker { return d.iqBrokers[serial] }
+
+// IQBrokerSerials returns the serials of every SDR currently wired
+// through an iqtap.Broker. Used by --iq-capture to validate the
+// requested serial and to print a friendly hint on a miss.
+func (d *Daemon) IQBrokerSerials() []string {
+	out := make([]string, 0, len(d.iqBrokers))
+	for s := range d.iqBrokers {
+		out = append(out, s)
+	}
+	return out
+}
+
 // spawn runs fn in a goroutine. essential=true means a non-context
 // error from fn aborts the whole daemon (the launcher / TUI rely on
 // these components — silently demoting their failures to log warnings

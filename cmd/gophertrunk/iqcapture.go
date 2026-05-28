@@ -1,0 +1,204 @@
+package main
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"math"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/iqtap"
+)
+
+// iqCaptureSpec is the parsed form of the `--iq-capture` flag.
+// Empty Serial means the flag wasn't set; runIQCapture is a no-op.
+//
+// File format default is "f32" (GNU Radio cfile, little-endian
+// interleaved float32) — the IQ broker delivers complex64 chunks
+// directly, so f32 round-trips losslessly through replay.go's
+// decodeF32Replay. "u8" emits the rtl_sdr-native unsigned-8-bit shape
+// for operators who want to feed the capture into other tooling.
+type iqCaptureSpec struct {
+	Serial  string
+	Path    string
+	Seconds int
+	Format  string // "f32" or "u8"
+}
+
+// parseIQCaptureSpec parses "serial=<s>,path=<file>,seconds=<n>[,format=u8|f32]".
+// Returns the zero value when input is empty (flag not set).
+func parseIQCaptureSpec(s string) (iqCaptureSpec, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return iqCaptureSpec{}, nil
+	}
+	spec := iqCaptureSpec{Format: "f32"}
+	for _, kv := range strings.Split(s, ",") {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return iqCaptureSpec{}, fmt.Errorf("iq-capture: malformed key=value %q", kv)
+		}
+		k = strings.ToLower(strings.TrimSpace(k))
+		v = strings.TrimSpace(v)
+		switch k {
+		case "serial":
+			spec.Serial = v
+		case "path":
+			spec.Path = v
+		case "seconds":
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				return iqCaptureSpec{}, fmt.Errorf("iq-capture: seconds must be a positive integer, got %q", v)
+			}
+			spec.Seconds = n
+		case "format":
+			f := strings.ToLower(v)
+			switch f {
+			case "f32", "u8":
+				spec.Format = f
+			default:
+				return iqCaptureSpec{}, fmt.Errorf("iq-capture: format must be u8 or f32, got %q", v)
+			}
+		default:
+			return iqCaptureSpec{}, fmt.Errorf("iq-capture: unknown key %q", k)
+		}
+	}
+	if spec.Serial == "" {
+		return iqCaptureSpec{}, errors.New("iq-capture: serial=<s> is required")
+	}
+	if spec.Path == "" {
+		return iqCaptureSpec{}, errors.New("iq-capture: path=<file> is required")
+	}
+	if spec.Seconds == 0 {
+		return iqCaptureSpec{}, errors.New("iq-capture: seconds=<n> is required")
+	}
+	return spec, nil
+}
+
+// runIQCapture subscribes to broker, writes the configured number of
+// seconds of raw IQ to spec.Path, then returns. ctx cancels the
+// capture early. Subscriber drops are counted in the broker's drop
+// counter and surfaced once at the end so the operator knows the
+// capture is incomplete — drops are NOT retried (the primary IQ
+// stream is what the daemon needs unimpeded). Issue #402 diagnostic.
+func runIQCapture(ctx context.Context, broker *iqtap.Broker, spec iqCaptureSpec, log *slog.Logger) error {
+	if broker == nil {
+		return fmt.Errorf("iq-capture: no broker for serial %q", spec.Serial)
+	}
+
+	f, err := os.Create(spec.Path)
+	if err != nil {
+		return fmt.Errorf("iq-capture: create %s: %w", spec.Path, err)
+	}
+	defer f.Close()
+
+	sub := broker.Subscribe()
+	defer sub.Close()
+
+	// Encode chunk → bytes per the requested format. Reused scratch
+	// buffer keeps the per-chunk allocation amortised.
+	var scratch []byte
+	encode := encodeF32
+	bytesPerSample := 8
+	if spec.Format == "u8" {
+		encode = encodeU8
+		bytesPerSample = 2
+	}
+
+	deadline := time.Now().Add(time.Duration(spec.Seconds) * time.Second)
+	log.Info("iq-capture: started",
+		"serial", spec.Serial, "path", spec.Path,
+		"seconds", spec.Seconds, "format", spec.Format)
+
+	var samplesWritten int64
+	for {
+		select {
+		case <-ctx.Done():
+			return finishIQCapture(log, spec, f, samplesWritten, bytesPerSample, sub.Dropped(), ctx.Err())
+		case chunk, ok := <-sub.C:
+			if !ok {
+				return finishIQCapture(log, spec, f, samplesWritten, bytesPerSample, sub.Dropped(), errors.New("iq-capture: broker closed before capture finished"))
+			}
+			if cap(scratch) < len(chunk)*bytesPerSample {
+				scratch = make([]byte, len(chunk)*bytesPerSample)
+			} else {
+				scratch = scratch[:len(chunk)*bytesPerSample]
+			}
+			encode(scratch, chunk)
+			if _, err := f.Write(scratch); err != nil {
+				return finishIQCapture(log, spec, f, samplesWritten, bytesPerSample, sub.Dropped(), fmt.Errorf("write: %w", err))
+			}
+			samplesWritten += int64(len(chunk))
+			if time.Now().After(deadline) {
+				return finishIQCapture(log, spec, f, samplesWritten, bytesPerSample, sub.Dropped(), nil)
+			}
+		}
+	}
+}
+
+func finishIQCapture(log *slog.Logger, spec iqCaptureSpec, f io.Closer, samples int64, bytesPerSample int, drops uint64, runErr error) error {
+	// Best-effort close; the deferred Close in runIQCapture also fires
+	// but we want flush/error visibility right here.
+	closeErr := f.Close()
+	args := []any{
+		"serial", spec.Serial, "path", spec.Path,
+		"samples", samples, "bytes", samples * int64(bytesPerSample),
+		"drops", drops,
+	}
+	if runErr != nil {
+		args = append(args, "err", runErr)
+		log.Warn("iq-capture: stopped", args...)
+		// Closing twice is harmless on *os.File; ignore the second
+		// "file already closed" error.
+		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			return fmt.Errorf("%w (and close: %v)", runErr, closeErr)
+		}
+		return runErr
+	}
+	log.Info("iq-capture: finished", args...)
+	if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+		return closeErr
+	}
+	return nil
+}
+
+// encodeF32 packs complex64 samples into interleaved little-endian
+// float32 — the GNU Radio cfile shape replay.go's decodeF32Replay
+// reads back.
+func encodeF32(dst []byte, src []complex64) {
+	for i, c := range src {
+		binary.LittleEndian.PutUint32(dst[8*i:], math.Float32bits(real(c)))
+		binary.LittleEndian.PutUint32(dst[8*i+4:], math.Float32bits(imag(c)))
+	}
+}
+
+// encodeU8 packs complex64 samples back into the rtl_sdr-native
+// unsigned-8-bit shape (inverse of decodeU8Replay): centre at 127.5,
+// scale by 127.5, clip to [0, 255]. Lossy — favour f32 unless the
+// downstream tool only consumes rtl_sdr-native bytes.
+func encodeU8(dst []byte, src []complex64) {
+	for i, c := range src {
+		dst[2*i] = clipU8(float64(real(c))*127.5 + 127.5)
+		dst[2*i+1] = clipU8(float64(imag(c))*127.5 + 127.5)
+	}
+}
+
+func clipU8(x float64) byte {
+	if x < 0 {
+		return 0
+	}
+	if x > 255 {
+		return 255
+	}
+	return byte(x + 0.5)
+}
