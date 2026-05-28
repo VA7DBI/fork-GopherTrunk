@@ -441,7 +441,16 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 				log.Info("rtl_tcp endpoints mounted", "count", len(rspecs))
 			}
 		}
-		if err := d.pool.Open(cfg.SDR.SampleRate, hints); err != nil {
+		if err := d.pool.OpenWith(sdr.PoolOpenOptions{
+			SampleRateHz: cfg.SDR.SampleRate,
+			Hints:        hints,
+			// Strict mode: when the operator has listed devices in
+			// sdr.devices, treat that list as an allowlist. Devices
+			// that are physically connected but not named are left
+			// alone — they may belong to another process on the
+			// host (issue #264).
+			Strict: len(cfg.SDR.Devices) > 0,
+		}); err != nil {
 			log.Warn("daemon: SDR pool open failed", "err", err)
 			d.addWarning(fmt.Sprintf(
 				"SDR pool failed to open (%v) — no radios will demodulate; check device permissions / cabling / kernel modules",
