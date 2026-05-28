@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -353,8 +354,8 @@ func TestComposerP25Phase1TouchGatedOnLDUProgress(t *testing.T) {
 // chain now emits one Info line at startup naming the resolved mode.
 func TestComposerP25Phase1VoiceChainLogsDemodMode(t *testing.T) {
 	const sampleRate = 48_000.0
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	buf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	src := newFakeSource()
 	bus := events.NewBus(8)
@@ -408,4 +409,24 @@ func TestComposerP25Phase1VoiceChainLogsDemodMode(t *testing.T) {
 	if !strings.Contains(out, "demod_mode=cqpsk") {
 		t.Errorf("expected demod_mode=cqpsk in log; got:\n%s", out)
 	}
+}
+
+// syncBuffer is a bytes.Buffer guarded by a mutex so the test
+// goroutine can read the captured log output while the composer
+// chain goroutine concurrently writes to it via slog's handler.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
