@@ -23,6 +23,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/conventional"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
 
+	aisgmsk "github.com/MattCheramie/GopherTrunk/internal/radio/ais/gmsk"
 	aprsafsk "github.com/MattCheramie/GopherTrunk/internal/radio/aprs/afsk"
 	pocsagrx "github.com/MattCheramie/GopherTrunk/internal/radio/pager/pocsag/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
@@ -154,6 +155,12 @@ type Daemon struct {
 	// pinned-channel layout as POCSAG: one SDR per APRS frequency.
 	aprsReceivers []*aprsafsk.Receiver
 	aprsSpecs     []aprsSpec // index-aligned with aprsReceivers
+	// aisReceivers holds one AIS GMSK receiver per configured
+	// ais.channels entry. Same shape as the APRS receivers above:
+	// each subscribes to its assigned SDR's iqtap broker and
+	// publishes decoded vessel messages on KindAISMessage.
+	aisReceivers []*aisgmsk.Receiver
+	aisSpecs     []aisSpec // index-aligned with aisReceivers
 	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
 	// Primary consumers (CC decoder, conventional scanner) stream IQ
 	// through the broker so secondary observers (live spectrum,
@@ -966,6 +973,39 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		d.aprsSpecs = append(d.aprsSpecs, spec)
 	}
 
+	// AIS GMSK receivers — one per configured ais.channels entry.
+	// Same construction shape as POCSAG / APRS above: per-entry
+	// validation in the receiver, failures surface as a startup
+	// warning and skip the entry (nil slot preserved for stable
+	// indexing).
+	for _, ac := range cfg.AIS.Channels {
+		spec := aisSpec{serial: ac.Serial, freq: ac.FrequencyHz}
+		if ac.Serial == "" || ac.FrequencyHz == 0 {
+			d.addWarning(fmt.Sprintf(
+				"ais.channels: entry missing serial or frequency_hz (serial=%q freq=%d) — skipped",
+				ac.Serial, ac.FrequencyHz))
+			d.aisReceivers = append(d.aisReceivers, nil)
+			d.aisSpecs = append(d.aisSpecs, spec)
+			continue
+		}
+		rcv, err := aisgmsk.New(aisgmsk.Options{
+			InputRateHz:     cfg.SDR.SampleRate,
+			SourceName:      ac.Serial,
+			Bus:             d.bus,
+			DropBadFCS:      ac.DropBadFCS,
+			DropNonPosition: ac.DropNonPosition,
+			Log:             log,
+		})
+		if err != nil {
+			d.addWarning(fmt.Sprintf("ais.channels[%s]: %v — skipped", ac.Serial, err))
+			d.aisReceivers = append(d.aisReceivers, nil)
+			d.aisSpecs = append(d.aisSpecs, spec)
+			continue
+		}
+		d.aisReceivers = append(d.aisReceivers, rcv)
+		d.aisSpecs = append(d.aisSpecs, spec)
+	}
+
 	// Storage / call log / retention — optional.
 	if cfg.Storage.Path != "" {
 		db, err := storage.Open(cfg.Storage.Path)
@@ -1374,6 +1414,39 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			if err := br.SetCenterFreq(spec.freq); err != nil {
 				d.log.Warn("aprs: SetCenterFreq failed",
+					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
+				return nil
+			}
+			sub := br.Subscribe()
+			defer sub.Close()
+			return rcv.Process(ctx, sub.C)
+		})
+	}
+	// AIS receivers — same shape as APRS / POCSAG above. Each
+	// subscribes to its assigned SDR's iqtap broker and runs the
+	// GMSK pipeline (FM demod → GFSK matched filter → symbol-
+	// timing recovery → NRZI → HDLC framer → CRC validation →
+	// AIS message parser), publishing messages onto the events
+	// bus where the VesselLog subscriber persists them and the
+	// /ais panel renders them. Non-essential: a missing SDR or
+	// misconfigured frequency is logged but doesn't bring down
+	// the trunking pipeline.
+	for i, rcv := range d.aisReceivers {
+		if rcv == nil {
+			continue // skipped at construction; warning already logged
+		}
+		rcv := rcv
+		spec := d.aisSpecs[i]
+		name := fmt.Sprintf("ais-%s-%d", spec.serial, spec.freq)
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			br := d.iqBrokers[spec.serial]
+			if br == nil {
+				d.log.Warn("ais: SDR not found, skipping receiver",
+					"serial", spec.serial, "freq_hz", spec.freq)
+				return nil
+			}
+			if err := br.SetCenterFreq(spec.freq); err != nil {
+				d.log.Warn("ais: SetCenterFreq failed",
 					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
 				return nil
 			}
@@ -2268,6 +2341,15 @@ func (a aisProvider) RecentAISMessages(limit int) ([]storage.AISMessage, error) 
 // loop can spawn each receiver without re-walking the YAML. Mirrors
 // pocsagSpec.
 type aprsSpec struct {
+	serial string
+	freq   uint32
+}
+
+// aisSpec captures the broker-side wiring info for one configured
+// AIS channel. Index-aligned with Daemon.aisReceivers so the Run
+// loop can spawn each receiver without re-walking the YAML. Mirrors
+// aprsSpec / pocsagSpec.
+type aisSpec struct {
 	serial string
 	freq   uint32
 }

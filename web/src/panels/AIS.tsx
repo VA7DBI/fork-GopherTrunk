@@ -73,10 +73,9 @@ export function AIS() {
                   No AIS messages yet. Add an{" "}
                   <code className="text-accent">ais.channels</code>{" "}
                   entry to your config (marine VHF 87B = 161.975 MHz · 88B =
-                  162.025 MHz) and decoded vessels will land here as
-                  they arrive. DSP wiring (9600 Bd GMSK → HDLC →
-                  AIS message parser) is the planned follow-up; the
-                  protocol + storage + REST scaffolding is live now.
+                  162.025 MHz) and decoded vessels — position reports,
+                  static + voyage data, base-station reports — will land
+                  here as they arrive.
                 </td>
               </tr>
             ) : (

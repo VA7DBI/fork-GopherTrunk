@@ -103,21 +103,80 @@ Spec references:
   reference parser docs (gpsd's AIVDM decoder), cross-checked
   against real on-the-air payloads.
 
+## Bit-stream pipeline (`internal/radio/ais/receiver`)
+
+The orchestrator. Threads bits through the HDLC framer (reused
+from `aprs/hdlc`), validates the trailing CRC-CCITT (same
+polynomial 0x8408 / init 0xFFFF / final XOR 0xFFFF AX.25 uses —
+AIS inherits the HDLC link-layer conventions verbatim per ITU-R
+M.1371-5 §4.2), unpacks the payload bytes into the MSB-first bit
+slice the AIS message parser expects, and publishes one
+`events.KindAISMessage` per successfully-parsed message.
+
+- **`internal/radio/ais/receiver`** — `Push(bit byte)` consumes
+  one LSB-first wire bit. Bus payload is `storage.AISMessage`
+  carrying MMSI + type + (for position-bearing types) lat/lon +
+  COG / SOG + heading + (for static types) vessel name + callsign
+  + destination + ship-type + IMO. Options expose `DropBadFCS`
+  (silent-drop CRC-failed messages; default false) and
+  `DropNonPosition` (silent-drop static / base-station chatter;
+  default false). The receiver counts frames in / parsed /
+  CRC-failed / emitted / too-short for future `/metrics` surfacing.
+
+## DSP frontend (`internal/radio/ais/gmsk`)
+
+The IQ-to-bits layer. One `gmsk.Receiver` per configured AIS
+channel; the daemon subscribes each to its assigned SDR's iqtap
+broker. Pipeline:
+
+```
+IQ chunks (Fs Hz, complex64)
+  → FM demod (internal/dsp/demod/fm.FM)
+  → real resampler down to 76,800 sps audio
+  → GFSK matched filter (BT = 0.4, span 4 symbols)
+  → Mueller-Müller symbol-timing recovery (8 sps → 1 sample/symbol)
+  → zero-threshold slicer (raw NRZI bit)
+  → NRZI decode (transition = 0, no transition = 1)
+  → ais/receiver.Push(bit)
+  → events.KindAISMessage on the bus
+```
+
+`Stats()` surfaces IQ-samples-seen + bits-emitted counters for
+`/metrics`. The bit-stream layer's own `Stats()` (frames in /
+parsed / CRC-failed / emitted / too-short) is reachable via
+`Inner()`.
+
+## Configuration
+
+```yaml
+ais:
+  channels:
+    - serial: "marine-antenna"
+      frequency_hz: 161_975_000      # 87B (or 162_025_000 = 88B)
+      drop_bad_fcs: false            # default false; publishes CRC-failed
+                                     #  messages with FCSOK=false
+      drop_non_position: false       # default false; static-data and
+                                     #  base-station messages still surface
+```
+
+A misconfigured entry surfaces as a startup warning and is
+skipped — same non-essential treatment as `paging.pocsag` and
+`aprs.channels`.
+
 ## What's pending
 
-- **DSP receiver.** 9600 Bd GMSK demodulation (BT = 0.4) +
-  HDLC framing (the AIS link layer reuses the same 0x7E flag +
-  bit-stuffing + NRZI conventions as AX.25; the AIS frame
-  body wraps a 16-bit CRC-CCITT). Pattern matches the APRS
-  receiver (#411): iqtap broker subscriber → narrowband FM
-  demod → GFSK matched filter → symbol-time recovery → HDLC
-  framer → message parser. Once that ships the end-to-end
-  pipeline goes live.
+- **Real-fixture validation.** The synthetic IQ end-to-end test
+  for the GMSK frontend is deferred to the same follow-up that
+  drops captured `samples/ais/` recordings; the receiver code
+  is exercised end-to-end by the bit-stream synthetic in
+  `internal/radio/ais/receiver/receiver_test.go` (AIVDM type-1
+  sample → buildAISFrame → HDLC wrap → Receiver.Push → bus event
+  with expected MMSI + lat/lon).
 - **Multi-slot frame reassembly.** Several message types span
-  two AIVDM frames in the standard NMEA-0183 / IEC 61162-1
-  wrapper. The current parser handles the single-frame
-  variants; multi-slot stitching at the bit-stream layer
-  arrives with the DSP frontend.
+  two AIS slots when transmitted (type 5 + type 19 + type 26).
+  The current parser handles the single-slot variants; the
+  multi-slot path needs a per-MMSI buffer plus the channel-A /
+  channel-B re-orderer.
 - **Live map.** AIS-position messages all carry lat/lon — a
   Leaflet / MapLibre overlay shared with `/aprs` showing the
   most recent vessel fixes is the obvious next step once the
