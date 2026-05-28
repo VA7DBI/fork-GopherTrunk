@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useShared } from "../store/shared";
-import type { EventDTO } from "../api/types";
+import type { EventDTO, TalkgroupDTO } from "../api/types";
 
 // CC Activity panel — a focused view of the trunked control-channel
 // "chatter" already flowing on the events bus. Filters the rolling
@@ -56,16 +56,19 @@ function ridLink(rid: number) {
 
 export function CCActivity() {
   const events = useShared((s) => s.events);
+  const talkgroups = useShared((s) => s.talkgroups);
   const [paused, setPaused] = useState(false);
   const [systemFilter, setSystemFilter] = useState("");
   const [kindFilter, setKindFilter] = useState<string>("");
 
   const rows = useMemo<Row[]>(() => {
+    const tgByID = new Map<number, TalkgroupDTO>();
+    for (const tg of talkgroups) tgByID.set(tg.id, tg);
     const list: Row[] = [];
     for (const ev of events) {
       const label = CC_KINDS[ev.kind];
       if (!label) continue;
-      const row = renderRow(ev, label);
+      const row = renderRow(ev, label, tgByID);
       if (!row) continue;
       if (systemFilter && !row.system.toLowerCase().includes(systemFilter.toLowerCase())) {
         continue;
@@ -75,7 +78,7 @@ export function CCActivity() {
     }
     // Newest first.
     return list.reverse();
-  }, [events, systemFilter, kindFilter]);
+  }, [events, talkgroups, systemFilter, kindFilter]);
 
   return (
     <div className="space-y-3">
@@ -153,7 +156,11 @@ export function CCActivity() {
   );
 }
 
-function renderRow(ev: EventDTO, label: string): Row | null {
+function renderRow(
+  ev: EventDTO,
+  label: string,
+  tgByID: Map<number, TalkgroupDTO>,
+): Row | null {
   const payload = (ev.payload ?? {}) as Record<string, unknown>;
   switch (ev.kind) {
     case "grant":
@@ -215,12 +222,28 @@ function renderRow(ev: EventDTO, label: string): Row | null {
     case "patch": {
       const system = str(payload.system);
       const superGroup = num(payload.super_group ?? payload.regroup_id);
-      const members = (payload.members ?? []) as unknown[];
+      const memberIDs = ((payload.members ?? []) as unknown[])
+        .map((m) => num(m))
+        .filter((n) => n > 0);
       const op = payload.add === false || payload.cancelled || payload.removed ? "cancel" : "add";
-      const details =
-        `super-group ${superGroup}` +
-        (members.length ? ` · ${members.length} member${members.length === 1 ? "" : "s"}` : "") +
-        ` · ${op}`;
+      const verb = op === "add" ? "Patch Active" : "Patch Cancelled";
+      const memberNodes = memberIDs.map((id, i) => {
+        const tg = tgByID.get(id);
+        const text = tg?.alpha_tag ? `${tg.alpha_tag} (${id})` : `TG ${id}`;
+        return (
+          <span key={id}>
+            {i > 0 ? " & " : ""}
+            {text}
+          </span>
+        );
+      });
+      const details = (
+        <>
+          {`${verb}: `}
+          {memberNodes.length > 0 ? memberNodes : <span className="text-muted">no members</span>}
+          {superGroup ? <span className="text-muted">{` [SG ${superGroup}]`}</span> : null}
+        </>
+      );
       return { ts: ev.timestamp, kind: ev.kind, label, system, details, raw: ev.payload };
     }
     case "talker.alias": {
