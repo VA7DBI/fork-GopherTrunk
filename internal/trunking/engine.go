@@ -57,8 +57,13 @@ type EngineOptions struct {
 	Log        *slog.Logger
 	VoicePool  *VoicePool
 	Talkgroups *TalkgroupDB
-	// CallTimeout is how long a call can run without a Touch before the
-	// watchdog ends it as EndReasonTimeout. Default 30 s.
+	// CallTimeout is how long a call can run without a Touch before
+	// the watchdog reaps it. Default 30 s. The end reason depends on
+	// whether the call ever decoded frames: EndReasonNormal when
+	// frames arrived and the carrier later dropped (P25's natural
+	// end-of-call mechanism, since the CC has no explicit channel
+	// release); EndReasonTimeout when no frames ever arrived (silent
+	// decode failure).
 	CallTimeout time.Duration
 	// Now is injectable for tests; defaults to time.Now.
 	Now func() time.Time
@@ -500,19 +505,35 @@ func (e *Engine) runWatchdog() {
 	cutoff := now.Add(-e.timeout)
 	for _, ac := range e.pool.Active() {
 		if ac.LastHeardAt.Before(cutoff) {
-			// Surface the exact timing the watchdog used before
-			// firing — issue #356 follow-up where a field log showed
-			// reason=timeout calls that didn't square with the
-			// configured trunking.call_timeout_ms, with no log to
-			// disambiguate which side of the comparison was wrong.
+			// Distinguish carrier-drop natural end from silent-from-
+			// start decode failure. P25 trunking has no explicit
+			// channel-release message on the CC for most calls, so
+			// the only natural end-of-call signal IS the grace
+			// timeout after the last LDU. A call whose LastHeardAt
+			// advanced past StartedAt received frames at least once
+			// — its end is "carrier dropped, watchdog reaped after
+			// the grace window" → EndReasonNormal. A call whose
+			// LastHeardAt is still equal to StartedAt never decoded
+			// a single frame → EndReasonTimeout (the real failure
+			// mode issue #356 wants to surface). Issue #356
+			// follow-up: a field log showed three healthy calls all
+			// reported as reason=timeout, leading the operator to
+			// believe the decode was still broken when it was
+			// actually a terminology problem.
+			reason := EndReasonTimeout
+			if ac.LastHeardAt.After(ac.StartedAt) {
+				reason = EndReasonNormal
+			}
 			e.log.Debug("watchdog: reaping call",
 				"device", ac.Device.Serial,
 				"grant", ac.Grant.String(),
 				"last_heard_at", ac.LastHeardAt,
+				"started_at", ac.StartedAt,
 				"now", now,
 				"elapsed", now.Sub(ac.LastHeardAt),
-				"timeout", e.timeout)
-			e.endCall(ac, EndReasonTimeout)
+				"timeout", e.timeout,
+				"reason", reason)
+			e.endCall(ac, reason)
 		}
 	}
 }
