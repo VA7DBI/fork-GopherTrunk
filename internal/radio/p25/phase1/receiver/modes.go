@@ -31,6 +31,20 @@ const (
 	DemodCQPSK
 )
 
+// String returns the canonical lowercase name for the mode, matching
+// the strings ParseDemodMode accepts so log lines round-trip back to
+// configuration values.
+func (m DemodMode) String() string {
+	switch m {
+	case DemodC4FM:
+		return "c4fm"
+	case DemodCQPSK:
+		return "cqpsk"
+	default:
+		return "unknown"
+	}
+}
+
 // ParseDemodMode maps a config / user-facing string into a DemodMode.
 // Recognised values (case-insensitive): "" / "c4fm" / "fm" → DemodC4FM
 // (the default — matches every previously-shipping config and the
