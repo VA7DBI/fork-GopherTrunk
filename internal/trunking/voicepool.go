@@ -235,3 +235,30 @@ func (p *VoicePool) UpdateEncryption(serial string, algID uint8, keyID uint16) (
 	ac.Grant.KeyID = keyID
 	return ac.Grant, true
 }
+
+// UpdateSource backfills SourceID + Encrypted on the active call
+// bound to serial — used by the engine when an in-call
+// GROUP_VOICE_CHANNEL_USER PDU arrives on the traffic channel after
+// a compressed grant whose SOURCE_ID / SVC_OPTIONS were absent
+// (e.g. P25 Phase 2 MMR). SourceID is only overwritten when the
+// new value is non-zero so a later compressed-form update doesn't
+// blank out a legitimate source. Encrypted is OR-merged so an
+// in-call PDU can flip a non-encrypted grant to encrypted but
+// never the other way (the spec doesn't define mid-call
+// decryption). Returns a copy of the updated Grant + ok=true when
+// a matching call was found.
+func (p *VoicePool) UpdateSource(serial string, sourceID uint32, encrypted bool) (Grant, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ac, ok := p.active[serial]
+	if !ok {
+		return Grant{}, false
+	}
+	if sourceID != 0 {
+		ac.Grant.SourceID = sourceID
+	}
+	if encrypted {
+		ac.Grant.Encrypted = true
+	}
+	return ac.Grant, true
+}

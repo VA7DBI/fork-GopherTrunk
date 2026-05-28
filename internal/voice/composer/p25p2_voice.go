@@ -65,6 +65,11 @@ func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, sy
 	rs, _ := c.sink.(rawFrameSink)
 	sfDec := p25p2.NewSuperframeDecoder()
 	aliasAsm := p25p2.NewTalkerAliasAssembler(nil)
+	// macSeen rate-limits the diagnostic per-PDU log to one line per
+	// opcode (+ MFID for vendor opcodes) per call — enough to confirm
+	// which transports MMR-style systems actually emit, without
+	// drowning the log when an opcode repeats many times per call.
+	macSeen := make(map[uint16]struct{})
 	// voiceSubframes counts P25 Phase 2 voice-bearing subframes the
 	// receiver delivered — i.e. real voice activity. The touch ticker
 	// (below) only refreshes the engine's LastHeardAt when this counter
@@ -102,15 +107,35 @@ func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, sy
 					}
 				}
 				for _, pdu := range p25p2.DecodeSuperframeMACPDUs(sf, macCfg) {
-					f, ok := pdu.AsTalkerAliasFragment()
-					if !ok {
+					// Prong C diagnostic: log the first PDU seen per
+					// (opcode, MFID) on this call. If a real on-air
+					// system emits an opcode we don't dispatch
+					// (vendor talker-alias variants, an unexpected
+					// User PDU encoding, …) the log line tells the
+					// next field tester exactly what we saw.
+					key := uint16(pdu.Opcode)<<8 | uint16(pdu.MFID)
+					if _, seen := macSeen[key]; !seen {
+						macSeen[key] = struct{}{}
+						c.log.Info("composer: p25p2 mac pdu",
+							"system", system, "serial", serial,
+							"opcode", pdu.Opcode, "mfid", pdu.MFID,
+							"payload_len", len(pdu.Payload))
+					}
+					if u, ok := pdu.AsGroupVoiceChannelUser(); ok {
+						c.publishP25Phase2CallSource(serial, u)
 						continue
 					}
-					alias, src, complete := aliasAsm.Add(f)
-					if !complete {
+					if es, ok := pdu.AsEncryptionSync(); ok {
+						c.publishP25Phase2CallEncryption(serial, es)
 						continue
 					}
-					c.publishP25Phase2TalkerAlias(system, src, alias)
+					if f, ok := pdu.AsTalkerAliasFragment(); ok {
+						alias, src, complete := aliasAsm.Add(f)
+						if complete {
+							c.publishP25Phase2TalkerAlias(system, src, alias)
+						}
+						continue
+					}
 				}
 			}
 		},
@@ -163,4 +188,45 @@ func (c *Composer) publishP25Phase2TalkerAlias(system string, sourceID uint32, a
 	})
 	c.log.Info("composer: p25p2 talker alias",
 		"system", system, "src", sourceID, "alias", alias)
+}
+
+// publishP25Phase2CallSource publishes a KindCallSourceUpdate event so
+// the trunking engine can backfill the bound ActiveCall's SourceID +
+// Encrypted from an in-call GROUP_VOICE_CHANNEL_USER PDU. The engine
+// fills in System / Protocol / GroupID from the bound Grant on
+// republish — leave them blank here.
+func (c *Composer) publishP25Phase2CallSource(serial string, u p25p2.GroupVoiceChannelUser) {
+	if c.bus == nil {
+		return
+	}
+	so := p25p2.ServiceOptions(u.ServiceOptions)
+	c.bus.Publish(events.Event{
+		Kind: events.KindCallSourceUpdate,
+		Payload: trunking.CallSourceUpdate{
+			DeviceSerial: serial,
+			SourceID:     u.SourceID,
+			Encrypted:    so.Encrypted(),
+			At:           time.Now().UTC(),
+		},
+	})
+}
+
+// publishP25Phase2CallEncryption mirrors the Phase 1 LDU2 in-call
+// encryption-sync path for Phase 2 traffic-channel EncryptionSync MAC
+// PDUs. The engine backfills ALGID/KID onto the bound ActiveCall's
+// Grant and republishes with the call's identity.
+func (c *Composer) publishP25Phase2CallEncryption(serial string, es p25p2.EncryptionSync) {
+	if c.bus == nil {
+		return
+	}
+	c.bus.Publish(events.Event{
+		Kind: events.KindCallEncryption,
+		Payload: trunking.CallEncryption{
+			DeviceSerial:     serial,
+			AlgorithmID:      es.AlgorithmID,
+			KeyID:            es.KeyID,
+			MessageIndicator: es.MessageIndicator,
+			At:               time.Now().UTC(),
+		},
+	})
 }

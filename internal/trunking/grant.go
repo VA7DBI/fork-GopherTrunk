@@ -205,3 +205,23 @@ type CallEncryption struct {
 	MessageIndicator [9]byte
 	At               time.Time
 }
+
+// CallSourceUpdate is the payload of an events.KindCallSourceUpdate
+// event. The voice composer publishes one when it recovers the
+// source radio ID + encryption state from in-call traffic-channel
+// signalling — e.g. a P25 Phase 2 GROUP_VOICE_CHANNEL_USER PDU
+// where the CC grant arrived in a compressed form without those
+// fields (src=0 + enc=false). The engine subscribes, backfills the
+// bound ActiveCall.Grant.SourceID + .Encrypted via the voice pool,
+// and republishes the event with System / Protocol / GroupID
+// populated so SSE + TUI consumers can patch their live view.
+// DeviceSerial keys the update to a specific active call.
+type CallSourceUpdate struct {
+	DeviceSerial string
+	System       string // filled in by the engine on republish
+	Protocol     string
+	GroupID      uint32 // filled in by the engine on republish from the bound Grant
+	SourceID     uint32
+	Encrypted    bool
+	At           time.Time
+}

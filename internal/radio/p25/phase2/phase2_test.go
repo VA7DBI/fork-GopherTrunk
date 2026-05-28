@@ -41,7 +41,7 @@ func TestMACPDUIsIdle(t *testing.T) {
 		OpMACIdle:                true,
 		OpMACHangtime:            true,
 		OpMACEnd:                 true,
-		OpMACPTT:                 false,
+		OpGroupVoiceChannelUserAbbreviated:                 false,
 		OpGroupVoiceChannelGrant: false,
 	}
 	for op, want := range cases {
@@ -81,7 +81,7 @@ func TestAsGroupVoiceChannelGrantExtractsFields(t *testing.T) {
 }
 
 func TestAsGroupVoiceChannelGrantWrongOpcode(t *testing.T) {
-	pdu := MACPDU{Opcode: OpMACPTT, Payload: make([]byte, 8)}
+	pdu := MACPDU{Opcode: OpGroupVoiceChannelUserAbbreviated, Payload: make([]byte, 8)}
 	if _, ok := pdu.AsGroupVoiceChannelGrant(); ok {
 		t.Fatal("AsGroupVoiceChannelGrant returned ok for non-grant opcode")
 	}

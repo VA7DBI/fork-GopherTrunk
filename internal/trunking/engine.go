@@ -140,6 +140,10 @@ func (e *Engine) Run(ctx context.Context) error {
 				if c, ok := ev.Payload.(CallEncryption); ok {
 					e.handleCallEncryption(c)
 				}
+			case events.KindCallSourceUpdate:
+				if c, ok := ev.Payload.(CallSourceUpdate); ok {
+					e.handleCallSourceUpdate(c)
+				}
 			}
 		case <-tick.C:
 			e.runWatchdog()
@@ -276,6 +280,62 @@ func (e *Engine) handleCallEncryption(c CallEncryption) {
 		"system", enriched.System,
 		"tg", enriched.GroupID,
 		"alg", c.AlgorithmID, "key", c.KeyID)
+}
+
+// handleCallSourceUpdate backfills SourceID + Encrypted on the bound
+// ActiveCall when an in-call GROUP_VOICE_CHANNEL_USER PDU arrives on
+// the voice channel — used by P25 Phase 2 systems whose CC grant
+// arrives in a compressed form (src=0 + enc=false) and the source
+// RID + encryption state only surface in-call on the traffic
+// channel. Republishes the event with the call's system / protocol
+// / group context so SSE + TUI consumers can patch their live view.
+// Skipped when System is already populated — the engine's own
+// re-publish coming back through the subscription. Logged-and-
+// dropped when no active call matches the device serial (e.g. the
+// call already ended).
+func (e *Engine) handleCallSourceUpdate(c CallSourceUpdate) {
+	if c.System != "" {
+		return
+	}
+	g, ok := e.pool.UpdateSource(c.DeviceSerial, c.SourceID, c.Encrypted)
+	if !ok {
+		e.mu.Lock()
+		if ac, sok := e.synthetic[c.DeviceSerial]; sok {
+			if c.SourceID != 0 {
+				ac.Grant.SourceID = c.SourceID
+			}
+			if c.Encrypted {
+				ac.Grant.Encrypted = true
+			}
+			g = ac.Grant
+			ok = true
+		}
+		e.mu.Unlock()
+	}
+	if !ok {
+		e.log.Debug("call source update for unknown call",
+			"device", c.DeviceSerial)
+		return
+	}
+	enriched := CallSourceUpdate{
+		DeviceSerial: c.DeviceSerial,
+		System:       g.System,
+		Protocol:     g.Protocol,
+		GroupID:      g.GroupID,
+		SourceID:     g.SourceID,
+		Encrypted:    g.Encrypted,
+		At:           c.At,
+	}
+	e.bus.Publish(events.Event{
+		Kind:    events.KindCallSourceUpdate,
+		Payload: enriched,
+	})
+	e.log.Info("call source update",
+		"device", c.DeviceSerial,
+		"system", enriched.System,
+		"tg", enriched.GroupID,
+		"src", enriched.SourceID,
+		"enc", enriched.Encrypted)
 }
 
 // handlePatch applies a patch announcement to the registry: an Add
