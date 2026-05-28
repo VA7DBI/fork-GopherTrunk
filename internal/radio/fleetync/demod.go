@@ -51,7 +51,7 @@ func (d *Demodulator) ProcessSamples(samples []Sample) int {
 		// Simple energy-based symbol detection
 		// In production, use proper polyphase filter banks
 		// For now, use a simplistic approach: run-length encoding of sign changes
-		
+
 		for i := 0; i < ND; i++ {
 			if d.decoders[i].processSample(int(centered)) {
 				// Decoder detected a valid message
@@ -70,12 +70,24 @@ func (d *Demodulator) SetMessageCallback(fn func(*Message)) {
 	}
 }
 
+// SetVersion applies the FleetSync variant mode across all decoder
+// channels. VersionFleetSync1 and VersionFleetSync2 force a mode;
+// any other value falls back to FleetSync I defaults.
+func (d *Demodulator) SetVersion(v FSyncVersion) {
+	if v != VersionFleetSync1 && v != VersionFleetSync2 {
+		v = VersionFleetSync1
+	}
+	for i := 0; i < ND; i++ {
+		d.decoders[i].SetVersion(v)
+	}
+}
+
 // Metrics returns current demodulator performance metrics
 func (d *Demodulator) Metrics() FSyncMetrics {
 	m := FSyncMetrics{}
 	for i := 0; i < ND; i++ {
 		if d.decoders[i] != nil {
-			m.ChannelStates[i] = fmt.Sprintf("state:%d bits:%d", 
+			m.ChannelStates[i] = fmt.Sprintf("state:%d bits:%d",
 				d.decoders[i].syncState, d.decoders[i].goodBits)
 		}
 	}

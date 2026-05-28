@@ -229,6 +229,20 @@ func TestFleetSyncVersionDetection(t *testing.T) {
 	}
 }
 
+// TestDemodulatorSetVersion verifies version propagation to all channels.
+func TestDemodulatorSetVersion(t *testing.T) {
+	dem, err := NewDemodulator(8000)
+	if err != nil {
+		t.Fatalf("NewDemodulator: %v", err)
+	}
+	dem.SetVersion(VersionFleetSync2)
+	for i := 0; i < ND; i++ {
+		if dem.decoders[i].version != VersionFleetSync2 {
+			t.Fatalf("decoder[%d] version=%d want %d", i, dem.decoders[i].version, VersionFleetSync2)
+		}
+	}
+}
+
 // TestMetricsCollection verifies metrics generation
 func TestMetricsCollection(t *testing.T) {
 	dem, _ := NewDemodulator(8000)

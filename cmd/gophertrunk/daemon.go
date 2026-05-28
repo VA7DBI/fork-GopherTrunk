@@ -22,6 +22,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/conventional"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
 
+	fleetsyncrx "github.com/MattCheramie/GopherTrunk/internal/radio/fleetync/receiver"
 	pocsagrx "github.com/MattCheramie/GopherTrunk/internal/radio/pager/pocsag/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
@@ -133,6 +134,12 @@ type Daemon struct {
 	// is a planned follow-up.
 	pocsagReceivers []*pocsagrx.Receiver
 	pocsagSpecs     []pocsagSpec // index-aligned with pocsagReceivers
+	// fleetsyncReceivers holds one FleetSync receiver per configured
+	// fleetsync.channels entry. Each subscribes to the iqtap broker
+	// for its assigned SDR and publishes decoded frames on the bus
+	// as events.KindFleetSyncMessage.
+	fleetsyncReceivers []*fleetsyncrx.Receiver
+	fleetsyncSpecs     []fleetsyncSpec // index-aligned with fleetsyncReceivers
 	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
 	// Primary consumers (CC decoder, conventional scanner) stream IQ
 	// through the broker so secondary observers (live spectrum,
@@ -874,6 +881,39 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		d.pocsagSpecs = append(d.pocsagSpecs, spec)
 	}
 
+	// FleetSync receivers — one per configured fleetsync.channels
+	// entry. Like paging receivers, these are non-essential and
+	// skipped with a warning when an entry is invalid.
+	for _, fc := range cfg.FleetSync.Channels {
+		if !fc.Enabled {
+			continue
+		}
+		spec := fleetsyncSpec{serial: fc.Serial, freq: fc.FrequencyHz}
+		if fc.Serial == "" || fc.FrequencyHz == 0 {
+			d.addWarning(fmt.Sprintf(
+				"fleetsync.channels: entry missing serial or frequency_hz (serial=%q freq=%d) — skipped",
+				fc.Serial, fc.FrequencyHz))
+			d.fleetsyncReceivers = append(d.fleetsyncReceivers, nil)
+			d.fleetsyncSpecs = append(d.fleetsyncSpecs, spec)
+			continue
+		}
+		rcv, err := fleetsyncrx.New(fleetsyncrx.Options{
+			InputRateHz: cfg.SDR.SampleRate,
+			SourceName:  fc.Serial,
+			Version:     fc.Version,
+			Bus:         d.bus,
+			Log:         log,
+		})
+		if err != nil {
+			d.addWarning(fmt.Sprintf("fleetsync.channels[%s]: %v — skipped", fc.Serial, err))
+			d.fleetsyncReceivers = append(d.fleetsyncReceivers, nil)
+			d.fleetsyncSpecs = append(d.fleetsyncSpecs, spec)
+			continue
+		}
+		d.fleetsyncReceivers = append(d.fleetsyncReceivers, rcv)
+		d.fleetsyncSpecs = append(d.fleetsyncSpecs, spec)
+	}
+
 	// Storage / call log / retention — optional.
 	if cfg.Storage.Path != "" {
 		db, err := storage.Open(cfg.Storage.Path)
@@ -1211,6 +1251,34 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			if err := br.SetCenterFreq(spec.freq); err != nil {
 				d.log.Warn("pocsag: SetCenterFreq failed",
+					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
+				return nil
+			}
+			sub := br.Subscribe()
+			defer sub.Close()
+			return rcv.Process(ctx, sub.C)
+		})
+	}
+	// FleetSync receivers — one per configured fleetsync.channels
+	// entry. Mirrors paging startup: each receiver subscribes to its
+	// assigned SDR broker, tunes to the configured center frequency,
+	// then runs FM-demod -> resample -> FleetSync decode.
+	for i, rcv := range d.fleetsyncReceivers {
+		if rcv == nil {
+			continue
+		}
+		rcv := rcv
+		spec := d.fleetsyncSpecs[i]
+		name := fmt.Sprintf("fleetsync-%s-%d", spec.serial, spec.freq)
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			br := d.iqBrokers[spec.serial]
+			if br == nil {
+				d.log.Warn("fleetsync: SDR not found, skipping receiver",
+					"serial", spec.serial, "freq_hz", spec.freq)
+				return nil
+			}
+			if err := br.SetCenterFreq(spec.freq); err != nil {
+				d.log.Warn("fleetsync: SetCenterFreq failed",
 					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
 				return nil
 			}
@@ -1952,6 +2020,15 @@ func (p pagerProvider) RecentPagerMessages(limit int) ([]storage.PagerMessage, e
 // POCSAG paging channel. Index-aligned with Daemon.pocsagReceivers so
 // the Run loop can spawn each receiver without re-walking the YAML.
 type pocsagSpec struct {
+	serial string
+	freq   uint32
+}
+
+// fleetsyncSpec captures the broker-side wiring info for one
+// configured FleetSync channel. Index-aligned with
+// Daemon.fleetsyncReceivers so the Run loop can spawn each receiver
+// without re-walking the YAML.
+type fleetsyncSpec struct {
 	serial string
 	freq   uint32
 }

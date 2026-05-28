@@ -1,0 +1,80 @@
+---
+layout: page
+title: FleetSync
+description: Kenwood FleetSync I/II decoder configuration and runtime behavior
+nav_group: Reference
+---
+
+# FleetSync decoder
+
+GopherTrunk can decode Kenwood FleetSync control/data bursts from
+conventional channels and publish each decoded frame as a live event.
+
+Current scope in this branch:
+
+- FleetSync channel config (`fleetsync.channels`) is supported.
+- The daemon can start one FleetSync receiver per configured channel.
+- Receivers publish `events.KindFleetSyncMessage` payloads on the bus.
+- Core parser/demod packages ship with unit tests.
+
+## Configuration
+
+Add one or more FleetSync channels in config YAML:
+
+```yaml
+fleetsync:
+  channels:
+    - enabled: true
+      name: "City Utilities FleetSync"
+      serial: "00000002"
+      frequency_hz: 451812500
+      version: auto      # auto | fleetsync1 | fleetsync2
+      baud_hz: 1200      # optional (must be 1200 when set)
+```
+
+Field reference:
+
+- `enabled`: enable/disable the channel without deleting it.
+- `name`: optional label for logs/ops context.
+- `serial`: SDR serial to bind this channel to.
+- `frequency_hz`: center frequency for this FleetSync channel.
+- `version`: force decoder mode or let it auto-fallback.
+- `baud_hz`: FleetSync signalling baud (currently 1200 only).
+
+## Runtime behavior
+
+For each enabled channel the daemon:
+
+1. Finds the SDR IQ broker by `serial`.
+2. Tunes to `frequency_hz`.
+3. Runs IQ -> FM demod -> real resample (8 kHz) -> FleetSync decode.
+4. Publishes a `fleetsync.message` event.
+
+The payload is `internal/radio/fleetync.Message` and includes:
+
+- timestamp
+- FleetSync version
+- command/subcommand
+- source and destination addressing
+- emergency/all/priority flags
+- raw frame bytes and parsed payload bytes
+
+## Validation and errors
+
+Config validation rejects:
+
+- missing `serial` on enabled channels
+- missing `frequency_hz` on enabled channels
+- invalid `version` values
+- unsupported `baud_hz` values
+
+Validation errors are path-qualified (for example,
+`fleetsync.channels[0]: serial required`).
+
+## Notes
+
+- FleetSync channels are non-essential services: if one channel cannot
+  start, the daemon logs a warning and continues trunking operation.
+- This decoder path is implemented as one receiver per configured
+  channel; multi-channel-from-one-wideband-SDR is a follow-up item in
+  the FleetSync plan.
