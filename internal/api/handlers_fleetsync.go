@@ -150,6 +150,9 @@ func parseFleetSyncFilter(r *http.Request) (storage.FleetSyncFilter, error) {
 		}
 		filter.Until = ts
 	}
+	if !filter.Since.IsZero() && !filter.Until.IsZero() && filter.Until.Before(filter.Since) {
+		return filter, errors.New("invalid range")
+	}
 	return filter, nil
 }
 

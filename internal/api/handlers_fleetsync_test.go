@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -71,7 +72,7 @@ func TestFleetSyncMessagesReturnsListAndFilter(t *testing.T) {
 		ToFleet: 8, ToUnit: 202, Emergency: true, Payload: []byte{0x01, 0x02}, RawBytes: []byte{0xAA},
 	}}}
 	ts := newFleetSyncTestServer(t, prov)
-	resp, err := http.Get(ts.URL + "/api/v1/fleetsync/messages?limit=3&source_unit=101&command=0x02")
+	resp, err := http.Get(ts.URL + "/api/v1/fleetsync/messages?limit=3&source_unit=101&destination_unit=202&command=0x02&since=2024-12-24T23:00:00Z&until=2024-12-25T01:00:00Z")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -85,8 +86,17 @@ func TestFleetSyncMessagesReturnsListAndFilter(t *testing.T) {
 	if prov.lastFilter.SourceUnit == nil || *prov.lastFilter.SourceUnit != 101 {
 		t.Fatalf("source filter = %+v", prov.lastFilter.SourceUnit)
 	}
+	if prov.lastFilter.DestinationUnit == nil || *prov.lastFilter.DestinationUnit != 202 {
+		t.Fatalf("destination filter = %+v", prov.lastFilter.DestinationUnit)
+	}
 	if prov.lastFilter.Command == nil || *prov.lastFilter.Command != 0x02 {
 		t.Fatalf("command filter = %+v", prov.lastFilter.Command)
+	}
+	if got, want := prov.lastFilter.Since.UTC().Format(time.RFC3339), "2024-12-24T23:00:00Z"; got != want {
+		t.Fatalf("since = %s want %s", got, want)
+	}
+	if got, want := prov.lastFilter.Until.UTC().Format(time.RFC3339), "2024-12-25T01:00:00Z"; got != want {
+		t.Fatalf("until = %s want %s", got, want)
 	}
 	var got []FleetSyncMessageDTO
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
@@ -117,6 +127,32 @@ func TestFleetSyncMessageByID(t *testing.T) {
 	}
 }
 
+func TestFleetSyncMessageByIDReturnsNotFound(t *testing.T) {
+	prov := &fakeFleetSyncProvider{}
+	ts := newFleetSyncTestServer(t, prov)
+	resp, err := http.Get(ts.URL + "/api/v1/fleetsync/messages/99")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status=%d want 404", resp.StatusCode)
+	}
+}
+
+func TestFleetSyncMessageByIDRejectsBadID(t *testing.T) {
+	prov := &fakeFleetSyncProvider{}
+	ts := newFleetSyncTestServer(t, prov)
+	resp, err := http.Get(ts.URL + "/api/v1/fleetsync/messages/not-a-number")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400", resp.StatusCode)
+	}
+}
+
 func TestFleetSyncMessagesRejectBadQuery(t *testing.T) {
 	prov := &fakeFleetSyncProvider{}
 	ts := newFleetSyncTestServer(t, prov)
@@ -127,5 +163,31 @@ func TestFleetSyncMessagesRejectBadQuery(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status=%d want 400", resp.StatusCode)
+	}
+}
+
+func TestFleetSyncMessagesRejectInvalidRange(t *testing.T) {
+	prov := &fakeFleetSyncProvider{}
+	ts := newFleetSyncTestServer(t, prov)
+	resp, err := http.Get(ts.URL + "/api/v1/fleetsync/messages?since=2024-12-25T01:00:00Z&until=2024-12-24T23:00:00Z")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400", resp.StatusCode)
+	}
+}
+
+func TestFleetSyncMessagesReturns500OnProviderError(t *testing.T) {
+	prov := &fakeFleetSyncProvider{listErr: errors.New("boom")}
+	ts := newFleetSyncTestServer(t, prov)
+	resp, err := http.Get(ts.URL + "/api/v1/fleetsync/messages")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500", resp.StatusCode)
 	}
 }
