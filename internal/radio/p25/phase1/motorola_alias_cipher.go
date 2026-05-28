@@ -16,9 +16,10 @@ package phase1
 //   lut   = motorolaAliasLUT[encoded_byte + 128]              // signed
 //   m1    = (int8)(lut − (accum >> 8))                        // signed
 //   m2    = 1
-//   stop  = (int8)(accum | 1)
+//   stop  = (int8)(accum | 1)        // always odd
+//   inc   = (int8)(stop << 1)        // 2·stop, computed once
 //   while stop != 1 and m2 != -1:
-//       stop = (int8)(stop × 3)
+//       stop = (int8)(stop + inc)    // walks stop·m2 for m2 = 1,3,5,...
 //       m2  += 2
 //   decoded_byte = (int8)(m1 × m2)
 //   accum = (accum + (encoded_byte & 0xFF) + 1) mod 65536
@@ -77,11 +78,17 @@ func decodeAliasBytes(encoded []byte) []byte {
 
 		var m2 int8 = 1
 		stop := int8(accum | 1)
-		// At most 128 iterations: m2 cycles through odd values
-		// 1, 3, 5, ..., 127, -127, -125, ..., -1. The (m2 != -1)
-		// guard guarantees termination even on pathological input.
+		// Walk stop·m2 (mod 256) for m2 = 1, 3, 5, ... by adding
+		// 2·stop_initial each iteration. Only the first iteration is
+		// equivalent to stop*3; subsequent iterations need a fixed
+		// addend, not another multiply, or stop drifts off the
+		// stop_initial·odd-integer track and the modular inverse is
+		// never hit. Since stop_initial is odd (accum|1), gcd with 256
+		// is 1, so a unique odd m2 in 1..255 satisfies stop == 1; the
+		// m2 != -1 guard remains as a belt-and-suspenders bound.
+		increment := stop << 1
 		for stop != 1 && m2 != -1 {
-			stop = int8(int(stop) * 3)
+			stop += increment
 			m2 += 2
 		}
 		decoded[i] = byte(int8(int(m1) * int(m2)))
