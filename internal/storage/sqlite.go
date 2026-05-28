@@ -146,6 +146,26 @@ CREATE TABLE IF NOT EXISTS pager_log (
 
 CREATE INDEX IF NOT EXISTS idx_pager_log_time ON pager_log(received_at);
 CREATE INDEX IF NOT EXISTS idx_pager_log_ric  ON pager_log(ric, received_at);
+
+-- APRS / AX.25 packets persisted from the decoder pipeline. Each
+-- row is one decoded frame: AX.25 envelope (src + dst + path) plus
+-- the decoded APRS sub-payload (type tag + extracted fields).
+CREATE TABLE IF NOT EXISTS aprs_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at INTEGER NOT NULL,            -- unix nanoseconds
+    src         TEXT    NOT NULL DEFAULT '', -- "W1AW-9"
+    dst         TEXT    NOT NULL DEFAULT '', -- "APRS"
+    path        TEXT    NOT NULL DEFAULT '', -- "WIDE1-1,WIDE2-1*"
+    type        TEXT    NOT NULL DEFAULT '', -- "position" | "message" | "status" | ...
+    body        TEXT    NOT NULL DEFAULT '', -- type-specific summary
+    latitude    REAL    NOT NULL DEFAULT 0,
+    longitude   REAL    NOT NULL DEFAULT 0,
+    raw_info    TEXT    NOT NULL DEFAULT '', -- raw AX.25 info-field bytes (as ASCII)
+    fcs_ok      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_aprs_log_time ON aprs_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_aprs_log_src  ON aprs_log(src, received_at);
 `
 
 func (d *DB) migrate() error {

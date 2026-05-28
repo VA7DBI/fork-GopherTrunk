@@ -31,9 +31,9 @@ func TestProcessTrellisOnDecodesEncodedMACPDU(t *testing.T) {
 	})
 	cc.SetTrellisMode(TrellisOn)
 
-	// MAC PDU with a recognised Opcode (OpMACPTT triggers cc.locked
+	// MAC PDU with a recognised Opcode (OpGroupVoiceChannelUserAbbreviated triggers cc.locked
 	// via the !IsIdle path).
-	pdu := MACPDU{Opcode: OpMACPTT, Payload: make([]byte, 17)}
+	pdu := MACPDU{Opcode: OpGroupVoiceChannelUserAbbreviated, Payload: make([]byte, 17)}
 	pduBits := framing.UnpackBitsMSB(AssembleMACPDU(pdu), 144)
 	infoDibits := framing.BitsToDibits(pduBits)
 	if len(infoDibits) != 72 {
@@ -131,7 +131,7 @@ func TestProcessTrellisOnRejectsRawMACPDU(t *testing.T) {
 	cc := New(Options{Bus: bus, Log: slog.Default(), SystemName: "Sys"})
 	cc.SetTrellisMode(TrellisOn)
 
-	pdu := MACPDU{Opcode: OpMACPTT, Payload: make([]byte, 17)}
+	pdu := MACPDU{Opcode: OpGroupVoiceChannelUserAbbreviated, Payload: make([]byte, 17)}
 	pduBits := framing.UnpackBitsMSB(AssembleMACPDU(pdu), 144)
 	rawDibits := framing.BitsToDibits(pduBits)
 

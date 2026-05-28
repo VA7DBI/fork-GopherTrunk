@@ -70,6 +70,49 @@ func TestIngestSuperframeRoutesMACSubframes(t *testing.T) {
 	}
 }
 
+// TestDecodeSuperframeMACPDUsReturnsAllMACSubframes confirms the
+// pure-function MAC dispatch the voice composer uses returns every
+// MAC-typed sub-frame's PDU in order and skips voice sub-frames.
+func TestDecodeSuperframeMACPDUsReturnsAllMACSubframes(t *testing.T) {
+	macSlots := []SlotType{SlotTypeMACSignaling, SlotTypeMACActive, SlotTypeMACPTT}
+	pdus := []MACPDU{
+		EncodeTalkerAliasFragment(TalkerAliasFragment{SourceID: 0xABC123, BlockIndex: 0, BlockCount: 2, Data: []byte("UNIT")}),
+		EncodeTalkerAliasFragment(TalkerAliasFragment{SourceID: 0xABC123, BlockIndex: 1, BlockCount: 2, Data: []byte("-7")}),
+		grantPDU(0x1234, 0x00ABCD, 0x1, 0x005),
+	}
+	for i := range pdus {
+		// Pad to the 18-byte MAC PDU width so the round-trip is bit-exact.
+		bytes := AssembleMACPDU(pdus[i])
+		if len(bytes) < 18 {
+			pdus[i].Payload = append(pdus[i].Payload, make([]byte, 18-len(bytes))...)
+		}
+	}
+
+	var subs [SubframesPerSuperframe][]uint8
+	macIdx := 0
+	for i := range subs {
+		if macIdx < len(pdus) {
+			subs[i] = EncodeMACSubframe(macSlots[macIdx], uint8(i), pdus[macIdx],
+				TrellisOn, InterleaveOff)
+			macIdx++
+		} else {
+			subs[i] = EncodeVoiceSubframe(SlotTypeVoice4V, uint8(i),
+				voicePayloads(Voice4VFrameCount))
+		}
+	}
+
+	cfg := MACDecodeConfig{Trellis: TrellisOn}
+	got := DecodeSuperframeMACPDUs(decodeOneSuperframe(t, subs), cfg)
+	if len(got) != len(pdus) {
+		t.Fatalf("DecodeSuperframeMACPDUs returned %d PDUs, want %d", len(got), len(pdus))
+	}
+	for i, want := range pdus {
+		if got[i].Opcode != want.Opcode {
+			t.Errorf("PDU[%d] opcode = %#x, want %#x", i, got[i].Opcode, want.Opcode)
+		}
+	}
+}
+
 // TestIngestSuperframeAllVoicePublishesNothing confirms an all-voice
 // superframe drives no control-channel events — the composer owns voice.
 func TestIngestSuperframeAllVoicePublishesNothing(t *testing.T) {

@@ -1,9 +1,12 @@
 package sdr
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -174,6 +177,80 @@ func TestPoolFirstByRole(t *testing.T) {
 	}
 	if e := p.FirstByRole(RoleVoice); e == nil || e.Info.Serial != "Y" {
 		t.Errorf("voice = %+v, want Y", e)
+	}
+}
+
+// TestPoolWarnsOnHintWithoutGain guards the issue #356 follow-up
+// observation: a device that's listed in config but without a `gain:`
+// key was opened with whatever the driver default chose, with no
+// startup log to tell the operator. On clones whose default is too
+// low for the user's LNA + antenna chain the SDR reads as completely
+// deaf and the operator has no path from the symptom ("voice grants
+// time out with no audio") to the root cause ("no gain configured").
+// The warn must fire on every role, since a deaf control / wideband
+// device is just as bad as a deaf voice device.
+func TestPoolWarnsOnHintWithoutGain(t *testing.T) {
+	drv := &fakeDriver{name: "fake-nogain", infos: []Info{
+		{Driver: "fake-nogain", Index: 0, Serial: "NOGAIN-1"},
+	}}
+	registryMu.Lock()
+	registry["fake-nogain"] = drv
+	registryMu.Unlock()
+	t.Cleanup(func() {
+		registryMu.Lock()
+		delete(registry, "fake-nogain")
+		registryMu.Unlock()
+	})
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	p := NewPool(log)
+	// Hint with serial only — gain is unset.
+	if err := p.Open(0, []Hint{{Serial: "NOGAIN-1", Role: RoleVoice}}); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	out := buf.String()
+	if !strings.Contains(out, "no gain configured") {
+		t.Errorf("expected no-gain warn for NOGAIN-1; log was: %q", out)
+	}
+	if !strings.Contains(out, "NOGAIN-1") {
+		t.Errorf("warn should include the device serial; log was: %q", out)
+	}
+	if !strings.Contains(out, "gain: auto") {
+		t.Errorf("warn should suggest `gain: auto`; log was: %q", out)
+	}
+}
+
+// TestPoolSilentOnHintWithGain confirms the warn does NOT fire when
+// gain is explicitly configured (auto or numeric). A noisy warn here
+// would train operators to ignore the no-gain warn above.
+func TestPoolSilentOnHintWithGain(t *testing.T) {
+	drv := &fakeDriver{name: "fake-withgain", infos: []Info{
+		{Driver: "fake-withgain", Index: 0, Serial: "G-AUTO"},
+		{Driver: "fake-withgain", Index: 1, Serial: "G-FIXED"},
+	}}
+	registryMu.Lock()
+	registry["fake-withgain"] = drv
+	registryMu.Unlock()
+	t.Cleanup(func() {
+		registryMu.Lock()
+		delete(registry, "fake-withgain")
+		registryMu.Unlock()
+	})
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	p := NewPool(log)
+	autoHint := Hint{Serial: "G-AUTO", Role: RoleVoice}.WithGain(-1)
+	fixedHint := Hint{Serial: "G-FIXED", Role: RoleVoice}.WithGain(496)
+	if err := p.Open(0, []Hint{autoHint, fixedHint}); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if out := buf.String(); strings.Contains(out, "no gain configured") {
+		t.Errorf("hints with gain set should not warn; log was: %q", out)
 	}
 }
 

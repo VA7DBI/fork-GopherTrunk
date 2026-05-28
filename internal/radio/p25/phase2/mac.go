@@ -34,14 +34,15 @@ type Opcode uint8
 
 const (
 	OpUnknown                           Opcode = 0x00
-	OpMACPTT                            Opcode = 0x01 // PTT-on
+	OpGroupVoiceChannelUserAbbreviated  Opcode = 0x01 // In-call group voice channel user (abbreviated)
 	OpMACEnd                            Opcode = 0x02 // End of transmission
 	OpMACIdle                           Opcode = 0x03 // Channel idle
 	OpMACHangtime                       Opcode = 0x05 // Hang-time
 	OpMACActive                         Opcode = 0x06 // Late-grant active
+	OpGroupVoiceChannelUserExtended     Opcode = 0x21 // In-call group voice channel user (extended; carries SUID)
 	OpGroupVoiceChannelGrantUpdate      Opcode = 0x40
 	OpGroupVoiceChannelGrant            Opcode = 0x44
-	OpGroupVoiceChannelUserExt          Opcode = 0x46
+	OpUnitToUnitGrantUpdateAbbreviated  Opcode = 0x46
 	OpUnitToUnitVoiceChannelGrant       Opcode = 0x48
 	OpUnitToUnitVoiceChannelGrantUpdate Opcode = 0x49
 	OpGroupAffiliationResponse          Opcode = 0x4C
@@ -54,8 +55,10 @@ const (
 
 func (o Opcode) String() string {
 	switch o {
-	case OpMACPTT:
-		return "MAC_PTT"
+	case OpGroupVoiceChannelUserAbbreviated:
+		return "GroupVoiceChannelUserAbbreviated"
+	case OpGroupVoiceChannelUserExtended:
+		return "GroupVoiceChannelUserExtended"
 	case OpMACEnd:
 		return "MAC_END"
 	case OpMACIdle:
@@ -68,8 +71,8 @@ func (o Opcode) String() string {
 		return "GroupVoiceChannelGrant"
 	case OpGroupVoiceChannelGrantUpdate:
 		return "GroupVoiceChannelGrantUpdate"
-	case OpGroupVoiceChannelUserExt:
-		return "GroupVoiceChannelUserExt"
+	case OpUnitToUnitGrantUpdateAbbreviated:
+		return "UnitToUnitGrantUpdateAbbreviated"
 	case OpUnitToUnitVoiceChannelGrant:
 		return "UnitToUnitVoiceChannelGrant"
 	case OpUnitToUnitVoiceChannelGrantUpdate:
@@ -259,9 +262,10 @@ func (p MACPDU) IsIdle() bool {
 // falls outside the recognised set.
 func (o Opcode) IsKnown() bool {
 	switch o {
-	case OpMACPTT, OpMACEnd, OpMACIdle, OpMACHangtime, OpMACActive,
+	case OpGroupVoiceChannelUserAbbreviated, OpGroupVoiceChannelUserExtended,
+		OpMACEnd, OpMACIdle, OpMACHangtime, OpMACActive,
 		OpGroupVoiceChannelGrant, OpGroupVoiceChannelGrantUpdate,
-		OpGroupVoiceChannelUserExt, OpUnitToUnitVoiceChannelGrant,
+		OpUnitToUnitGrantUpdateAbbreviated, OpUnitToUnitVoiceChannelGrant,
 		OpUnitToUnitVoiceChannelGrantUpdate, OpGroupAffiliationResponse,
 		OpUnitRegistrationResponse,
 		OpIdentifierUpdate, OpVendorGroupRegroup, OpVendorTalkerAlias,
@@ -270,6 +274,53 @@ func (o Opcode) IsKnown() bool {
 		return true
 	}
 	return false
+}
+
+// GroupVoiceChannelUser is the structured shape of an in-call
+// GROUP_VOICE_CHANNEL_USER MAC PDU — the traffic-channel broadcast a
+// Phase 2 system emits during an active call to identify the source
+// radio + carry the SVC_OPTIONS for the call. The CC's grant on
+// real systems often arrives without these fields (compressed grant
+// form: src=0, enc=false), so the source RID + encryption flag
+// arrive in-call via this PDU on the voice channel. The voice
+// composer publishes a trunking.CallSourceUpdate when one decodes
+// so the trunking engine can backfill the bound ActiveCall.
+//
+// Both the Abbreviated form (0x01) and the Extended form (0x21)
+// share the same layout for the first three fields per SDRTrunk's
+// GroupVoiceChannelUserAbbreviated.java + Extended.java +
+// MacStructureGroupVoiceService.java + MacStructureVoiceService.java
+// (verified during PR drafting): SVC_OPTIONS at SDRTrunk octet 2,
+// GROUP_ADDRESS at octets 3-4, SOURCE_ADDRESS at octets 5-7. The
+// Extended form adds a 64-bit SUID (WACN+System+ID) after the
+// source address; those fields aren't surfaced here yet — only the
+// in-call source ID + svc_opts matter for the backfill flow.
+type GroupVoiceChannelUser struct {
+	ServiceOptions uint8
+	GroupAddress   uint16
+	SourceID       uint32 // 24-bit source radio ID
+}
+
+// AsGroupVoiceChannelUser returns the structured in-call user
+// broadcast if the PDU opcode is OpGroupVoiceChannelUserAbbreviated
+// or OpGroupVoiceChannelUserExtended, otherwise (zero, false). The
+// payload needs at least 6 bytes to cover svc_opts (1) +
+// group_address (2) + source_id (3); the Extended form's SUID tail
+// is optional and ignored here.
+func (p MACPDU) AsGroupVoiceChannelUser() (GroupVoiceChannelUser, bool) {
+	switch p.Opcode {
+	case OpGroupVoiceChannelUserAbbreviated, OpGroupVoiceChannelUserExtended:
+	default:
+		return GroupVoiceChannelUser{}, false
+	}
+	if len(p.Payload) < 6 {
+		return GroupVoiceChannelUser{}, false
+	}
+	return GroupVoiceChannelUser{
+		ServiceOptions: p.Payload[0],
+		GroupAddress:   binary.BigEndian.Uint16(p.Payload[1:3]),
+		SourceID:       uint32(p.Payload[3])<<16 | uint32(p.Payload[4])<<8 | uint32(p.Payload[5]),
+	}, true
 }
 
 // IsManufacturerSpecific reports whether the opcode falls in the P25

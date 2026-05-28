@@ -40,7 +40,7 @@ this exist? Read **[The Story of GopherTrunk](https://gophertrunk.org/story.html
 
 ```sh
 # Linux x86_64 — see https://gophertrunk.org/downloads.html for macOS, Windows, ARM64.
-VERSION=v0.2.2
+VERSION=v0.2.4
 curl -L -o gophertrunk.tar.gz \
   https://github.com/MattCheramie/GopherTrunk/releases/download/${VERSION}/gophertrunk-${VERSION}-linux-amd64.tar.gz
 tar xzf gophertrunk.tar.gz && cd gophertrunk-${VERSION}-linux-amd64
@@ -71,6 +71,14 @@ Silicon and Intel. Full per-OS recipes at
   decoders. Foundation for fire / EMS dispatch text alongside
   the trunked-voice pipeline; DSP wiring follows in the next PR.
   See [docs/pocsag.md](docs/pocsag.md).
+- **APRS / AX.25 packet** — end-to-end pipeline for the
+  amateur-radio APRS metadata bus (position beacons, messages,
+  bulletins, status). Bell-202 AFSK DSP frontend (FM demod →
+  FFSK tone discriminator → symbol-time recovery → NRZI →
+  HDLC framer), AX.25 frame parser with CRC-16-CCITT, APRS
+  info-field decoders, plus `events.KindAPRSPacket` bus event,
+  SQLite `aprs_log`, `GET /api/v1/aprs/packets`, and `/aprs`
+  web panel. See [docs/aprs.md](docs/aprs.md).
 - **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25
   Phase 2 / DMR) vocoders in Go, no DVSI / mbelib dependency.
   Per-call WAV + raw-frame sidecars; live PCM playback via direct
@@ -94,7 +102,21 @@ Silicon and Intel. Full per-OS recipes at
 - **CC Activity panel** — focused web view of the trunked control-
   channel chatter (grants, affiliations, registrations, patches,
   talker aliases, CC lock / loss). Pure filter over the events
-  stream with per-row payload rendering; web panel at `/cc`.
+  stream with per-row payload rendering; web panel at `/cc`. RIDs
+  in the feed are clickable chips that pivot into the per-radio
+  detail view.
+- **Radio IDs panel** — per-radio (subscriber-unit) entity browser
+  with the same shape as Talkgroups. Merges the operator-configured
+  alias catalogue (per-system `rid_alias_file` CSV or JSON: alias,
+  owner, tag, group, priority, lockout, watch) with the live
+  affiliation tracker (last talkgroup, last seen, call count,
+  decoded talker alias). Detail modal pulls the last 50 calls for
+  the RID from the persisted call log. Web panel at `/rids`; REST
+  at `/api/v1/rids`; gRPC `RIDService`. Talker-alias decoders
+  cover the Motorola vendor TSBK form (control channel) and the
+  Motorola voice-channel LCs (P25 Phase 1 LDU1 LCO 0x15 header
+  + N × LCO 0x17 data blocks, run through Motorola's
+  reverse-engineered alias cipher).
 - **Constellation viewer** — live IQ scatter visualization that
   taps the same broker the trunking decoder reads. Useful for
   identifying signal shape (PSK / QPSK / FSK / C4FM / AM /
@@ -106,13 +128,21 @@ Silicon and Intel. Full per-OS recipes at
   outputs, public-safety fall-back channels) stored in the
   daemon's SQLite database. Edit / create / delete from the web
   panel under `/bookmarks`; REST at `/api/v1/bookmarks`.
-- **One dongle, many repeaters** — `role: wideband` pins a single
+- **One dongle, many carriers** — `role: wideband` pins a single
   SDR to a centre frequency and runs an internal channelizer so
-  one dongle decodes every DMR Tier II conventional repeater AND
-  a DMR Tier III control channel that fit inside its IQ bandwidth
-  (e.g. several 12.5 kHz carriers inside a 2.4 MHz IQ window).
-  Mix T2 and T3 channels on the same dongle. See
-  [docs/hardware.md](docs/hardware.md) and
+  one dongle decodes every DMR Tier II conventional repeater, DMR
+  Tier III control channel, P25 Phase 1 control channel, AND P25
+  Phase 2 control channel that fit inside its IQ bandwidth (e.g.
+  several 12.5 kHz carriers inside a 2.4 MHz IQ window). Mix
+  protocols on the same dongle.
+- **One dongle, control + voice** — with `voice_taps: N` on a
+  wideband entry, the daemon allocates per-grant DDC tuners from
+  the dongle's IQ stream so trunked voice grants (DMR T3, P25
+  Phase 1, P25 Phase 2) decode inline on the same SDR that's
+  already hosting the control channel — no separate `role: voice`
+  dongle needed for grants inside the wideband window. Out-of-
+  window grants spill over to a physical voice SDR when present.
+  See [docs/hardware.md](docs/hardware.md) and
   [samples/dmr-tier2-multichannel/](samples/dmr-tier2-multichannel/).
 - **DSP** — Polyphase channelizer, Kaiser / RRC / Gaussian FIRs,
   FM / C4FM / GFSK / FFSK / DQPSK / π/4-DQPSK / π/8-H-DQPSK

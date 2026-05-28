@@ -24,12 +24,15 @@ func mkGRPC(t *testing.T, opts GRPCServerOptions) (*grpc.ClientConn, func()) {
 	t.Helper()
 	lis := bufconn.Listen(64 * 1024)
 	g, err := NewGRPCServer(GRPCServerOptions{
-		Addr:       "bufconn",
-		Systems:    opts.Systems,
-		Talkgroups: opts.Talkgroups,
-		Engine:     opts.Engine,
-		Audio:      opts.Audio,
-		Log:        opts.Log,
+		Addr:         "bufconn",
+		Systems:      opts.Systems,
+		Talkgroups:   opts.Talkgroups,
+		RIDs:         opts.RIDs,
+		Affiliations: opts.Affiliations,
+		History:      opts.History,
+		Engine:       opts.Engine,
+		Audio:        opts.Audio,
+		Log:          opts.Log,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -221,5 +224,121 @@ func TestGRPCAudioStreamPublishes(t *testing.T) {
 	pcm := frame.GetPcm()
 	if pcm == nil || len(pcm.Samples) != 8 {
 		t.Errorf("PCM body missing or wrong length: %+v", pcm)
+	}
+}
+
+func TestGRPCListAndGetRID(t *testing.T) {
+	rids := trunking.NewRIDDB()
+	rids.Add(&trunking.RID{ID: 100, Alias: "CHIEF", Owner: "Cmdr", Watch: true})
+	live := &fakeAffiliationProvider{units: []trunking.UnitActivity{
+		{
+			RadioID: 100, System: "Metro", Protocol: "p25",
+			Talkgroup: 50, TalkerAlias: "CHIEF-ENG", CallCount: 3,
+			LastSeen: time.Unix(1700, 0).UTC(),
+		},
+		{RadioID: 300, System: "Metro", Talkgroup: 50, CallCount: 1},
+	}}
+	conn, teardown := mkGRPC(t, GRPCServerOptions{
+		RIDs: rids, Affiliations: live,
+	})
+	defer teardown()
+
+	cli := apiv1.NewRIDServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	list, err := cli.ListRIDs(ctx, &apiv1.ListRIDsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Rids) != 2 {
+		t.Fatalf("ListRIDs len = %d, want 2", len(list.Rids))
+	}
+	var chief, live300 *apiv1.RID
+	for _, r := range list.Rids {
+		switch r.Id {
+		case 100:
+			chief = r
+		case 300:
+			live300 = r
+		}
+	}
+	if chief == nil || chief.Alias != "CHIEF" || !chief.Configured ||
+		chief.TalkerAlias != "CHIEF-ENG" || chief.LastTalkgroup != 50 || chief.CallCount != 3 {
+		t.Errorf("CHIEF row = %+v", chief)
+	}
+	if live300 == nil || live300.Configured {
+		t.Errorf("live-only row should not be Configured: %+v", live300)
+	}
+
+	got, err := cli.GetRID(ctx, &apiv1.GetRIDRequest{Id: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Rid.Alias != "CHIEF" {
+		t.Errorf("GetRID(100).alias = %q", got.Rid.Alias)
+	}
+
+	_, err = cli.GetRID(ctx, &apiv1.GetRIDRequest{Id: 9999})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("GetRID(9999) got %v, want NotFound", err)
+	}
+}
+
+func TestGRPCListRIDHistoryUnavailableWithoutDB(t *testing.T) {
+	conn, teardown := mkGRPC(t, GRPCServerOptions{})
+	defer teardown()
+	cli := apiv1.NewRIDServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := cli.ListRIDHistory(ctx, &apiv1.ListRIDHistoryRequest{Id: 1})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("ListRIDHistory got %v, want Unavailable", err)
+	}
+}
+
+// fakeHistoryQuery is a tiny in-memory HistoryQuery for the
+// ListRIDHistory test — it echoes back rows whose SourceID matches.
+type fakeHistoryQuery struct {
+	rows []CallRow
+}
+
+func (f *fakeHistoryQuery) History(_ context.Context, h HistoryFilter) ([]CallRow, error) {
+	out := []CallRow{}
+	for _, r := range f.rows {
+		if h.SourceID != 0 && r.SourceID != h.SourceID {
+			continue
+		}
+		out = append(out, r)
+	}
+	if h.Limit > 0 && len(out) > h.Limit {
+		out = out[:h.Limit]
+	}
+	return out, nil
+}
+
+func TestGRPCListRIDHistoryReturnsFilteredRows(t *testing.T) {
+	hist := &fakeHistoryQuery{rows: []CallRow{
+		{ID: 1, System: "Metro", GroupID: 50, SourceID: 4242, StartedAt: time.Unix(100, 0).UTC()},
+		{ID: 2, System: "Metro", GroupID: 50, SourceID: 4242, StartedAt: time.Unix(200, 0).UTC()},
+		{ID: 3, System: "Metro", GroupID: 50, SourceID: 7777, StartedAt: time.Unix(300, 0).UTC()},
+	}}
+	conn, teardown := mkGRPC(t, GRPCServerOptions{History: hist})
+	defer teardown()
+	cli := apiv1.NewRIDServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := cli.ListRIDHistory(ctx, &apiv1.ListRIDHistoryRequest{Id: 4242})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(resp.Calls))
+	}
+	for _, c := range resp.Calls {
+		if c.SourceId != 4242 {
+			t.Errorf("got source %d, want 4242", c.SourceId)
+		}
 	}
 }

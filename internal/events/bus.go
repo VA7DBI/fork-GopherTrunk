@@ -96,6 +96,18 @@ const (
 	// any protocol whose grant carries ALGID/KID at grant time does
 	// not need this event — the values are already on the Grant.
 	KindCallEncryption Kind = "call.encryption"
+	// KindCallSourceUpdate fires when the voice composer recovers the
+	// source radio ID + encryption state for an active call from the
+	// traffic-channel signalling — e.g. a P25 Phase 2
+	// GROUP_VOICE_CHANNEL_USER PDU, where the CC grant arrived in a
+	// compressed form without SOURCE_ID or SVC_OPTIONS. The engine
+	// subscribes, backfills the bound ActiveCall's Grant
+	// (SourceID + Encrypted) so downstream consumers (storage, SSE,
+	// TUI, affiliation tracker) see the real source on CallEnd and
+	// during the live call. Protocols whose grant always carries
+	// source ID + encrypted state at grant time do not need this
+	// event — the values are already on the Grant.
+	KindCallSourceUpdate Kind = "call.source"
 	// KindBookmarkCreated / KindBookmarkUpdated / KindBookmarkDeleted
 	// fire whenever the bookmarks store mutates. Payload is a
 	// storage.Bookmark (or {ID} for deletes). Surfaced over SSE / WS
@@ -111,6 +123,14 @@ const (
 	// decoded text + per-page bit-error count. Surfaced over SSE /
 	// WS for the live pager panel.
 	KindPagerMessage Kind = "pager.message"
+	// KindAPRSPacket fires when the APRS decoder finishes one
+	// frame off the air — UI frame decoded, info field parsed
+	// into the appropriate APRS sub-type (position, message,
+	// status, bulletin, status, etc.). Payload is a
+	// storage.APRSPacket carrying source + destination + path +
+	// decoded sub-payload. Surfaced over SSE / WS for the live
+	// APRS panel.
+	KindAPRSPacket Kind = "aprs.packet"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol

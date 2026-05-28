@@ -33,6 +33,33 @@ type LinkControl struct {
 // lcContentOctets is the LC content size in octets (72 bits).
 const lcContentOctets = 9
 
+// Standard TIA-102.AABF Link Control Opcodes the talker-alias path
+// needs. These three LCOs carry a radio's display name across an
+// active voice channel (LDU1) as a HEADER + two BLOCK fragments —
+// distinct from the Motorola vendor TSBK alias format the control
+// channel already handles (see tsbk_vendor.go's OpVendorTalkerAlias).
+//
+// Today GopherTrunk only decodes the vendor TSBK form; standard
+// voice-channel alias dispatch is a documented follow-up (issue
+// #376 audit). The constants live here so consumers can recognise
+// the opcodes when the LC is parsed and surface them in logs.
+const (
+	LCOGroupVoiceChannelUser = 0x00 // the common LCO carrying TG + SRC
+	LCOTalkerAliasHeader     = 0x15 // first frame: char-set + total length
+	LCOTalkerAliasBlock1     = 0x16 // first alias-data fragment
+	LCOTalkerAliasBlock2     = 0x17 // second alias-data fragment
+)
+
+// IsTalkerAliasLCO reports whether the given LC opcode carries a
+// fragment of a standard P25 voice-channel talker alias. Callers in
+// the voice composer use this to spot LCs they should buffer rather
+// than treat as a group voice channel user.
+func IsTalkerAliasLCO(lcf uint8) bool {
+	return lcf == LCOTalkerAliasHeader ||
+		lcf == LCOTalkerAliasBlock1 ||
+		lcf == LCOTalkerAliasBlock2
+}
+
 // ErrLinkControlLength is returned when ParseLinkControl is handed
 // blocks that are not each LDULCESBlockBits long.
 var ErrLinkControlLength = errors.New("p25/phase1: LC blocks must each be 40 bits")
@@ -89,6 +116,22 @@ func ParseLinkControl(blocks [LDULCESBlockCount][]byte) (LinkControl, int, error
 		TalkgroupID:    uint16(oct[2])<<8 | uint16(oct[3]),
 		SourceID:       uint32(oct[4])<<16 | uint32(oct[5])<<8 | uint32(oct[6]),
 	}, errs, nil
+}
+
+// ParseLinkControlContent decodes the 6 LC blocks of an LDU1 into the
+// raw 9 LC content octets plus the inner-FEC corrected-error count.
+// Used by the talker-alias path so opcodes other than 0x00 (group
+// voice channel user) can read their own octet layout without going
+// through ParseLinkControl's LCO-0-shaped struct.
+func ParseLinkControlContent(blocks [LDULCESBlockCount][]byte) ([lcContentOctets]byte, int, error) {
+	var out [lcContentOctets]byte
+	data, errs, err := lcInnerDecode(blocks)
+	if err != nil {
+		return out, 0, err
+	}
+	oct := bitsToOctets(data[:lcContentOctets*8])
+	copy(out[:], oct)
+	return out, errs, nil
 }
 
 // AssembleLinkControl is the inverse of ParseLinkControl; it builds the

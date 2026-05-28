@@ -58,3 +58,29 @@ func TestEventToDTOUnitRegistrationJSON(t *testing.T) {
 		t.Errorf("registration JSON =\n  %s\nwant\n  %s", got, want)
 	}
 }
+
+// TestEventToDTOPatchJSON pins the wire shape of the patch event. The
+// values mirror the report in issue #374 so this test doubles as the
+// regression record for "CC Activity always shows super-group 0".
+func TestEventToDTOPatchJSON(t *testing.T) {
+	dto := eventToDTO(events.Event{
+		Kind: events.KindPatch,
+		Payload: trunking.Patch{
+			System:     "MMR",
+			Protocol:   "p25",
+			SuperGroup: 32301,
+			Members:    []uint32{32501},
+			Vendor:     "motorola",
+			Add:        true,
+		},
+	})
+	body, err := json.Marshal(dto.Payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(body)
+	want := `{"system":"MMR","protocol":"p25","super_group":32301,"members":[32501],"vendor":"motorola","add":true,"at":"0001-01-01T00:00:00Z"}`
+	if got != want {
+		t.Errorf("patch JSON =\n  %s\nwant\n  %s", got, want)
+	}
+}

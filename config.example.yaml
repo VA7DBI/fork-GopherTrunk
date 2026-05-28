@@ -132,29 +132,40 @@ sdr:
       bias_tee: false
 
     # role: wideband pins one dongle to a centre frequency and lets a
-    # single SDR cover several DMR repeaters that all live inside its
+    # single SDR cover several carriers that all live inside its
     # IQ bandwidth (typically a 2.4 MHz cluster of carriers in the
-    # same band). The list of repeater frequencies is set per-dongle,
+    # same band). The list of channel frequencies is set per-dongle,
     # alongside the trunking.systems entry they decode against. The
     # daemon uses internal/dsp/tuner to extract a separate narrow-
-    # band stream per repeater - no extra hardware needed.
+    # band stream per channel - no extra hardware needed.
     #
     # Each channel references a trunking.systems entry whose protocol
     # determines the state machine:
-    #   protocol: dmr-tier2  → Tier II conventional carrier
-    #   protocol: dmr        → Tier III trunked control channel
-    #                          (frequency_hz must be in the system's
-    #                          control_channels list)
-    # T2 and T3 channels can mix on the same dongle. T3 voice grants
-    # still route to the daemon's physical voice pool; the wideband
-    # dongle decodes the CC, not the voice traffic.
+    #   protocol: dmr-tier2   → Tier II conventional carrier
+    #   protocol: dmr         → DMR Tier III trunked control channel
+    #                           (frequency_hz must be in the system's
+    #                           control_channels list)
+    #   protocol: p25         → P25 Phase 1 trunked control channel
+    #                           (frequency_hz must be in
+    #                           control_channels; respects the
+    #                           system's p25_phase1_demod_mode for
+    #                           C4FM vs CQPSK / LSM simulcast)
+    #   protocol: p25-phase2  → P25 Phase 2 trunked control channel
+    #                           (frequency_hz must be in
+    #                           control_channels; respects the
+    #                           per-system p25_phase2_* mode keys)
+    #
+    # Channels of any supported protocol can mix on the same dongle.
+    # Trunked CC channels (dmr / p25 / p25-phase2) decode the control
+    # channel only; voice grants still route to the daemon's physical
+    # voice pool (a role: voice SDR alongside the wideband dongle).
     #
     # Constraints (validated at load time):
     #   - serial must match a discovered dongle
     #   - every channel frequency_hz must be within
     #     center_freq_hz ± sample_rate/2 with a 5% guard at each edge
     #   - each referenced system must be declared in trunking.systems
-    #     below with protocol: dmr-tier2 or protocol: dmr
+    #     below with one of the supported protocols listed above
     #
     # tuner_strategy:
     #   auto       (default) - ddc for ≤ 6 channels, polyphase above
@@ -183,6 +194,38 @@ sdr:
     #   channels:
     #     - frequency_hz: 851_037_500
     #       system: "regional-dmr-t3"
+    #
+    # P25 Phase 1 control channel on a wideband dongle. The
+    # referenced system carries `protocol: p25` and the
+    # channel's frequency_hz must appear in its control_channels.
+    # Honours `p25_phase1_demod_mode` (c4fm vs cqpsk / LSM) on the
+    # system entry just like a dedicated CC dongle.
+    #
+    # `voice_taps: N` (0-8) lets the same SDR host N concurrent
+    # voice grants without a separate `role: voice` dongle: each
+    # grant whose frequency falls inside the wideband IQ window
+    # gets its own per-call DDC tap on this dongle's IQ stream.
+    # Out-of-window grants spill over to a physical voice SDR
+    # when one is configured, or drop with the standard
+    # "no voice device available" log otherwise.
+    # - serial: "00000005"
+    #   role: wideband
+    #   center_freq_hz: 851_500_000
+    #   voice_taps: 4
+    #   channels:
+    #     - frequency_hz: 851_037_500
+    #       system: "regional-p25"
+    #
+    # P25 Phase 2 control channel on a wideband dongle. The
+    # referenced system carries `protocol: p25-phase2`; the
+    # `p25_phase2_*` mode knobs (trellis / RS / interleave /
+    # scrambler / clock) on the system apply transparently.
+    # - serial: "00000006"
+    #   role: wideband
+    #   center_freq_hz: 851_500_000
+    #   channels:
+    #     - frequency_hz: 851_006_250
+    #       system: "regional-p25-p2"
 
   # rtl_tcp remote SDRs. Each entry mounts a host:port rtl_tcp server
   # as a virtual tuner alongside any local USB dongles. Use when the
@@ -213,6 +256,27 @@ sdr:
 #                                  #  dispatch / DAPNET / etc.
 #       baud_hz: 1200              # 512 / 1200 / 2400; default 1200
 
+# APRS / AX.25 Bell-202 AFSK receiver. Each entry pins one SDR to
+# an APRS frequency and runs the full DSP pipeline (FM demod →
+# FFSK tone discriminator → symbol-time recovery → NRZI decode →
+# HDLC framer → AX.25 + APRS info-field parser). Decoded packets
+# publish on events.KindAPRSPacket; storage.APRSLog persists them
+# to the aprs_log SQLite table, the REST endpoint at
+# /api/v1/aprs/packets returns the most recent N, and the /aprs
+# web panel renders them live with the FCS state highlighted.
+#
+# aprs:
+#   channels:
+#     - serial: "antenna-pi"          # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 144_390_000     # NA primary; EU R1 144.575,
+#                                     #  ISS digipeater 145.825
+#       drop_bad_fcs: false           # true to silently drop CRC-failed
+#                                     #  frames instead of publishing
+#                                     #  them with FCSOK=false
+#       drop_non_ui: false            # true to silently drop non-UI
+#                                     #  AX.25 frames
+
 trunking:
   # call_timeout_ms: inactivity window after which the engine's
   # watchdog ends a call (publishes CallEnd with EndReasonTimeout
@@ -230,6 +294,14 @@ trunking:
         - 851_000_000
         - 852_000_000
       talkgroup_file: "/etc/gophertrunk/talkgroups-p25.csv"
+      # Optional per-system radio-ID alias catalogue — the per-RID
+      # equivalent of talkgroup_file. CSV (Decimal/DEC/ID column +
+      # optional Alias/Description/Tag/Group/Owner/Priority/Lockout/
+      # Watch/Icon) or JSON (array of {id, alias, ...} objects) is
+      # accepted, dispatched by file extension. Leave commented out
+      # to let the affiliation tracker surface RIDs live without any
+      # operator-configured aliases.
+      # rid_alias_file: "/etc/gophertrunk/rids-p25.csv"
 
   # Per-protocol FEC is on by default — every protocol the daemon
   # supports (TETRA, LTR, P25 Phase 2, NXDN, EDACS, MPT 1327,
@@ -273,7 +345,12 @@ trunking:
   #                                     # P25 simulcast sites whose CC
   #                                     # is transmitted as Linear
   #                                     # Simulcast Modulation rather
-  #                                     # than C4FM (issue #275)
+  #                                     # than C4FM (issue #275). Also
+  #                                     # routes the per-call voice chain
+  #                                     # through the LSM path; without
+  #                                     # this voice grants on simulcast
+  #                                     # sites time out with no audio
+  #                                     # (issue #356).
   #
   #   - name: "Legacy-P25-Phase2"
   #     protocol: p25

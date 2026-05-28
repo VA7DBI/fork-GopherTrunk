@@ -1,10 +1,21 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 
 import { useShared } from "../store/shared";
 import type { EventDTO } from "../api/types";
 import { CCActivity } from "./CCActivity";
+
+// CCActivity embeds react-router <Link> for clickable RIDs, so every
+// render() needs a Router context.
+function renderPanel() {
+  return render(
+    <MemoryRouter>
+      <CCActivity />
+    </MemoryRouter>,
+  );
+}
 
 function setEvents(events: EventDTO[]) {
   useShared.setState({
@@ -31,7 +42,7 @@ describe("CCActivity panel", () => {
   });
 
   it("renders the empty state when no CC events are in the store", () => {
-    render(<CCActivity />);
+    renderPanel();
     expect(screen.getByText(/Nothing here yet/)).toBeInTheDocument();
   });
 
@@ -48,7 +59,7 @@ describe("CCActivity panel", () => {
         payload: { serial: "rtl-1" },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     expect(screen.getByText(/Nothing here yet/)).toBeInTheDocument();
   });
 
@@ -67,7 +78,7 @@ describe("CCActivity panel", () => {
         },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     // "Grant" appears in both the kind-filter <option> and the row's
     // Kind cell; assert via the row containing the system label.
     const row = screen.getByText("Metro P25").closest("tr");
@@ -91,7 +102,7 @@ describe("CCActivity panel", () => {
         },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     const row = screen.getByText("Metro P25").closest("tr");
     expect(row).not.toBeNull();
     expect(row!.textContent).toMatch(/Affiliation/);
@@ -113,7 +124,7 @@ describe("CCActivity panel", () => {
         payload: { system: "Sys-A", radio_id: 100, group_id: 1 },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     // Two rows initially.
     expect(screen.getByText("2 matching events")).toBeInTheDocument();
 
@@ -134,7 +145,7 @@ describe("CCActivity panel", () => {
         payload: { system: "County DMR", group_id: 2 },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     expect(screen.getByText("Metro P25")).toBeInTheDocument();
     expect(screen.getByText("County DMR")).toBeInTheDocument();
 
@@ -143,7 +154,7 @@ describe("CCActivity panel", () => {
     expect(screen.queryByText("County DMR")).not.toBeInTheDocument();
   });
 
-  it("renders patch events with member count", () => {
+  it("renders patch add events with member TGs promoted over the SG", () => {
     setEvents([
       {
         kind: "patch",
@@ -152,15 +163,68 @@ describe("CCActivity panel", () => {
           system: "Metro P25",
           super_group: 999,
           members: [101, 102, 103],
+          add: true,
         },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     const row = screen.getByText("Metro P25").closest("tr");
     expect(row).not.toBeNull();
     expect(row!.textContent).toMatch(/Patch/);
-    expect(row!.textContent).toMatch(/super-group 999/);
-    expect(row!.textContent).toMatch(/3 members/);
+    expect(row!.textContent).toMatch(/Patch Active:/);
+    expect(row!.textContent).toMatch(/TG 101/);
+    expect(row!.textContent).toMatch(/TG 102/);
+    expect(row!.textContent).toMatch(/TG 103/);
+    expect(row!.textContent).toMatch(/\[SG 999\]/);
+  });
+
+  it("resolves member talkgroup aliases from the shared TGDB", () => {
+    setEvents([
+      {
+        kind: "patch",
+        timestamp: "2026-05-26T12:00:00Z",
+        payload: {
+          system: "Metro P25",
+          super_group: 30201,
+          members: [101, 102],
+          add: true,
+        },
+      },
+    ]);
+    useShared.setState({
+      talkgroups: [
+        { id: 101, alpha_tag: "NORTH DISP 1" },
+        { id: 102, alpha_tag: "NORTH TAC 2" },
+      ],
+    });
+    renderPanel();
+    const row = screen.getByText("Metro P25").closest("tr");
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toMatch(/Patch Active:/);
+    expect(row!.textContent).toMatch(/NORTH DISP 1 \(101\)/);
+    expect(row!.textContent).toMatch(/NORTH TAC 2 \(102\)/);
+    expect(row!.textContent).toMatch(/\[SG 30201\]/);
+  });
+
+  it("renders patch cancel events when add is false", () => {
+    setEvents([
+      {
+        kind: "patch",
+        timestamp: "2026-05-26T12:00:00Z",
+        payload: {
+          system: "Metro P25",
+          super_group: 999,
+          members: [101],
+          add: false,
+        },
+      },
+    ]);
+    renderPanel();
+    const row = screen.getByText("Metro P25").closest("tr");
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toMatch(/Patch Cancelled:/);
+    expect(row!.textContent).toMatch(/TG 101/);
+    expect(row!.textContent).toMatch(/\[SG 999\]/);
   });
 
   it("renders talker alias events", () => {
@@ -175,7 +239,7 @@ describe("CCActivity panel", () => {
         },
       },
     ]);
-    render(<CCActivity />);
+    renderPanel();
     const row = screen.getByText("Metro P25").closest("tr");
     expect(row).not.toBeNull();
     expect(row!.textContent).toMatch(/Talker alias/);

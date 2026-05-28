@@ -58,9 +58,20 @@ import (
 // IQPowerObserver is the minimal Metrics surface the decoder uses to
 // publish its window-averaged dBFS gauge. internal/metrics.Metrics
 // satisfies this; nil disables the gauge entirely.
+//
+// RecordIQDCRatioDb reports the per-window DC-bin power relative to
+// total IQ power, in dB (so 0 means all power is in the DC bin, very
+// negative means the DC content is negligible). It surfaces the
+// RTL-SDR R820T2 DC-spike-on-channel failure mode behind issue #402:
+// when the channel of interest sits on top of the tuner zero, the
+// DC bin dominates the 48 kHz pipeline passband and the C4FM eye
+// collapses. Healthy off-channel signals show ≤ -20 dB; a
+// DC-dominated capture shows within ~5 dB of 0.
 type IQPowerObserver interface {
 	RecordIQPowerDbFS(system string, dbfs float64)
 	ClearIQPowerDbFS(system string)
+	RecordIQDCRatioDb(system string, ratioDb float64)
+	ClearIQDCRatioDb(system string)
 }
 
 // ErrIQStreamClosed is returned by Run whenever the SDR's IQ stream is
@@ -85,6 +96,14 @@ const iqPowerWindow = time.Second
 // the idle-noise floor for an R820T2 at moderate gain (~-45 dBFS)
 // so legitimate weak signal doesn't trip it.
 const iqLowPowerThresholdDbFS = -55.0
+
+// iqDCRatioWarnDb is the dc-to-total power ratio (in dB) above which
+// observeIQPowerLocked emits a throttled debug log noting that the
+// IQ DC bin dominates the channel passband. -10 dB picks up the
+// RTL-SDR R820T2 zero-IF DC-spike case (where the spike is within
+// ~5 dB of total channel power) without firing on benign captures
+// of a tone-rich broadcast channel. Issue #402.
+const iqDCRatioWarnDb = -10.0
 
 // Tuner is the subset of sdr.Device the decoder uses for retuning.
 // Matches the same interface cchunt + conventional consume so the
@@ -138,7 +157,7 @@ type Decoder struct {
 	// ddcTargetForProtocol). pipelineRateHz is what the per-protocol
 	// factories receive as PipelineOptions.SampleRateHz. All three
 	// are owned by handleProgress / pump under mu.
-	ddc            *downconverter
+	ddc            *Downconverter
 	ddcTarget      float64
 	pipelineRateHz float64
 
@@ -155,7 +174,7 @@ type Decoder struct {
 	activeAt string // system name the active pipeline is bound to
 
 	// ddcOut is the reusable down-converter output buffer — pump
-	// hands it to downconverter.Process each chunk so the decimated
+	// hands it to Downconverter.Process each chunk so the decimated
 	// stream doesn't allocate per call.
 	ddcOut []complex64
 
@@ -164,9 +183,12 @@ type Decoder struct {
 	// goroutine reads it.
 	metrics      IQPowerObserver
 	pwSumSq      float64
+	pwSumI       float64 // running sum of I samples → DC-bin mean (issue #402)
+	pwSumQ       float64 // running sum of Q samples → DC-bin mean (issue #402)
 	pwSamples    int
 	pwWindowAt   time.Time
 	pwLowLogAt   time.Time
+	pwDCLogAt    time.Time // throttle for the "DC bin dominant" debug line (issue #402)
 	pwLastSystem string
 }
 
@@ -321,9 +343,12 @@ func (d *Decoder) clearActiveLocked() {
 	}
 	if d.activeAt != "" && d.metrics != nil {
 		d.metrics.ClearIQPowerDbFS(d.activeAt)
+		d.metrics.ClearIQDCRatioDb(d.activeAt)
 	}
 	d.activeAt = ""
 	d.pwSumSq = 0
+	d.pwSumI = 0
+	d.pwSumQ = 0
 	d.pwSamples = 0
 	d.pwLastSystem = ""
 }
@@ -339,7 +364,7 @@ func (d *Decoder) ensureDownconverterLocked(targetHz float64) {
 	if d.ddc != nil && d.ddcTarget == targetHz {
 		return
 	}
-	d.ddc = newDownconverter(d.sampleRateHz, targetHz)
+	d.ddc = NewDownconverter(d.sampleRateHz, targetHz)
 	d.ddcTarget = targetHz
 	d.pipelineRateHz = d.ddc.outRateHz
 	d.log.Info("ccdecoder: digital down-converter configured",
@@ -382,6 +407,8 @@ func (d *Decoder) observeIQPowerLocked(iq []complex64) {
 	// don't fold old samples into the new one's average.
 	if d.activeAt != d.pwLastSystem {
 		d.pwSumSq = 0
+		d.pwSumI = 0
+		d.pwSumQ = 0
 		d.pwSamples = 0
 		d.pwLastSystem = d.activeAt
 	}
@@ -389,6 +416,8 @@ func (d *Decoder) observeIQPowerLocked(iq []complex64) {
 		r := float64(real(c))
 		i := float64(imag(c))
 		d.pwSumSq += r*r + i*i
+		d.pwSumI += r
+		d.pwSumQ += i
 	}
 	d.pwSamples += len(iq)
 
@@ -400,22 +429,51 @@ func (d *Decoder) observeIQPowerLocked(iq []complex64) {
 	if now.Sub(d.pwWindowAt) < iqPowerWindow {
 		return
 	}
-	mean := d.pwSumSq / float64(d.pwSamples)
+	n := float64(d.pwSamples)
+	mean := d.pwSumSq / n
 	// 10*log10(0) is -Inf; clamp with a small epsilon so the gauge
 	// reads as "very low" instead of breaking JSON encoders.
 	if mean < 1e-12 {
 		mean = 1e-12
 	}
 	dbfs := 10 * math.Log10(mean)
+	// DC-bin power: |mean(IQ)|² across the window. The DFT bin at 0 Hz
+	// of a finite window is the sample mean; the per-sample power
+	// contributed by a static carrier at DC is its squared magnitude.
+	// Comparing it to the total mean power (in dB) tells the operator
+	// what fraction of the channel passband is DC content — a smoking
+	// gun for the R820T2 DC-spike-on-channel failure mode behind issue
+	// #402. Healthy off-channel signals: ≤ -20 dB. A
+	// DC-dominated capture sits within ~5 dB of 0.
+	dcMeanI := d.pwSumI / n
+	dcMeanQ := d.pwSumQ / n
+	dcPower := dcMeanI*dcMeanI + dcMeanQ*dcMeanQ
+	if dcPower < 1e-12 {
+		dcPower = 1e-12
+	}
+	dcDbfs := 10 * math.Log10(dcPower)
+	ratioDb := dcDbfs - dbfs
 	if d.activeAt != "" && d.metrics != nil {
 		d.metrics.RecordIQPowerDbFS(d.activeAt, dbfs)
+		d.metrics.RecordIQDCRatioDb(d.activeAt, ratioDb)
 	}
 	if dbfs < iqLowPowerThresholdDbFS && now.Sub(d.pwLowLogAt) >= 5*time.Second {
 		d.log.Debug("ccdecoder: iq power very low — check antenna, gain, USB",
-			"system", d.activeAt, "dbfs", dbfs)
+			"system", d.activeAt, "dbfs", dbfs, "dc_dbfs", dcDbfs, "dc_ratio_db", ratioDb)
 		d.pwLowLogAt = now
+	} else if ratioDb > iqDCRatioWarnDb && now.Sub(d.pwDCLogAt) >= 30*time.Second {
+		// DC bin within iqDCRatioWarnDb of total — the channel of
+		// interest sits on top of the tuner zero. Logged at debug so
+		// the gauge is the primary signal; the throttled log line gives
+		// operators without Prometheus a hint of the failure mode (issue
+		// #402).
+		d.log.Debug("ccdecoder: iq DC bin dominant — RTL-SDR DC spike on channel? see issue #402",
+			"system", d.activeAt, "dbfs", dbfs, "dc_dbfs", dcDbfs, "dc_ratio_db", ratioDb)
+		d.pwDCLogAt = now
 	}
 	d.pwSumSq = 0
+	d.pwSumI = 0
+	d.pwSumQ = 0
 	d.pwSamples = 0
 	d.pwWindowAt = now
 }

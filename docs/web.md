@@ -30,6 +30,7 @@ Every Bubbletea TUI panel has a browser counterpart:
 | History     | Filterable call-log explorer + retention-sweep mutation         |
 | Systems     | Trunked-system browser with detail modal                        |
 | Talkgroups  | Sortable / filterable list with scan / lockout / priority edits |
+| Radio IDs   | Per-RID browser merging the operator alias catalogue with the live affiliation tracker; detail modal with last 50 calls per radio; alias / watch / lockout / priority edits |
 | Devices     | SDR pool inspector (live attach / detach)                       |
 | Events      | Live ring-buffer viewer (filter / pause / JSON expansion)       |
 | Tones       | `tone.alert` feed with per-device reset                         |
@@ -268,9 +269,9 @@ requiring TLS + token via your reverse proxy.
 Bottom-nav on phones, top-tab strip on desktop:
 
 ```
-Dashboard · Active · Scanner · Settings        (always visible)
-Systems · Talkgroups · History · Events ·
-  Tones · Metrics · Devices                    (desktop overflow row)
+Dashboard · Active · Scanner · Settings              (always visible)
+Systems · Talkgroups · Radio IDs · History ·
+  Events · Tones · Metrics · Devices                 (desktop overflow row)
 ```
 
 On phones the overflow row is reachable via the hamburger menu in

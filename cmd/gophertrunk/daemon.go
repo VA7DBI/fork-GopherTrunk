@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,11 +23,13 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/conventional"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
 
+	aprsafsk "github.com/MattCheramie/GopherTrunk/internal/radio/aprs/afsk"
 	pocsagrx "github.com/MattCheramie/GopherTrunk/internal/radio/pager/pocsag/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/iqtap"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtltcp"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/wbvoice"
 	"github.com/MattCheramie/GopherTrunk/internal/storage"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 	"github.com/MattCheramie/GopherTrunk/internal/voice"
@@ -90,6 +93,7 @@ type Daemon struct {
 	bus          *events.Bus
 	pool         *sdr.Pool
 	talkgroups   *trunking.TalkgroupDB
+	rids         *trunking.RIDDB
 	systems      []trunking.System
 	engine       *trunking.Engine
 	voicePool    *trunking.VoicePool
@@ -105,6 +109,7 @@ type Daemon struct {
 	locationLog  *storage.LocationLog
 	bookmarks    *storage.BookmarkStore
 	pagerLog     *storage.PagerLog
+	aprsLog      *storage.APRSLog
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -123,6 +128,14 @@ type Daemon struct {
 	controlSampleRate uint32
 	convScan          *conventional.Scanner
 	widebandT2        []*widebandt2.Engine
+	// virtualVoiceTuners holds one VirtualTuner per voice tap on a
+	// wideband dongle. Each implements both trunking.Tuner (the voice
+	// pool calls SetCenterFreq on bind) and composer.IQSource (the
+	// composer reads decimated 48 kHz IQ during the call). Wired up
+	// alongside each wideband Engine in NewDaemon; surfaced into the
+	// voice pool via collectVoiceDevices and into the composer via
+	// poolDevices.virtualMap. See internal/sdr/wbvoice.
+	virtualVoiceTuners []*wbvoice.VirtualTuner
 	// pocsagReceivers holds one POCSAG receiver per configured
 	// paging.pocsag entry. Each subscribes to the iqtap broker
 	// for its assigned SDR and publishes pages onto the events
@@ -133,6 +146,13 @@ type Daemon struct {
 	// is a planned follow-up.
 	pocsagReceivers []*pocsagrx.Receiver
 	pocsagSpecs     []pocsagSpec // index-aligned with pocsagReceivers
+	// aprsReceivers holds one APRS AFSK receiver per configured
+	// aprs.channels entry. Each subscribes to the iqtap broker
+	// for its assigned SDR and publishes packets onto the events
+	// bus on KindAPRSPacket. See internal/radio/aprs/afsk. Same
+	// pinned-channel layout as POCSAG: one SDR per APRS frequency.
+	aprsReceivers []*aprsafsk.Receiver
+	aprsSpecs     []aprsSpec // index-aligned with aprsReceivers
 	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
 	// Primary consumers (CC decoder, conventional scanner) stream IQ
 	// through the broker so secondary observers (live spectrum,
@@ -253,6 +273,10 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 
 	// Talkgroup DB — populated below from per-system CSVs.
 	d.talkgroups = trunking.NewTalkgroupDB()
+	// RID alias DB — populated below from per-system rid_alias_file
+	// entries. Empty when no system has the key set; live observations
+	// still flow through the affiliation tracker regardless.
+	d.rids = trunking.NewRIDDB()
 
 	// Systems pulled from config; talkgroup CSVs loaded eagerly so the
 	// API can serve them immediately.
@@ -313,6 +337,18 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 					sys.TalkgroupFile, sys.Name, err))
 			} else {
 				log.Info("daemon: talkgroups loaded", "system", sys.Name, "count", n)
+			}
+		}
+		if sys.RIDAliasFile != "" {
+			n, err := loadRIDFile(d.rids, sys.RIDAliasFile)
+			if err != nil {
+				log.Warn("daemon: rid alias load failed",
+					"system", sys.Name, "file", sys.RIDAliasFile, "err", err)
+				d.addWarning(fmt.Sprintf(
+					"rid_alias_file %q for system %q failed to load (%v) — radios on this system will have no operator aliases",
+					sys.RIDAliasFile, sys.Name, err))
+			} else {
+				log.Info("daemon: rids loaded", "system", sys.Name, "count", n)
 			}
 		}
 	}
@@ -598,7 +634,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		comp, err := composer.New(composer.Options{
 			Bus:           d.bus,
-			Devices:       &poolDevices{pool: d.pool},
+			Devices:       &poolDevices{pool: d.pool, rateHz: cfg.SDR.SampleRate, virtualMap: d.virtualVoiceMap()},
 			Sink:          sink,
 			Engine:        d.engine,
 			Log:           log,
@@ -838,6 +874,41 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 				return nil, fmt.Errorf("daemon: widebandt2 %q: %w", devCfg.Serial, err)
 			}
 			d.widebandT2 = append(d.widebandT2, eng)
+			// Spin up virtual voice tuners on this wideband dongle so
+			// trunked voice grants whose frequency lands inside the
+			// IQ window can be followed without retuning a separate
+			// physical role: voice SDR. The taps subscribe to the
+			// dongle's iqtap broker on each StreamIQ call, run a
+			// single-tap DDC, and emit 48 kHz IQ to the composer.
+			// Out-of-window grants surface ErrOutOfBand and fall
+			// back to a physical voice SDR (when present) via the
+			// voice pool's bind retry.
+			taps := devCfg.VoiceTaps
+			if taps < 0 {
+				taps = 0
+			}
+			br := d.iqBrokers[entry.Info.Serial]
+			if br == nil && taps > 0 {
+				log.Warn("daemon: wideband: voice_taps requested but no iqtap broker; virtual voice disabled",
+					"serial", devCfg.Serial, "voice_taps", taps)
+				taps = 0
+			}
+			for i := 0; i < taps; i++ {
+				vt, err := wbvoice.New(wbvoice.Options{
+					Serial:           fmt.Sprintf("wb:%s:tap-%d", entry.Info.Serial, i),
+					Broker:           br,
+					WidebandCenterHz: devCfg.CenterFreqHz,
+					SDRSampleRateHz:  cfg.SDR.SampleRate,
+					Log:              log,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("daemon: wbvoice %q tap %d: %w", devCfg.Serial, i, err)
+				}
+				d.virtualVoiceTuners = append(d.virtualVoiceTuners, vt)
+				log.Info("daemon: wideband: virtual voice tap registered",
+					"wideband_serial", entry.Info.Serial,
+					"tap_serial", vt.Serial())
+			}
 		}
 	}
 
@@ -872,6 +943,39 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.pocsagReceivers = append(d.pocsagReceivers, rcv)
 		d.pocsagSpecs = append(d.pocsagSpecs, spec)
+	}
+
+	// APRS / AX.25 Bell-202 AFSK receivers — one per configured
+	// aprs.channels entry. Same construction shape as POCSAG above:
+	// per-entry validation in the receiver, failures surface as a
+	// startup warning and skip the entry (nil slot preserved for
+	// stable indexing).
+	for _, ac := range cfg.APRS.Channels {
+		spec := aprsSpec{serial: ac.Serial, freq: ac.FrequencyHz}
+		if ac.Serial == "" || ac.FrequencyHz == 0 {
+			d.addWarning(fmt.Sprintf(
+				"aprs.channels: entry missing serial or frequency_hz (serial=%q freq=%d) — skipped",
+				ac.Serial, ac.FrequencyHz))
+			d.aprsReceivers = append(d.aprsReceivers, nil)
+			d.aprsSpecs = append(d.aprsSpecs, spec)
+			continue
+		}
+		rcv, err := aprsafsk.New(aprsafsk.Options{
+			InputRateHz: cfg.SDR.SampleRate,
+			SourceName:  ac.Serial,
+			Bus:         d.bus,
+			DropBadFCS:  ac.DropBadFCS,
+			DropNonUI:   ac.DropNonUI,
+			Log:         log,
+		})
+		if err != nil {
+			d.addWarning(fmt.Sprintf("aprs.channels[%s]: %v — skipped", ac.Serial, err))
+			d.aprsReceivers = append(d.aprsReceivers, nil)
+			d.aprsSpecs = append(d.aprsSpecs, spec)
+			continue
+		}
+		d.aprsReceivers = append(d.aprsReceivers, rcv)
+		d.aprsSpecs = append(d.aprsSpecs, spec)
 	}
 
 	// Storage / call log / retention — optional.
@@ -909,6 +1013,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.pagerLog = pl
 
+		al, err := storage.NewAPRSLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: aprs log: %w", err)
+		}
+		d.aprsLog = al
+
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
 			if err != nil {
@@ -941,6 +1052,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			Engine:         d.engine,
 			Mutator:        d.engine,
 			Talkgroups:     d.talkgroups,
+			RIDs:           d.rids,
 			Systems:        d.systems,
 			Log:            log,
 			Version:        version,
@@ -967,6 +1079,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.pagerLog != nil {
 			opts.Pager = pagerProvider{log: d.pagerLog}
+		}
+		if d.aprsLog != nil {
+			opts.APRS = aprsProvider{log: d.aprsLog}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1056,16 +1171,24 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 
 	// gRPC — optional.
 	if cfg.API.GRPCAddr != "" {
-		gsrv, err := api.NewGRPCServer(api.GRPCServerOptions{
+		grpcOpts := api.GRPCServerOptions{
 			Addr:       cfg.API.GRPCAddr,
 			Systems:    d.systems,
 			Talkgroups: d.talkgroups,
+			RIDs:       d.rids,
 			Engine:     d.engine,
 			Audio:      d.audioPub,
 			Log:        log,
 			TLSCert:    cfg.API.TLSCert,
 			TLSKey:     cfg.API.TLSKey,
-		})
+		}
+		if d.affiliations != nil {
+			grpcOpts.Affiliations = affiliationProvider{d.affiliations}
+		}
+		if d.db != nil {
+			grpcOpts.History = api.HistoryFromStorage(d.db)
+		}
+		gsrv, err := api.NewGRPCServer(grpcOpts)
 		if err != nil {
 			return nil, fmt.Errorf("daemon: grpc api: %w", err)
 		}
@@ -1125,6 +1248,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.pagerLog != nil {
 		d.spawn(runCtx, "pagerlog", false, func(ctx context.Context) error {
 			return d.pagerLog.Run(ctx)
+		})
+	}
+	if d.aprsLog != nil {
+		d.spawn(runCtx, "aprslog", false, func(ctx context.Context) error {
+			return d.aprsLog.Run(ctx)
 		})
 	}
 	if d.messageLog != nil {
@@ -1211,6 +1339,38 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			if err := br.SetCenterFreq(spec.freq); err != nil {
 				d.log.Warn("pocsag: SetCenterFreq failed",
+					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
+				return nil
+			}
+			sub := br.Subscribe()
+			defer sub.Close()
+			return rcv.Process(ctx, sub.C)
+		})
+	}
+	// APRS receivers — same shape as POCSAG above. Each subscribes
+	// to its assigned SDR's iqtap broker and runs the AFSK pipeline
+	// (FM demod → FFSK discriminator → symbol-timing recovery →
+	// NRZI → HDLC framer → AX.25 + APRS parsing), publishing packets
+	// onto the events bus where the APRSLog subscriber persists them
+	// and the /aprs panel renders them. Non-essential: a missing SDR
+	// or misconfigured frequency is logged but doesn't bring down the
+	// trunking pipeline.
+	for i, rcv := range d.aprsReceivers {
+		if rcv == nil {
+			continue // skipped at construction; warning already logged
+		}
+		rcv := rcv
+		spec := d.aprsSpecs[i]
+		name := fmt.Sprintf("aprs-%s-%d", spec.serial, spec.freq)
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			br := d.iqBrokers[spec.serial]
+			if br == nil {
+				d.log.Warn("aprs: SDR not found, skipping receiver",
+					"serial", spec.serial, "freq_hz", spec.freq)
+				return nil
+			}
+			if err := br.SetCenterFreq(spec.freq); err != nil {
+				d.log.Warn("aprs: SetCenterFreq failed",
 					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
 				return nil
 			}
@@ -1348,6 +1508,9 @@ func (d *Daemon) Close() {
 		if d.pagerLog != nil {
 			_ = d.pagerLog.Close()
 		}
+		if d.aprsLog != nil {
+			_ = d.aprsLog.Close()
+		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
 		}
@@ -1399,6 +1562,23 @@ func (d *Daemon) HTTPListenAddr() string {
 // Bus returns the daemon's events bus. Tests use it to inject
 // synthetic events.
 func (d *Daemon) Bus() *events.Bus { return d.bus }
+
+// IQBroker returns the iqtap.Broker for the SDR with the given serial,
+// or nil when no such SDR is in the pool. Used by the --iq-capture
+// flag in main.go to attach a raw-IQ file writer to a live control
+// SDR (issue #402 diagnostic).
+func (d *Daemon) IQBroker(serial string) *iqtap.Broker { return d.iqBrokers[serial] }
+
+// IQBrokerSerials returns the serials of every SDR currently wired
+// through an iqtap.Broker. Used by --iq-capture to validate the
+// requested serial and to print a friendly hint on a miss.
+func (d *Daemon) IQBrokerSerials() []string {
+	out := make([]string, 0, len(d.iqBrokers))
+	for s := range d.iqBrokers {
+		out = append(out, s)
+	}
+	return out
+}
 
 // spawn runs fn in a goroutine. essential=true means a non-context
 // error from fn aborts the whole daemon (the launcher / TUI rely on
@@ -1544,17 +1724,41 @@ func (d *Daemon) spawn(ctx context.Context, name string, essential bool, fn func
 }
 
 func (d *Daemon) collectVoiceDevices() []*trunking.VoiceDevice {
-	if d.pool == nil {
-		return nil
-	}
 	var voices []*trunking.VoiceDevice
-	for _, e := range d.pool.AllByRole(sdr.RoleVoice) {
+	if d.pool != nil {
+		for _, e := range d.pool.AllByRole(sdr.RoleVoice) {
+			voices = append(voices, &trunking.VoiceDevice{
+				Tuner:  e.Device,
+				Serial: e.Info.Serial,
+			})
+		}
+	}
+	// Append virtual voice tuners after physical ones so the engine's
+	// FindFree prefers a physical SDR when both are free. Out-of-
+	// window grants still surface ErrOutOfBand on virtual tuners and
+	// fall through to the next free device via the engine's bind
+	// retry — see engine.HandleGrant.
+	for _, vt := range d.virtualVoiceTuners {
 		voices = append(voices, &trunking.VoiceDevice{
-			Tuner:  e.Device,
-			Serial: e.Info.Serial,
+			Tuner:  vt,
+			Serial: vt.Serial(),
 		})
 	}
 	return voices
+}
+
+// virtualVoiceMap builds the serial → IQSource map the composer's
+// poolDevices uses to resolve a virtual tuner. Returns nil when no
+// virtual tuners are configured so the lookup is a no-op.
+func (d *Daemon) virtualVoiceMap() map[string]composer.IQSource {
+	if len(d.virtualVoiceTuners) == 0 {
+		return nil
+	}
+	out := make(map[string]composer.IQSource, len(d.virtualVoiceTuners))
+	for _, vt := range d.virtualVoiceTuners {
+		out[vt.Serial()] = vt
+	}
+	return out
 }
 
 func retentionInterval(s string) (time.Duration, error) {
@@ -1836,11 +2040,24 @@ func (a audioCockpit) BackendEnabled() bool {
 	return a.player.Stats().Enabled
 }
 
-// poolDevices adapts *sdr.Pool to composer.Devices. The composer only
-// needs StreamIQ; sdr.Device satisfies that subset directly.
-type poolDevices struct{ pool *sdr.Pool }
+// poolDevices adapts *sdr.Pool to composer.Devices. The composer
+// needs StreamIQ + SampleRateHz; sdr.Device only satisfies the
+// former, so physical entries are wrapped in deviceWithRate that
+// reports the daemon-wide rate. Virtual voice tuners (wideband-
+// derived) already implement both interface methods directly and
+// take precedence — that's how a P25 grant on the same SDR as the
+// wideband CC tap gets followed without retuning a physical voice
+// SDR.
+type poolDevices struct {
+	pool       *sdr.Pool
+	rateHz     uint32
+	virtualMap map[string]composer.IQSource
+}
 
 func (p *poolDevices) FindBySerial(serial string) composer.IQSource {
+	if src, ok := p.virtualMap[serial]; ok {
+		return src
+	}
 	if p.pool == nil {
 		return nil
 	}
@@ -1848,8 +2065,19 @@ func (p *poolDevices) FindBySerial(serial string) composer.IQSource {
 	if e == nil {
 		return nil
 	}
-	return e.Device
+	return deviceWithRate{Device: e.Device, rate: p.rateHz}
 }
+
+// deviceWithRate makes an sdr.Device satisfy composer.IQSource by
+// stamping the daemon-wide configured sample rate onto it. Physical
+// SDRs share one rate (cfg.SDR.SampleRate); the composer uses it
+// to size each call's decimator.
+type deviceWithRate struct {
+	sdr.Device
+	rate uint32
+}
+
+func (d deviceWithRate) SampleRateHz() uint32 { return d.rate }
 
 // brokerRigController adapts an iqtap.Broker into the rigctld
 // Controller interface. Routing through the broker means SetFreq
@@ -1954,4 +2182,33 @@ func (p pagerProvider) RecentPagerMessages(limit int) ([]storage.PagerMessage, e
 type pocsagSpec struct {
 	serial string
 	freq   uint32
+}
+
+// aprsProvider adapts storage.APRSLog into api.APRSProvider so the
+// api package stays free of the storage import dependency. Read-only
+// — the decoder writes via the events bus.
+type aprsProvider struct{ log *storage.APRSLog }
+
+func (a aprsProvider) RecentAPRSPackets(limit int) ([]storage.APRSPacket, error) {
+	return a.log.Recent(limit)
+}
+
+// aprsSpec captures the broker-side wiring info for one configured
+// APRS channel. Index-aligned with Daemon.aprsReceivers so the Run
+// loop can spawn each receiver without re-walking the YAML. Mirrors
+// pocsagSpec.
+type aprsSpec struct {
+	serial string
+	freq   uint32
+}
+
+// loadRIDFile dispatches a per-system rid_alias_file load to the JSON
+// or CSV reader based on extension. JSON if the path ends in ".json"
+// (case-insensitive), CSV otherwise — matches the talkgroup loader's
+// expectation that the operator already knows the file format.
+func loadRIDFile(db *trunking.RIDDB, path string) (int, error) {
+	if strings.EqualFold(filepath.Ext(path), ".json") {
+		return db.LoadJSONFile(path)
+	}
+	return db.LoadCSVFile(path)
 }

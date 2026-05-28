@@ -91,6 +91,46 @@ func TestEngineStartsCallOnGrant(t *testing.T) {
 	}
 }
 
+// TestEngineSkipsOutOfBandVirtualTunerInFavorOfPhysical covers the
+// Phase B fallback: when a wideband virtual voice tuner can't serve
+// a grant (frequency outside its IQ window) and a physical voice
+// SDR is also free, the engine binds the physical one instead of
+// dropping. Exercises voicepool.FindFreeForFrequency end-to-end.
+func TestEngineSkipsOutOfBandVirtualTunerInFavorOfPhysical(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	// Wideband tap listed first (preferred for in-band grants); a
+	// physical tuner second (catches the spillover).
+	virtual := &constrainedTuner{lo: 851_000_000, hi: 852_000_000}
+	physical := &fakeVoiceTuner{}
+	pool := NewVoicePool([]*VoiceDevice{
+		{Tuner: virtual, Serial: "wb:00000003:tap-0"},
+		{Tuner: physical, Serial: "phys-voice"},
+	})
+	e, err := NewEngine(EngineOptions{
+		Bus: bus, VoicePool: pool, Talkgroups: NewTalkgroupDB(),
+		CallTimeout: 1 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Out-of-window grant (900 MHz). Should land on the physical
+	// tuner without erroring.
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 1, FrequencyHz: 900_000_000})
+
+	calls := e.ActiveCalls()
+	if len(calls) != 1 || calls[0].Device.Serial != "phys-voice" {
+		t.Fatalf("expected one call on phys-voice, got %+v", calls)
+	}
+	if len(virtual.freqs) != 0 {
+		t.Errorf("virtual tuner should not have been retuned, got %v", virtual.freqs)
+	}
+	if len(physical.tuned()) != 1 || physical.tuned()[0] != 900_000_000 {
+		t.Errorf("physical tuner = %v, want [900_000_000]", physical.tuned())
+	}
+}
+
 func TestEngineTalkgroupForDevice(t *testing.T) {
 	e, _, bus, _ := mkEngine(t, 1)
 	defer bus.Close()
@@ -520,6 +560,98 @@ func TestEngineHandleCallEncryptionUnknownDeviceDoesNotPanic(t *testing.T) {
 		DeviceSerial: "no-such-device",
 		AlgorithmID:  0x84,
 		KeyID:        0x1234,
+	})
+}
+
+// TestEngineHandleCallSourceUpdateBackfillsActiveCall guards the
+// Phase 2 traffic-channel source / encryption backfill flow (the
+// MMR fix for issue #376). The CC publishes a grant with src=0 and
+// enc=false (compressed grant form); the voice composer recovers
+// the real source RID + encrypted state from an in-call
+// GROUP_VOICE_CHANNEL_USER PDU on the traffic channel and publishes
+// CallSourceUpdate. The engine must (1) patch the bound
+// ActiveCall.Grant via VoicePool.UpdateSource, (2) republish with
+// System / Protocol / GroupID filled.
+func TestEngineHandleCallSourceUpdateBackfillsActiveCall(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	pool, _ := mkPool(1)
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 5 * time.Second,
+	})
+
+	// Phase 2 grant arrives in a compressed form: src=0, enc=false.
+	e.HandleGrant(Grant{
+		System: "MMR", Protocol: "p25-phase2",
+		GroupID: 20202, FrequencyHz: 421_387_500,
+	})
+	actives := e.ActiveCalls()
+	if len(actives) != 1 {
+		t.Fatalf("expected 1 active call, got %d", len(actives))
+	}
+	dev := actives[0].Device.Serial
+	if actives[0].Grant.SourceID != 0 || actives[0].Grant.Encrypted {
+		t.Fatalf("pre-backfill src/enc should be 0/false, got %v/%v",
+			actives[0].Grant.SourceID, actives[0].Grant.Encrypted)
+	}
+
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	e.handleCallSourceUpdate(CallSourceUpdate{
+		DeviceSerial: dev,
+		SourceID:     315203, // @er-imagery's example MMR radio
+		Encrypted:    true,
+		At:           time.Now(),
+	})
+
+	updated := e.ActiveCalls()
+	if len(updated) != 1 {
+		t.Fatalf("expected 1 active call after backfill, got %d", len(updated))
+	}
+	if updated[0].Grant.SourceID != 315203 || !updated[0].Grant.Encrypted {
+		t.Errorf("backfill did not land on Grant: src=%d enc=%v",
+			updated[0].Grant.SourceID, updated[0].Grant.Encrypted)
+	}
+
+	select {
+	case ev := <-sub.C:
+		if ev.Kind != events.KindCallSourceUpdate {
+			t.Fatalf("expected KindCallSourceUpdate republish, got %s", ev.Kind)
+		}
+		c, ok := ev.Payload.(CallSourceUpdate)
+		if !ok {
+			t.Fatalf("payload type = %T", ev.Payload)
+		}
+		if c.System != "MMR" || c.Protocol != "p25-phase2" || c.GroupID != 20202 {
+			t.Errorf("enriched payload missing identity fields: %+v", c)
+		}
+		if c.SourceID != 315203 || !c.Encrypted {
+			t.Errorf("enriched payload src/enc = %d/%v", c.SourceID, c.Encrypted)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("never received enriched republish")
+	}
+}
+
+// TestEngineHandleCallSourceUpdateUnknownDeviceDoesNotPanic guards
+// the late-arriving PDU after a call ends.
+func TestEngineHandleCallSourceUpdateUnknownDeviceDoesNotPanic(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	pool, _ := mkPool(1)
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 5 * time.Second,
+	})
+	e.handleCallSourceUpdate(CallSourceUpdate{
+		DeviceSerial: "no-such-device",
+		SourceID:     999,
 	})
 }
 

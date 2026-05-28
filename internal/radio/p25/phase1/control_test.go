@@ -326,6 +326,79 @@ func TestControlChannelAppliesVUHFIdentifierUpdateAndPublishesGrant(t *testing.T
 	}
 }
 
+// TestControlChannelRoutesTDMAChannelGrantAsPhase2 confirms the fix
+// for issue #376: when the Phase 1 CC has accepted an IdentifierUpdate
+// for a Phase 2 TDMA channel (opcode 0x33), a subsequent voice grant
+// on that channel ID must publish with Protocol="p25-phase2" + a
+// populated P25Phase2Decode so the voice composer routes the call
+// into the Phase 2 MAC dispatch path. Before this fix, all Phase 1 CC
+// grants — including TDMA ones — published Protocol="p25", the
+// composer never entered runP25Phase2VoiceChain, and PR #409's MAC
+// PDU dispatch was dead code on MMR-class hybrid systems.
+func TestControlChannelRoutesTDMAChannelGrantAsPhase2(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	identTSBK := TSBK{LB: false, Opcode: OpIdentifierUpdateTDMA}
+	identTSBK.Payload = AssembleIdentifierUpdateTDMA(IdentifierUpdate{
+		ChannelID:   1,
+		BandwidthHz: 12_500,
+		SpacingHz:   12_500,
+		BaseHz:      851_000_000,
+	})
+
+	grantPayload := [8]byte{
+		0xC0,                  // service options: emergency + encrypted
+		(1 << 4) | 0x00, 0x10, // channel = ID 1, number 0x010 (=16)
+		0x12, 0x34,
+		0xAB, 0xCD, 0xEF,
+	}
+	grantTSBK := TSBK{LB: true, Opcode: OpGroupVoiceChannelGrant, Payload: grantPayload}
+
+	stream1 := buildLockedStreamWithTSBK(10, 0x293, DUIDTrunkingSignaling, identTSBK)
+	stream2 := buildLockedStreamWithTSBK(0, 0x293, DUIDTrunkingSignaling, grantTSBK)
+
+	cc := New(Options{
+		Bus:                bus,
+		SystemName:         "MMR",
+		FrequencyHz:        851_000_000,
+		P25Phase2Trellis:   1, // TrellisOn
+		P25Phase2Scrambler: 1, // ScramblerOn
+		Now:                func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	cc.Process(stream1, 0)
+	cc.Process(stream2, len(stream1))
+
+	var got *trunking.Grant
+	deadline := time.After(time.Second)
+	for got == nil {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindGrant {
+				g := ev.Payload.(trunking.Grant)
+				got = &g
+			}
+		case <-deadline:
+			t.Fatal("no grant event published")
+		}
+	}
+
+	if got.Protocol != "p25-phase2" {
+		t.Errorf("Protocol = %q, want %q", got.Protocol, "p25-phase2")
+	}
+	if got.P25Phase2Decode.Trellis != 1 {
+		t.Errorf("P25Phase2Decode.Trellis = %d, want 1 (TrellisOn)", got.P25Phase2Decode.Trellis)
+	}
+	if got.P25Phase2Decode.Scrambler != 1 {
+		t.Errorf("P25Phase2Decode.Scrambler = %d, want 1 (ScramblerOn)", got.P25Phase2Decode.Scrambler)
+	}
+	if got.FrequencyHz != 851_200_000 {
+		t.Errorf("FrequencyHz = %d, want 851_200_000", got.FrequencyHz)
+	}
+}
+
 // TestControlChannelLocksAndGrantsAcrossSmallChunks feeds a two-frame
 // stream (IdentifierUpdate then GroupVoiceChannelGrant) through Process
 // in 19-dibit batches — the dibit count a real RTL-SDR's 16 KiB USB
@@ -1335,5 +1408,89 @@ func TestControlChannelDeferredGrantReplayedAfterTDMAIdentifierUpdate(t *testing
 	}
 	if got.FrequencyHz != 468_612_500 {
 		t.Errorf("freq = %d, want 468_612_500", got.FrequencyHz)
+	}
+}
+
+// TestControlChannelStatsCountsTrustedDecodes drives a clean TSDU
+// stream through Process and asserts the new CCStats counter for
+// NID-trusted accept + TSBK-decoded both increment per frame. Issue
+// #402 Phase 2: the replay EOF summary depends on these counts to
+// answer "of the FSW hits, what fraction made it through each gate"
+// without parsing every debug log line.
+func TestControlChannelStatsCountsTrustedDecodes(t *testing.T) {
+	bus := events.NewBus(64)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+	// Drain the bus so Publish doesn't block — we only care about the
+	// stats counters here, not the events.
+	go func() {
+		for range sub.C {
+		}
+	}()
+
+	cc := NewControlChannel(bus, nil, 851_000_000)
+	const frames = 5
+	stream := buildLockedStream(10, 0x293, DUIDTrunkingSignaling, OpRFSSStatusBroadcast)
+	// buildLockedStream emits one TSDU frame; concatenate to get N.
+	wide := make([]uint8, 0, len(stream)*frames)
+	for i := 0; i < frames; i++ {
+		wide = append(wide, stream...)
+	}
+	cc.Process(wide, 0)
+
+	got := cc.Stats()
+	if got.NIDTrusted < int64(frames) {
+		t.Errorf("NIDTrusted = %d, want ≥ %d (one per frame)", got.NIDTrusted, frames)
+	}
+	if got.NIDMarginal != 0 || got.NIDFailed != 0 {
+		t.Errorf("clean stream produced marginal/failed NIDs: marginal=%d failed=%d",
+			got.NIDMarginal, got.NIDFailed)
+	}
+	if got.TSBKDecoded < int64(frames) {
+		t.Errorf("TSBKDecoded = %d, want ≥ %d (one per frame)", got.TSBKDecoded, frames)
+	}
+	if got.TSBKTrellisFailed != 0 || got.TSBKCRCFailed != 0 {
+		t.Errorf("clean stream produced TSBK failures: trellis=%d crc=%d",
+			got.TSBKTrellisFailed, got.TSBKCRCFailed)
+	}
+}
+
+// TestControlChannelStatsCountsNIDFailure: a garbage NID after a clean
+// FSW (the same shape TestControlChannelPublishesDecodeErrorOnUncorrectableNID
+// drives) must increment NIDFailed and NOT increment any of the
+// success / TSBK counters.
+func TestControlChannelStatsCountsNIDFailure(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	sub := bus.Subscribe()
+	defer sub.Close()
+	go func() {
+		for range sub.C {
+		}
+	}()
+
+	frame := make([]uint8, 24+32+98)
+	copy(frame, FrameSyncWord[:])
+	for i := 0; i < 32; i++ {
+		frame[24+i] = uint8(i*7) & 0x3
+	}
+	onAir := InjectControlStatusSymbols(frame)
+	stream := make([]uint8, 10+len(onAir)+16)
+	copy(stream[10:], onAir)
+
+	cc := NewControlChannel(bus, nil, 851_000_000)
+	cc.Process(stream, 0)
+
+	got := cc.Stats()
+	if got.NIDFailed == 0 {
+		t.Errorf("NIDFailed = 0, want ≥ 1 on a garbage-NID frame")
+	}
+	if got.NIDTrusted != 0 || got.NIDMarginal != 0 {
+		t.Errorf("garbage stream produced NID accepts: trusted=%d marginal=%d",
+			got.NIDTrusted, got.NIDMarginal)
+	}
+	if got.TSBKDecoded != 0 {
+		t.Errorf("garbage stream produced a TSBK decode: %d", got.TSBKDecoded)
 	}
 }

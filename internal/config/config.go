@@ -27,6 +27,35 @@ type Config struct {
 	Broadcast  BroadcastConfig  `yaml:"broadcast"`
 	Baseband   BasebandConfig   `yaml:"baseband"`
 	Paging     PagingConfig     `yaml:"paging"`
+	APRS       APRSConfig       `yaml:"aprs"`
+}
+
+// APRSConfig configures the APRS / AX.25 Bell-202 AFSK receiver.
+// Each entry pins an SDR to a 2 m / 70 cm APRS frequency and runs
+// the DSP frontend (FM demod → FFSK discriminator → symbol-timing
+// recovery → NRZI decode → HDLC framer → AX.25 + APRS info-field
+// parsing) against its full IQ stream. Decoded packets publish on
+// events.KindAPRSPacket; the storage.APRSLog subscriber persists
+// them, the REST endpoint at /api/v1/aprs/packets and the /aprs
+// web panel render them.
+type APRSConfig struct {
+	Channels []APRSChannelConfig `yaml:"channels"`
+}
+
+// APRSChannelConfig describes one APRS channel to decode. Serial
+// picks the SDR; the daemon tunes it to FrequencyHz and runs the
+// AFSK receiver against its full IQ stream. The 144.39 MHz North-
+// America primary channel is the most common target; other
+// regions use 144.575 (EU R1), 144.64 (JP), 144.80 (EU R1 short-
+// distance), 145.825 (ISS digipeater), 144.575 (AU). The DropBadFCS
+// and DropNonUI toggles match the receiver's options — leave both
+// false to see marginal traffic on the panel (highlighted in
+// yellow); flip them on if the channel is dominated by noise.
+type APRSChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadFCS  bool   `yaml:"drop_bad_fcs"`
+	DropNonUI   bool   `yaml:"drop_non_ui"`
 }
 
 // PagingConfig configures pager decoders (POCSAG today, FLEX
@@ -377,10 +406,25 @@ type DeviceConfig struct {
 
 	// Channels is the list of repeater carriers a wideband dongle
 	// should monitor inside its IQ band. Each entry binds a
-	// frequency to a configured trunking.systems[].name; v1 only
-	// supports DMR Tier II conventional. Ignored for non-wideband
-	// roles.
+	// frequency to a configured trunking.systems[].name. Ignored
+	// for non-wideband roles.
 	Channels []DeviceChannelConfig `yaml:"channels"`
+
+	// VoiceTaps is the number of per-grant DDC tuners the daemon
+	// allocates from this wideband dongle's IQ stream so trunked
+	// voice grants can be followed without retuning a separate
+	// `role: voice` SDR. Each tap subscribes to the dongle's
+	// iqtap broker on demand and emits 48 kHz IQ centred on the
+	// grant frequency.
+	//
+	// Defaults to 0 (no virtual voice taps; voice grants route to
+	// the physical voice pool). Set to 2-4 on a wideband dongle
+	// hosting a trunked CC tap (DMR T3, P25 Phase 1, P25 Phase 2)
+	// so one SDR can cover the full system end-to-end. Out-of-
+	// window grants surface ErrOutOfBand and fall back to a
+	// physical voice SDR when one is configured. Capped at 8 to
+	// keep CPU bounded.
+	VoiceTaps int `yaml:"voice_taps"`
 }
 
 // DeviceChannelConfig is one repeater carrier carried by a
@@ -413,6 +457,15 @@ type SystemConfig struct {
 	Protocol        string   `yaml:"protocol"`
 	ControlChannels []uint32 `yaml:"control_channels"`
 	TalkgroupFile   string   `yaml:"talkgroup_file"`
+	// RIDAliasFile is the optional path to a per-system CSV or JSON
+	// catalogue of radio-ID (subscriber unit) aliases — the per-RID
+	// equivalent of TalkgroupFile. CSV format: a Decimal/DEC/ID column
+	// plus optional Alias/AlphaTag, Description, Tag, Group, Owner,
+	// Priority, Lockout, Watch, Icon columns. JSON format: an array
+	// of {id, alias, description, ...} objects. Empty leaves the RID
+	// catalogue blank for this system (live observations still
+	// surface via the affiliation tracker).
+	RIDAliasFile string `yaml:"rid_alias_file"`
 
 	// TETRAColourCode is the 30-bit extended colour code the TETRA
 	// scrambler uses to seed its LFSR (ETSI EN 300 392-2 §8.2.5).
@@ -463,8 +516,12 @@ type SystemConfig struct {
 	// (the linear / LSM path — complex RRC + Gardner + differential
 	// QPSK; required for simulcast P25 deployments whose control
 	// channel transmits Linear Simulcast Modulation rather than
-	// straight C4FM, see issue #275 and TIA-102.BAAA). Ignored for
-	// non-P25-Phase-1 protocols.
+	// straight C4FM, see issue #275 and TIA-102.BAAA). Applies to
+	// both the control channel decoder and the per-call voice
+	// chain — without the voice-chain side a simulcast site would
+	// lock the CC fine but never decode an LDU on a granted voice
+	// call (issue #356 follow-up). Ignored for non-P25-Phase-1
+	// protocols.
 	P25Phase1DemodMode string `yaml:"p25_phase1_demod_mode"`
 	// P25Phase2TrellisMode enables the 4-state ½-rate trellis FEC
 	// decoder on the P25 Phase 2 MAC PDU window. Recognised values:
@@ -1008,6 +1065,10 @@ func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, system
 	if d.Serial == "" {
 		return fmt.Errorf("sdr.devices[%d]: role: wideband requires serial (the daemon binds the channel list to the device by USB serial)", idx)
 	}
+	if d.VoiceTaps < 0 || d.VoiceTaps > 8 {
+		return fmt.Errorf("sdr.devices[%d]: voice_taps %d out of range; 0 disables, 1-8 allocate that many virtual voice DDC taps on the dongle",
+			idx, d.VoiceTaps)
+	}
 	if d.CenterFreqHz == 0 {
 		return fmt.Errorf("sdr.devices[%d]: role: wideband requires center_freq_hz", idx)
 	}
@@ -1044,9 +1105,13 @@ func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, system
 		case "dmr-tier2", "dmr_tier2", "dmr-t2", "dmrtier2":
 			// Tier II conventional - channel freq is a repeater carrier,
 			// no relationship to system.ControlChannels required.
-		case "dmr":
-			// Tier III trunked - the wideband channel MUST be one of
-			// the system's declared control channels.
+		case "dmr", "p25", "p25-phase2", "p25_phase2", "p25p2":
+			// Trunked control-channel protocols — the wideband channel
+			// MUST be one of the system's declared control channels.
+			// Tier III DMR's CSBK chain, P25 Phase 1's TSBK chain, and
+			// P25 Phase 2's H-DQPSK MAC chain all run on a frequency
+			// the system advertises in control_channels; voice grants
+			// hop elsewhere.
 			matched := false
 			for _, cc := range sys.ControlChannels {
 				if cc == ch.FrequencyHz {
@@ -1057,13 +1122,14 @@ func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, system
 			if !matched {
 				return fmt.Errorf(
 					"sdr.devices[%d].channels[%d]: frequency_hz %d does not match any of system %q's "+
-						"control_channels %v (wideband T3 channels must sit on a declared control channel)",
-					idx, j, ch.FrequencyHz, ch.System, sys.ControlChannels)
+						"control_channels %v (wideband %s channels must sit on a declared control channel)",
+					idx, j, ch.FrequencyHz, ch.System, sys.ControlChannels, sys.Protocol)
 			}
 		default:
 			return fmt.Errorf(
-				"sdr.devices[%d].channels[%d]: system %q has protocol %q; wideband currently supports dmr-tier2 "+
-					"(Tier II conventional) and dmr (Tier III trunked control channel)",
+				"sdr.devices[%d].channels[%d]: system %q has protocol %q; wideband currently supports "+
+					"dmr-tier2 (Tier II conventional), dmr (Tier III trunked control channel), "+
+					"p25 (Phase 1 trunked control channel), and p25-phase2 (Phase 2 trunked control channel)",
 				idx, j, ch.System, sys.Protocol)
 		}
 		offset := float64(ch.FrequencyHz) - float64(d.CenterFreqHz)

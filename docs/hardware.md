@@ -65,6 +65,16 @@ sdr:
       bias_tee: true           # 5V on the SMA — only enable if you want it
 ```
 
+> **Always set `gain:` explicitly.** A device listed in
+> `sdr.devices[]` with no `gain:` key opens at whatever the librtlsdr
+> default chose for the tuner — typically a middle-range fixed value
+> that's too low for many LNA + antenna combinations. The field
+> symptom is "voice grants land on a Voice SDR but every call ends
+> `reason=timeout` with an empty WAV" (issue #356 follow-up). The
+> daemon now surfaces this at startup with `sdr: no gain configured
+> for device ...`; if you see that line, set `gain: "auto"` for AGC
+> or pick a tenth-dB value that matches your front-end.
+
 ### HackRF tested combinations
 
 | Device | PID | Coverage | Gain chain | Bias-tee | Notes |
@@ -295,11 +305,85 @@ The engine picks the right state machine per channel (Tier III's
 `ControlChannel` for `protocol: dmr`, Tier II's `ConventionalChannel`
 for `protocol: dmr-tier2`).
 
-T3 voice grants are published on the bus and routed to the daemon's
-existing physical voice pool — add a `role: voice` SDR alongside the
-wideband dongle if you want voice decoded. The follow-up work to
-decode T3 voice grants directly on the wideband dongle (via a virtual
-voice pool that allocates a tuner tap per grant) is roadmapped.
+### P25 trunked control channel on a wideband dongle
+
+A wideband dongle can also host a P25 control channel — Phase 1 (C4FM
+or CQPSK / LSM simulcast) or Phase 2 (H-DQPSK TDMA). The configuration
+mirrors the DMR Tier III case: the wideband channel sits on the
+system's declared `control_channels`, and the engine decodes the TSBK
+(Phase 1) or MAC PDU (Phase 2) chain inline. Voice grants ride on the
+existing physical voice pool — see the "Limits" section below.
+
+```yaml
+sdr:
+  devices:
+    - serial: "00000003"
+      role: wideband
+      center_freq_hz: 851_500_000
+      channels:
+        - frequency_hz: 851_037_500       # P25 Phase 1 CC
+          system: "regional-p25"
+
+trunking:
+  systems:
+    - name: "regional-p25"
+      protocol: p25                       # Phase 1
+      control_channels: [851_037_500]     # MUST include the wideband channel above
+      # On a simulcast site whose CC is transmitted as Linear
+      # Simulcast Modulation rather than C4FM, opt in to the
+      # linear-CQPSK demod path:
+      # p25_phase1_demod_mode: cqpsk
+```
+
+For P25 Phase 2 use `protocol: p25-phase2`; the same per-system
+`p25_phase2_*` knobs (trellis / RS / interleave / scrambler / clock
+mode) that apply to a dedicated CC SDR apply to the wideband channel
+too — see the trunking systems section of `config.example.yaml`.
+
+### One SDR for control + voice (virtual voice pool)
+
+Voice grants can also be decoded on the same wideband dongle that's
+hosting the CC tap, as long as the grant frequency falls inside the
+dongle's IQ window. Set `voice_taps: N` on the wideband entry; the
+daemon spins up `N` per-grant DDC tuners that subscribe to the
+dongle's IQ stream on demand and emit 48 kHz IQ centred on the grant
+frequency — exactly what the existing P25 / DMR voice composer
+chains expect. The result is a single SDR doing both jobs, with no
+physical `role: voice` dongle required (for grants that fit in the
+window).
+
+```yaml
+sdr:
+  devices:
+    - serial: "00000003"
+      role: wideband
+      center_freq_hz: 851_500_000
+      voice_taps: 4               # allow up to 4 concurrent voice calls
+      channels:
+        - frequency_hz: 851_037_500
+          system: "regional-p25"
+
+trunking:
+  systems:
+    - name: "regional-p25"
+      protocol: p25
+      control_channels: [851_037_500]
+```
+
+How spillover works: when a grant's frequency lands *outside* the
+wideband IQ window (more common on geographically spread P25 systems
+than on a single-site DMR T3 cluster), the virtual tuner returns
+out-of-band and the engine binds a physical `role: voice` SDR
+instead — if one is configured. So a typical mixed setup keeps a
+single physical voice SDR around as the spillover fallback while the
+wideband dongle handles the in-window majority. With no physical
+voice SDR present, out-of-window grants drop with the standard
+"no voice device available" log (issue #379).
+
+CPU is roughly linear in `voice_taps`: each tap runs one NCO mixer +
+polyphase resampler at the SDR rate during its call's lifetime;
+between calls the tap consumes no CPU. The validator caps the value
+at 8 to keep one wideband dongle bounded.
 
 ### Picking a centre frequency and bandwidth
 
@@ -324,22 +408,23 @@ message that names the offending entry.
 
 ### Limits
 
-- **DMR only.** Wideband supports `protocol: dmr-tier2` (Tier II
-  conventional) and `protocol: dmr` (Tier III trunked control
-  channel). Other protocols (P25, NXDN, TETRA, …) and Tier III
-  voice grants on the wideband dongle itself are not in scope yet —
-  see "Tier III voice" below.
-- **Tier III voice still needs a physical Voice SDR.** When the
-  wideband T3 tap decodes a grant, the daemon's existing voice pool
-  retunes a `role: voice` dongle to follow the call. The wideband
-  dongle decodes the CC; voice rides on the regular pool. A
-  follow-up will add a virtual voice pool that allocates a tuner
-  tap from the wideband dongle for each grant, removing the need
-  for the second SDR.
-- **The wideband dongle is dedicated.** It can't double as a Voice
-  pool member (the daemon needs it pinned to one centre frequency).
-  If you also run a trunked system that allocates voice grants on a
-  separate frequency, add a `role: voice` SDR for it.
+- **DMR + P25.** Wideband supports `protocol: dmr-tier2` (Tier II
+  conventional), `protocol: dmr` (Tier III trunked control channel),
+  `protocol: p25` (P25 Phase 1 trunked control channel — C4FM and
+  CQPSK / LSM simulcast), and `protocol: p25-phase2` (P25 Phase 2
+  H-DQPSK trunked control channel). Other protocols (NXDN, TETRA,
+  …) are not in scope yet.
+- **Trunked voice on the same wideband dongle.** With `voice_taps`
+  set, the daemon allocates per-grant DDC tuners from the dongle's
+  IQ stream so DMR T3 / P25 Phase 1 / P25 Phase 2 voice grants
+  decode inline without a physical `role: voice` SDR — see the
+  "One SDR for control + voice" section above. Voice grants whose
+  frequency falls **outside** the wideband IQ window still spill
+  over to a physical `role: voice` SDR (when configured), so a
+  single backup voice dongle covers the edge cases on
+  geographically spread systems. Setups with `voice_taps: 0` (or
+  unset) keep the legacy behaviour where every voice grant routes
+  to the physical pool.
 - **DDC-with-real-signal RX limits.** The wideband engine's per-tap
   DDC (when the SDR sample rate is higher than 48 kHz) uses the same
   Kaiser anti-alias prototype as the single-channel ccdecoder path,

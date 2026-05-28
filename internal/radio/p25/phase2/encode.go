@@ -119,6 +119,26 @@ func EncodeUnitRegistrationResponse(u UnitRegistrationResponse) MACPDU {
 	return MACPDU{Opcode: OpUnitRegistrationResponse, Payload: p}
 }
 
+// EncodeGroupVoiceChannelUser builds the MAC PDU form of a
+// GROUP_VOICE_CHANNEL_USER broadcast — the inverse of
+// MACPDU.AsGroupVoiceChannelUser. Pass extended=true to emit the
+// 0x21 Extended opcode (otherwise 0x01 Abbreviated). The extended
+// SUID fields (WACN/System/ID) are zero-padded; surface them when
+// a follow-up needs them.
+func EncodeGroupVoiceChannelUser(u GroupVoiceChannelUser, extended bool) MACPDU {
+	op := OpGroupVoiceChannelUserAbbreviated
+	if extended {
+		op = OpGroupVoiceChannelUserExtended
+	}
+	payload := make([]byte, 6)
+	payload[0] = u.ServiceOptions
+	binary.BigEndian.PutUint16(payload[1:3], u.GroupAddress)
+	payload[3] = byte(u.SourceID >> 16)
+	payload[4] = byte(u.SourceID >> 8)
+	payload[5] = byte(u.SourceID)
+	return MACPDU{Opcode: op, Payload: payload}
+}
+
 // EncodeTalkerAliasFragment builds the MAC PDU form of a talker-alias
 // fragment — the inverse of MACPDU.AsTalkerAliasFragment.
 func EncodeTalkerAliasFragment(f TalkerAliasFragment) MACPDU {
