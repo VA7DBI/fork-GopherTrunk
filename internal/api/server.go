@@ -280,6 +280,12 @@ type Server struct {
 	// storage.APRSLog.
 	aprs APRSProvider
 
+	// ais is the optional provider backing /api/v1/ais/...
+	// routes (AIS / vessel-tracking log). nil disables the routes.
+	// Implemented by the daemon over the SQLite-backed
+	// storage.VesselLog.
+	ais AISProvider
+
 	mu     sync.Mutex
 	srv    *http.Server
 	closed bool
@@ -484,6 +490,11 @@ type ServerOptions struct {
 	// APRS / AX.25 packets. Wired by the daemon over the SQLite-
 	// backed storage.APRSLog.
 	APRS APRSProvider
+	// AIS, when non-nil, enables the
+	// GET /api/v1/ais/vessels route serving recent decoded
+	// AIS messages. Wired by the daemon over the SQLite-backed
+	// storage.VesselLog.
+	AIS AISProvider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -584,6 +595,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		diag:           opts.Diag,
 		pager:          opts.Pager,
 		aprs:           opts.APRS,
+		ais:            opts.AIS,
 	}, nil
 }
 
@@ -784,6 +796,7 @@ func (s *Server) routes() *http.ServeMux {
 	// APRS / AX.25 packet log — recent decoded packets. Read-only;
 	// the decoder writes via the events bus → APRSLog.
 	mux.HandleFunc("GET /api/v1/aprs/packets", s.handleAPRSPackets)
+	mux.HandleFunc("GET /api/v1/ais/vessels", s.handleAISMessages)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes
