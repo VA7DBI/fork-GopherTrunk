@@ -227,6 +227,30 @@ sdr:
 #       version: auto               # auto | fleetsync1 | fleetsync2
 #       baud_hz: 1200               # optional; must be 1200 when set
 
+# Optional FleetSync export backends. These subscribe to
+# events.KindFleetSyncMessage and deliver one JSON document per
+# decoded frame either to an HTTP webhook or a filesystem spool.
+# Source filters match the FleetSync channel name when configured,
+# otherwise the SDR serial.
+#
+# broadcast:
+#   workers: 2
+#   fleetsync:
+#     webhooks:
+#       - enabled: true
+#         name: "ops-webhook"
+#         url: "http://127.0.0.1:9000/fleetsync"
+#         sources:
+#           - "City Utilities FleetSync"
+#         headers:
+#           X-GopherTrunk-Feed: "fleetsync"
+#     spool:
+#       - enabled: true
+#         name: "local-spool"
+#         dir: "/var/lib/gophertrunk/fleetsync-export"
+#         sources:
+#           - "City Utilities FleetSync"
+
 trunking:
   # call_timeout_ms: inactivity window after which the engine's
   # watchdog ends a call (publishes CallEnd with EndReasonTimeout

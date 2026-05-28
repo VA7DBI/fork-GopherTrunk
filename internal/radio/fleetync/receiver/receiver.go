@@ -130,7 +130,9 @@ func (r *Receiver) processChunk(chunk []complex64) {
 func (r *Receiver) MessagesEmitted() uint64 { return r.messagesEmitted.Load() }
 
 func (r *Receiver) publish(msg *fleetync.Message) {
-	r.bus.Publish(events.Event{Kind: events.KindFleetSyncMessage, Payload: *msg})
+	published := *msg
+	published.Source = r.source
+	r.bus.Publish(events.Event{Kind: events.KindFleetSyncMessage, Payload: published})
 	r.messagesEmitted.Add(1)
 }
 

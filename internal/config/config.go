@@ -122,6 +122,37 @@ type BroadcastConfig struct {
 	RdioScanner  []RdioScannerFeedConfig  `yaml:"rdioscanner"`
 	OpenMHz      []OpenMHzFeedConfig      `yaml:"openmhz"`
 	Icecast      []IcecastFeedConfig      `yaml:"icecast"`
+	// FleetSync export feeds subscribe to decoded FleetSync frames and
+	// deliver JSON payloads to webhooks or a filesystem spool.
+	FleetSync FleetSyncBroadcastConfig `yaml:"fleetsync"`
+}
+
+// FleetSyncBroadcastConfig configures outbound export of decoded
+// FleetSync frames. Workers/retry behavior reuse the top-level
+// broadcast manager knobs.
+type FleetSyncBroadcastConfig struct {
+	Webhooks []FleetSyncWebhookFeedConfig `yaml:"webhooks"`
+	Spool    []FleetSyncSpoolFeedConfig   `yaml:"spool"`
+}
+
+// FleetSyncWebhookFeedConfig posts one JSON document per decoded
+// FleetSync frame to the configured URL. Sources optionally restrict
+// delivery to named FleetSync channels.
+type FleetSyncWebhookFeedConfig struct {
+	Enabled bool              `yaml:"enabled"`
+	Name    string            `yaml:"name"`
+	URL     string            `yaml:"url"`
+	Sources []string          `yaml:"sources"`
+	Headers map[string]string `yaml:"headers"`
+}
+
+// FleetSyncSpoolFeedConfig writes one directory per decoded FleetSync
+// frame containing JSON metadata plus payload/raw byte files.
+type FleetSyncSpoolFeedConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Name    string   `yaml:"name"`
+	Dir     string   `yaml:"dir"`
+	Sources []string `yaml:"sources"`
 }
 
 // BroadcastifyFeedConfig is one Broadcastify Calls upload feed.
@@ -1160,6 +1191,22 @@ func (b BroadcastConfig) validate() error {
 		}
 		if f.Password == "" {
 			return fmt.Errorf("broadcast.icecast[%d]: password required", i)
+		}
+	}
+	for i, f := range b.FleetSync.Webhooks {
+		if !f.Enabled {
+			continue
+		}
+		if strings.TrimSpace(f.URL) == "" {
+			return fmt.Errorf("broadcast.fleetsync.webhooks[%d]: url required", i)
+		}
+	}
+	for i, f := range b.FleetSync.Spool {
+		if !f.Enabled {
+			continue
+		}
+		if strings.TrimSpace(f.Dir) == "" {
+			return fmt.Errorf("broadcast.fleetsync.spool[%d]: dir required", i)
 		}
 	}
 	return nil

@@ -97,6 +97,7 @@ type Daemon struct {
 	affiliations *trunking.AffiliationTracker
 	recorder     *voice.Recorder
 	broadcast    *broadcast.Manager
+	fleetsyncExp *broadcast.FleetSyncExporter
 	composer     *composer.Composer
 	player       *player.Player
 	toneout      *toneout.Detector
@@ -510,6 +511,14 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			d.broadcast = mgr
 			log.Info("outbound call streaming enabled", "backends", mgr.Backends())
 		}
+		fleetsyncExp, err := buildFleetSyncExporter(cfg.Broadcast, d.bus, log)
+		if err != nil {
+			return nil, fmt.Errorf("daemon: fleetsync export: %w", err)
+		}
+		if fleetsyncExp != nil {
+			d.fleetsyncExp = fleetsyncExp
+			log.Info("outbound fleetsync export enabled", "backends", fleetsyncExp.Backends())
+		}
 	}
 
 	// Decoded-message log — optional. Subscribes to the bus and writes
@@ -900,7 +909,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		rcv, err := fleetsyncrx.New(fleetsyncrx.Options{
 			InputRateHz: cfg.SDR.SampleRate,
-			SourceName:  fc.Serial,
+			SourceName:  firstNonEmpty(fc.Name, fc.Serial),
 			Version:     fc.Version,
 			Bus:         d.bus,
 			Log:         log,
@@ -1208,6 +1217,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return d.broadcast.Run(ctx)
 		})
 	}
+	if d.fleetsyncExp != nil {
+		d.spawn(runCtx, "fleetsync-export", false, func(ctx context.Context) error {
+			return d.fleetsyncExp.Run(ctx)
+		})
+	}
 	if d.composer != nil {
 		d.spawn(runCtx, "composer", false, func(ctx context.Context) error {
 			return d.composer.Run(ctx)
@@ -1419,6 +1433,9 @@ func (d *Daemon) Close() {
 		}
 		if d.broadcast != nil {
 			_ = d.broadcast.Close()
+		}
+		if d.fleetsyncExp != nil {
+			_ = d.fleetsyncExp.Close()
 		}
 		if d.recorder != nil {
 			_ = d.recorder.Close()
@@ -1673,6 +1690,15 @@ func watchdogInterval(ms int) time.Duration {
 		return sdr.DefaultWatchdogInterval
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // fanoutSink writes the same PCM frame to several composer.PCMSink

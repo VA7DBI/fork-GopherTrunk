@@ -98,7 +98,7 @@ func TestParseVersion(t *testing.T) {
 func TestPublishEvent(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
-	r, err := New(Options{InputRateHz: 2_400_000, Bus: bus})
+	r, err := New(Options{InputRateHz: 2_400_000, Bus: bus, SourceName: "utilities-east"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -110,6 +110,13 @@ func TestPublishEvent(t *testing.T) {
 	case ev := <-sub.C:
 		if ev.Kind != events.KindFleetSyncMessage {
 			t.Fatalf("kind=%s want %s", ev.Kind, events.KindFleetSyncMessage)
+		}
+		msg, ok := ev.Payload.(fleetync.Message)
+		if !ok {
+			t.Fatalf("payload type=%T want fleetync.Message", ev.Payload)
+		}
+		if msg.Source != "utilities-east" {
+			t.Fatalf("source=%q want %q", msg.Source, "utilities-east")
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("timed out waiting for FleetSync event")

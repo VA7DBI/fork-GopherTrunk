@@ -77,6 +77,26 @@ The list endpoint accepts optional query parameters:
 - `command` (decimal or `0xNN`)
 - `since` / `until` (RFC3339)
 
+## Export
+
+FleetSync Epic 5 adds outbound export feeds under `broadcast.fleetsync`.
+Two backend types are supported:
+
+- `webhooks`: POST one JSON document per decoded frame
+- `spool`: write one directory per decoded frame containing JSON + raw bytes
+
+The export payload mirrors the API fields and includes:
+
+- `received_at`
+- `source`
+- `version`, `command`, `subcommand`
+- source and destination fleet/unit addressing
+- `all_flag`, `emergency`, `priority`
+- `payload_hex`, `raw_hex`
+
+Source filters match the configured FleetSync channel `name` when set,
+otherwise the SDR `serial`.
+
 ## Validation and errors
 
 Config validation rejects:

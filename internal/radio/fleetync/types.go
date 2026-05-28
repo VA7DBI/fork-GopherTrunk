@@ -12,14 +12,14 @@ type Sample uint8
 
 // Command types for FleetSync messages
 const (
-	CommandVoiceGrant    = 0x00
-	CommandStatus        = 0x01
-	CommandEmergency     = 0x02
-	CommandAcknowledge   = 0x03
-	CommandUnitCheck     = 0x04
-	CommandAdjSite       = 0x05
-	CommandSystemID      = 0x06
-	CommandIdle          = 0x07
+	CommandVoiceGrant  = 0x00
+	CommandStatus      = 0x01
+	CommandEmergency   = 0x02
+	CommandAcknowledge = 0x03
+	CommandUnitCheck   = 0x04
+	CommandAdjSite     = 0x05
+	CommandSystemID    = 0x06
+	CommandIdle        = 0x07
 )
 
 // ND is the number of parallel decode channels (decoders per demodulator)
@@ -38,19 +38,20 @@ const (
 
 // Message represents a decoded FleetSync status word
 type Message struct {
-	Timestamp    time.Time
-	Version      FSyncVersion
-	Command      uint8
-	Subcommand   uint8
-	FromFleet    uint8
-	FromUnit     uint16
-	ToFleet      uint8
-	ToUnit       uint16
-	AllFlag      bool
-	Emergency    bool
-	Priority     bool
-	Payload      []byte
-	RawBytes     []byte
+	Timestamp  time.Time
+	Source     string
+	Version    FSyncVersion
+	Command    uint8
+	Subcommand uint8
+	FromFleet  uint8
+	FromUnit   uint16
+	ToFleet    uint8
+	ToUnit     uint16
+	AllFlag    bool
+	Emergency  bool
+	Priority   bool
+	Payload    []byte
+	RawBytes   []byte
 }
 
 // Demodulator performs FSK demodulation on 8kHz audio samples
@@ -63,21 +64,21 @@ type Demodulator struct {
 // Decoder processes a bit stream and performs frame sync,
 // bit assembly, and CRC validation for one channel.
 type Decoder struct {
-	version      FSyncVersion
-	syncState    int
-	shiftReg     uint32
-	syncLow      uint32
-	syncHigh     uint32
-	word1        uint32
-	word2        uint32
-	msgLen       int
-	message      [1536]byte
-	isFS2        bool
-	fs2State     int
-	fs2Word1     uint32
-	fs2Word2     uint32
-	goodBits     int
-	zeroCount    int
+	version   FSyncVersion
+	syncState int
+	shiftReg  uint32
+	syncLow   uint32
+	syncHigh  uint32
+	word1     uint32
+	word2     uint32
+	msgLen    int
+	message   [1536]byte
+	isFS2     bool
+	fs2State  int
+	fs2Word1  uint32
+	fs2Word2  uint32
+	goodBits  int
+	zeroCount int
 
 	// Callback invoked on successful message decode
 	MessageFunc func(*Message)
@@ -85,21 +86,21 @@ type Decoder struct {
 
 // FSyncMetrics holds performance and diagnostic information
 type FSyncMetrics struct {
-	TotalSamples      int64
-	TotalMessagesRx   int64
-	SyncErrors        int64
-	CRCErrors         int64
-	ChannelStates     [ND]string
-	LastMessageTime   time.Time
-	MessageRate       float64 // messages per second
+	TotalSamples    int64
+	TotalMessagesRx int64
+	SyncErrors      int64
+	CRCErrors       int64
+	ChannelStates   [ND]string
+	LastMessageTime time.Time
+	MessageRate     float64 // messages per second
 }
 
 // DemodulatorConfig specifies demodulator parameters
 type DemodulatorConfig struct {
-	SampleRate  int
-	Version     FSyncVersion
-	Frequency   uint32
-	Deviation   uint32
-	Gain        float32
-	CenterFreq  float32
+	SampleRate int
+	Version    FSyncVersion
+	Frequency  uint32
+	Deviation  uint32
+	Gain       float32
+	CenterFreq float32
 }

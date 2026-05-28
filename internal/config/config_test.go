@@ -257,6 +257,22 @@ func TestValidate(t *testing.T) {
 			}},
 			},
 		}, true},
+		{"fleetsync webhook ok", Config{
+			Broadcast: BroadcastConfig{FleetSync: FleetSyncBroadcastConfig{Webhooks: []FleetSyncWebhookFeedConfig{{
+				Enabled: true,
+				URL:     "http://127.0.0.1:9999/fleetsync",
+			}}}},
+		}, false},
+		{"fleetsync webhook missing url", Config{
+			Broadcast: BroadcastConfig{FleetSync: FleetSyncBroadcastConfig{Webhooks: []FleetSyncWebhookFeedConfig{{
+				Enabled: true,
+			}}}},
+		}, true},
+		{"fleetsync spool missing dir", Config{
+			Broadcast: BroadcastConfig{FleetSync: FleetSyncBroadcastConfig{Spool: []FleetSyncSpoolFeedConfig{{
+				Enabled: true,
+			}}}},
+		}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

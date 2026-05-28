@@ -94,3 +94,47 @@ func buildBroadcastManager(cfg config.BroadcastConfig, sampleRate int, bus *even
 		Workers:     cfg.Workers,
 	})
 }
+
+func buildFleetSyncExporter(cfg config.BroadcastConfig, bus *events.Bus, log *slog.Logger) (*broadcast.FleetSyncExporter, error) {
+	var backends []broadcast.FleetSyncBackend
+
+	for _, feed := range cfg.FleetSync.Webhooks {
+		if !feed.Enabled {
+			continue
+		}
+		backend, err := broadcast.NewFleetSyncWebhook(broadcast.FleetSyncWebhookConfig{
+			Name:    feed.Name,
+			URL:     feed.URL,
+			Sources: feed.Sources,
+			Headers: feed.Headers,
+		}, nil)
+		if err != nil {
+			return nil, err
+		}
+		backends = append(backends, backend)
+	}
+	for _, feed := range cfg.FleetSync.Spool {
+		if !feed.Enabled {
+			continue
+		}
+		backend, err := broadcast.NewFleetSyncSpool(broadcast.FleetSyncSpoolConfig{
+			Name:    feed.Name,
+			Dir:     feed.Dir,
+			Sources: feed.Sources,
+		})
+		if err != nil {
+			return nil, err
+		}
+		backends = append(backends, backend)
+	}
+
+	if len(backends) == 0 {
+		return nil, nil
+	}
+	return broadcast.NewFleetSyncExporter(broadcast.FleetSyncOptions{
+		Bus:      bus,
+		Log:      log,
+		Backends: backends,
+		Workers:  cfg.Workers,
+	})
+}
