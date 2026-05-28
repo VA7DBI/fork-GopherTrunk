@@ -154,7 +154,7 @@ describe("CCActivity panel", () => {
     expect(screen.queryByText("County DMR")).not.toBeInTheDocument();
   });
 
-  it("renders patch events with member count", () => {
+  it("renders patch add events with member TGs promoted over the SG", () => {
     setEvents([
       {
         kind: "patch",
@@ -171,9 +171,39 @@ describe("CCActivity panel", () => {
     const row = screen.getByText("Metro P25").closest("tr");
     expect(row).not.toBeNull();
     expect(row!.textContent).toMatch(/Patch/);
-    expect(row!.textContent).toMatch(/super-group 999/);
-    expect(row!.textContent).toMatch(/3 members/);
-    expect(row!.textContent).toMatch(/· add/);
+    expect(row!.textContent).toMatch(/Patch Active:/);
+    expect(row!.textContent).toMatch(/TG 101/);
+    expect(row!.textContent).toMatch(/TG 102/);
+    expect(row!.textContent).toMatch(/TG 103/);
+    expect(row!.textContent).toMatch(/\[SG 999\]/);
+  });
+
+  it("resolves member talkgroup aliases from the shared TGDB", () => {
+    setEvents([
+      {
+        kind: "patch",
+        timestamp: "2026-05-26T12:00:00Z",
+        payload: {
+          system: "Metro P25",
+          super_group: 30201,
+          members: [101, 102],
+          add: true,
+        },
+      },
+    ]);
+    useShared.setState({
+      talkgroups: [
+        { id: 101, alpha_tag: "NORTH DISP 1" },
+        { id: 102, alpha_tag: "NORTH TAC 2" },
+      ],
+    });
+    renderPanel();
+    const row = screen.getByText("Metro P25").closest("tr");
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toMatch(/Patch Active:/);
+    expect(row!.textContent).toMatch(/NORTH DISP 1 \(101\)/);
+    expect(row!.textContent).toMatch(/NORTH TAC 2 \(102\)/);
+    expect(row!.textContent).toMatch(/\[SG 30201\]/);
   });
 
   it("renders patch cancel events when add is false", () => {
@@ -192,8 +222,9 @@ describe("CCActivity panel", () => {
     renderPanel();
     const row = screen.getByText("Metro P25").closest("tr");
     expect(row).not.toBeNull();
-    expect(row!.textContent).toMatch(/super-group 999/);
-    expect(row!.textContent).toMatch(/· cancel/);
+    expect(row!.textContent).toMatch(/Patch Cancelled:/);
+    expect(row!.textContent).toMatch(/TG 101/);
+    expect(row!.textContent).toMatch(/\[SG 999\]/);
   });
 
   it("renders talker alias events", () => {
