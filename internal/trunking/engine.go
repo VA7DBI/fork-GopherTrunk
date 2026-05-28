@@ -83,6 +83,13 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	// Surface the resolved watchdog timeout once at startup so an operator
+	// can confirm from logs that the configured trunking.call_timeout_ms
+	// is the value the engine is actually using — issue #356 follow-up
+	// where a field log showed calls dying well under the configured
+	// 5 s, and there was no log line to verify what the engine had
+	// applied.
+	opts.Log.Info("engine: configured", "call_timeout", opts.CallTimeout)
 	e := &Engine{
 		bus:        opts.Bus,
 		log:        opts.Log,
@@ -189,6 +196,27 @@ func (e *Engine) HandleGrant(g Grant) {
 		if !scanned {
 			e.log.Debug("grant not in scan list", "grant", g.String())
 			return
+		}
+	}
+
+	// Suppress duplicate grants. The Phase 1 CC repeats voice-grant
+	// TSBKs while a call is active (the user's issue #356 log shows
+	// two grants for tg=32181 freq=773431250 arriving 20 ms apart),
+	// and without this guard the engine binds a second voice SDR to
+	// the same call — wasting a tuner, producing a duplicate WAV, and
+	// confusing the operator's view of which device is serving the
+	// call. Treat a repeat grant as the CC re-asserting "this call is
+	// still going" and refresh the existing bind's LastHeardAt. Skip
+	// when GroupID is zero (grants without a TG can legitimately
+	// share a frequency).
+	if g.GroupID != 0 {
+		for _, ac := range e.pool.Active() {
+			if ac.Grant.GroupID == g.GroupID && ac.Grant.FrequencyHz == g.FrequencyHz {
+				e.pool.Touch(ac.Device.Serial, e.now())
+				e.log.Debug("grant already active; refreshed",
+					"grant", g.String(), "device", ac.Device.Serial)
+				return
+			}
 		}
 	}
 
@@ -450,6 +478,18 @@ func (e *Engine) runWatchdog() {
 	cutoff := now.Add(-e.timeout)
 	for _, ac := range e.pool.Active() {
 		if ac.LastHeardAt.Before(cutoff) {
+			// Surface the exact timing the watchdog used before
+			// firing — issue #356 follow-up where a field log showed
+			// reason=timeout calls that didn't square with the
+			// configured trunking.call_timeout_ms, with no log to
+			// disambiguate which side of the comparison was wrong.
+			e.log.Debug("watchdog: reaping call",
+				"device", ac.Device.Serial,
+				"grant", ac.Grant.String(),
+				"last_heard_at", ac.LastHeardAt,
+				"now", now,
+				"elapsed", now.Sub(ac.LastHeardAt),
+				"timeout", e.timeout)
 			e.endCall(ac, EndReasonTimeout)
 		}
 	}

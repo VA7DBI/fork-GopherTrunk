@@ -431,6 +431,97 @@ func TestEngineWatchdogTimesOutSilentCall(t *testing.T) {
 	}
 }
 
+// TestEngineHandleGrantDeduplicatesDuplicateGrant covers the issue
+// #356 follow-up where the Phase 1 CC repeats voice-grant TSBKs while
+// the call is active. Before the dedup, the engine bound a second
+// voice SDR to the same TG/freq, producing duplicate WAV files and
+// tying up a tuner the operator needed for other grants. After the
+// fix the second grant refreshes the existing bind's LastHeardAt
+// (treating the repeat as the CC re-asserting "this call is still
+// going") and does not allocate a second device.
+func TestEngineHandleGrantDeduplicatesDuplicateGrant(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	pool, tuners := mkPool(2)
+	clock := &fakeClock{t: time.Unix(1000, 0)}
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 5 * time.Second,
+		Now:         clock.Now,
+	})
+
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	g := Grant{System: "X", Protocol: "p25", GroupID: 32181, FrequencyHz: 773_431_250}
+	e.HandleGrant(g)
+	if got := len(e.ActiveCalls()); got != 1 {
+		t.Fatalf("first grant: active calls = %d, want 1", got)
+	}
+	firstHeard := e.ActiveCalls()[0].LastHeardAt
+	firstDevice := e.ActiveCalls()[0].Device.Serial
+
+	// Advance the clock so the dedup's Touch produces a distinguishable
+	// LastHeardAt and fire the identical grant. The second call must
+	// not allocate device #2 — only one tuner should ever be retuned.
+	clock.t = clock.t.Add(20 * time.Millisecond)
+	e.HandleGrant(g)
+
+	if got := len(e.ActiveCalls()); got != 1 {
+		t.Fatalf("after duplicate grant: active calls = %d, want 1", got)
+	}
+	if got := e.ActiveCalls()[0].Device.Serial; got != firstDevice {
+		t.Errorf("duplicate grant rebound device: got %q, want %q", got, firstDevice)
+	}
+	if got := e.ActiveCalls()[0].LastHeardAt; !got.After(firstHeard) {
+		t.Errorf("duplicate grant did not refresh LastHeardAt: got %v, want >%v", got, firstHeard)
+	}
+	// Verify the second device was never touched.
+	for i, tn := range tuners {
+		if i == 0 {
+			continue
+		}
+		if got := tn.tuned(); len(got) != 0 {
+			t.Errorf("device %d was retuned on duplicate grant: tuned=%v", i, got)
+		}
+	}
+
+	// Drain the bus and confirm exactly one CallStart was published —
+	// the second grant must not emit a second start event.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	starts := 0
+	for time.Now().Before(deadline) {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindCallStart {
+				starts++
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if starts != 1 {
+		t.Errorf("CallStart events = %d, want 1", starts)
+	}
+}
+
+// TestEngineHandleGrantAllowsDifferentFrequencyGrants is the
+// complement guard for the dedup: a same-TG grant on a different
+// frequency (rare but legitimate — e.g. site rebind on multi-site
+// systems) must NOT be suppressed.
+func TestEngineHandleGrantAllowsDifferentFrequencyGrants(t *testing.T) {
+	e, _, bus, _ := mkEngine(t, 2)
+	defer bus.Close()
+
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 100, FrequencyHz: 851_000_000})
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 100, FrequencyHz: 852_000_000})
+
+	if got := len(e.ActiveCalls()); got != 2 {
+		t.Errorf("active calls = %d, want 2 (different frequencies)", got)
+	}
+}
+
 func TestEngineRunDispatchesGrantEvents(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
