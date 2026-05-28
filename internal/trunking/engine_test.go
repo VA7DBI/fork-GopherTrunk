@@ -403,10 +403,16 @@ loop:
 	}
 }
 
+// TestEngineWatchdogTimesOutSilentCall covers the true silent-decode
+// failure mode: a call that never received any frames (LastHeardAt
+// stayed at StartedAt) must reap as EndReasonTimeout — the
+// operator-actionable signal that the chain is broken.
 func TestEngineWatchdogTimesOutSilentCall(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
 	pool, _ := mkPool(1)
+	sub := bus.Subscribe()
+	defer sub.Close()
 	now := time.Unix(1000, 0)
 	clock := &fakeClock{t: now}
 	e, _ := NewEngine(EngineOptions{
@@ -428,6 +434,83 @@ func TestEngineWatchdogTimesOutSilentCall(t *testing.T) {
 	e.runWatchdog()
 	if got := e.ActiveCalls(); len(got) != 0 {
 		t.Errorf("watchdog should have ended the call; active = %+v", got)
+	}
+
+	// Reason must be EndReasonTimeout — no Touch ever fired, so
+	// LastHeardAt is still equal to StartedAt.
+	end := drainCallEnd(t, sub, 500*time.Millisecond)
+	if end.Reason != EndReasonTimeout {
+		t.Errorf("CallEnd.Reason = %v, want EndReasonTimeout (no frames decoded)", end.Reason)
+	}
+}
+
+// TestEngineWatchdogReapsTouchedCallAsNormal covers the carrier-drop
+// natural-end case: a call that received at least one Touch (an LDU
+// was decoded) but then went quiet must reap as EndReasonNormal, not
+// EndReasonTimeout. P25 trunking has no explicit channel-release on
+// the CC for most calls, so this watchdog path IS how a healthy call
+// ends — the operator-visible "timeout" label was a terminology bug
+// that made v2maldo's field report read as a decode failure when the
+// decode was actually working (issue #356 follow-up).
+func TestEngineWatchdogReapsTouchedCallAsNormal(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	pool, _ := mkPool(1)
+	sub := bus.Subscribe()
+	defer sub.Close()
+	clock := &fakeClock{t: time.Unix(1000, 0)}
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 1 * time.Second,
+		Now:         clock.Now,
+	})
+
+	e.HandleGrant(Grant{GroupID: 200, FrequencyHz: 852_000_000})
+	if len(e.ActiveCalls()) != 1 {
+		t.Fatal("call did not start")
+	}
+	serial := e.ActiveCalls()[0].Device.Serial
+
+	// Simulate the composer delivering frames: advance the clock,
+	// fire Touch (mirrors what runP25Phase1VoiceChain does when the
+	// receiver's LDU sink fires). Then advance past the grace window
+	// without any further Touch and run the watchdog.
+	clock.t = clock.t.Add(100 * time.Millisecond)
+	e.Touch(serial)
+	clock.t = clock.t.Add(2 * time.Second)
+	e.runWatchdog()
+
+	if got := e.ActiveCalls(); len(got) != 0 {
+		t.Errorf("watchdog should have ended the call; active = %+v", got)
+	}
+	end := drainCallEnd(t, sub, 500*time.Millisecond)
+	if end.Reason != EndReasonNormal {
+		t.Errorf("CallEnd.Reason = %v, want EndReasonNormal (frames received then carrier dropped)", end.Reason)
+	}
+}
+
+// drainCallEnd pulls events off sub until it sees a CallEnd or the
+// deadline fires. Tests use it to assert the reason published with a
+// natural-end / silent-timeout reap.
+func drainCallEnd(t *testing.T, sub *events.Subscription, deadline time.Duration) CallEnd {
+	t.Helper()
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	for {
+		select {
+		case ev := <-sub.C:
+			if ev.Kind == events.KindCallEnd {
+				ce, ok := ev.Payload.(CallEnd)
+				if !ok {
+					t.Fatalf("CallEnd payload type = %T", ev.Payload)
+				}
+				return ce
+			}
+		case <-timer.C:
+			t.Fatalf("no CallEnd event within %v", deadline)
+		}
 	}
 }
 
