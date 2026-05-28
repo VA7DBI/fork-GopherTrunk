@@ -46,6 +46,23 @@ const p25p2VoiceGardnerGain = 0.005
 func (c *Composer) runP25Phase2VoiceChain(ctx context.Context, serial string, system string, macCfg p25p2.MACDecodeConfig, iqCh <-chan []complex64, iqHz uint32, done chan<- struct{}) {
 	defer close(done)
 
+	// Issue #376 field-diagnostic: the existing "composer: p25p2 mac
+	// pdu" log fires only after a successful FEC decode, so every
+	// failure mode (zero macCfg, ScramblerOff against scrambled
+	// on-air traffic, ISCH FEC corruption) is silent. A single
+	// once-per-call line at chain entry confirms the chain actually
+	// ran and surfaces the exact FEC config the grant carried.
+	c.log.Info("composer: p25p2 voice chain started",
+		"serial", serial, "system", system,
+		"trellis", macCfg.Trellis, "rs", macCfg.RS,
+		"interleave", macCfg.Interleave, "scrambler", macCfg.Scrambler,
+		"seed", macCfg.Seed)
+	if macCfg.Scrambler == p25p2.ScramblerOff || macCfg.Seed == 0 {
+		c.log.Warn("composer: p25p2 macCfg suggests live MAC PDU decode will fail",
+			"serial", serial, "system", system,
+			"scrambler", macCfg.Scrambler, "seed", macCfg.Seed)
+	}
+
 	decim := int(iqHz) / p25p2VoiceIntermediateHz
 	if decim < 1 {
 		decim = 1
