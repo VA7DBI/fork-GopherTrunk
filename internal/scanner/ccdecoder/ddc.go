@@ -17,7 +17,18 @@ import (
 // raw SDR rate (commonly 2.048 MHz) instead gives ≈427 samples per
 // symbol and a matched filter spanning a ±1 MHz swath, so the Frame
 // Sync Word never correlates and no protocol locks — see issue #275.
+//
+// Exposed as DDCTargetRateHz so the gophertrunk replay subcommand
+// (which constructs its own Downconverter to mirror the production
+// pipeline; issue #402 Phase 2) can target the same channelized rate
+// without duplicating the constant.
 const ddcTargetRateHz = 48000.0
+
+// DDCTargetRateHz is the exported alias of ddcTargetRateHz. The
+// in-package callers keep using the lowercase name for source
+// stability; new external callers (replay, integration tests) use
+// the exported value.
+const DDCTargetRateHz = ddcTargetRateHz
 
 // tetraDDCTargetRateHz is the channel rate the down-converter uses
 // for TETRA. TETRA's π/4-DQPSK runs at 18000 symbols/s — roughly
@@ -49,7 +60,7 @@ const ddcStopbandTaps = 12
 // ~70 dB peak sidelobe attenuation.
 const ddcKaiserBeta = 7.0
 
-// downconverter decimates a wideband SDR IQ stream to a narrowband
+// Downconverter decimates a wideband SDR IQ stream to a narrowband
 // channel rate.
 //
 // Decimation is a rational polyphase resample (dsp.Resampler) whose
@@ -68,17 +79,24 @@ const ddcKaiserBeta = 7.0
 // the channel no longer sits at 0 Hz) or after the FM discriminator
 // (coarse AFC on the real symbol stream); both are tracked as
 // follow-ups to issue #275.
-type downconverter struct {
+//
+// Exported (issue #402 Phase 2) so the gophertrunk replay subcommand
+// can construct an identical down-converter and exactly mirror the
+// production receiver chain instead of feeding the receiver raw
+// wideband IQ — the latter sizes the matched filter and AFC/AGC
+// time constants for 2.4 MHz instead of 48 kHz, so a replayed
+// capture decodes nothing like its live counterpart.
+type Downconverter struct {
 	resampler *dsp.Resampler // nil ⇒ pass-through (no decimation)
 	outRateHz float64
 }
 
-// newDownconverter builds a down-converter that decimates inRateHz to
-// ~targetHz. The exact achieved output rate is reported by outRateHz
-// (it equals targetHz for every SDR rate that reduces to a sane L/M,
-// and equals inRateHz in pass-through mode).
-func newDownconverter(inRateHz, targetHz float64) *downconverter {
-	d := &downconverter{outRateHz: inRateHz}
+// NewDownconverter builds a down-converter that decimates inRateHz to
+// ~targetHz. The exact achieved output rate is reported by
+// OutRateHz (it equals targetHz for every SDR rate that reduces to
+// a sane L/M, and equals inRateHz in pass-through mode).
+func NewDownconverter(inRateHz, targetHz float64) *Downconverter {
+	d := &Downconverter{outRateHz: inRateHz}
 	in := int(math.Round(inRateHz))
 	target := int(math.Round(targetHz))
 	if in <= 0 || target <= 0 || in <= target {
@@ -94,11 +112,18 @@ func newDownconverter(inRateHz, targetHz float64) *downconverter {
 	return d
 }
 
+// OutRateHz returns the achieved narrowband output rate (equals the
+// requested target for standard SDR rates that reduce to a sane L/M;
+// equals inRateHz in pass-through mode). Callers building a receiver
+// against the downconverter's output should use this value for
+// SampleRateHz so matched-filter sizing matches the actual stream.
+func (d *Downconverter) OutRateHz() float64 { return d.outRateHz }
+
 // Process decimates one raw IQ chunk to the narrowband rate. dst is
 // reused if it has capacity; the returned slice holds the narrowband
 // output (len ≈ len(raw)·outRateHz/inRateHz). In pass-through mode
 // raw is returned unchanged. raw is never mutated.
-func (d *downconverter) Process(dst, raw []complex64) []complex64 {
+func (d *Downconverter) Process(dst, raw []complex64) []complex64 {
 	if d.resampler == nil {
 		return raw
 	}
@@ -108,7 +133,7 @@ func (d *downconverter) Process(dst, raw []complex64) []complex64 {
 // Reset clears the decimation filter history. Called on every
 // pipeline swap so a retune doesn't bleed the previous channel's
 // filter state into the new one.
-func (d *downconverter) Reset() {
+func (d *Downconverter) Reset() {
 	if d.resampler != nil {
 		d.resampler.Reset()
 	}

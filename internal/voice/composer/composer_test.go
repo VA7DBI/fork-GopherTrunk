@@ -12,7 +12,9 @@ import (
 )
 
 // fakeSource implements IQSource. Each call to StreamIQ returns a
-// fresh channel; the test pushes IQ chunks through SendIQ.
+// fresh channel; the test pushes IQ chunks through SendIQ. Returns
+// 0 from SampleRateHz so the composer falls back to its
+// daemon-wide IQSampleRate — the default for existing tests.
 type fakeSource struct {
 	mu  sync.Mutex
 	chs []chan []complex64
@@ -32,6 +34,8 @@ func (f *fakeSource) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 	}()
 	return ch, nil
 }
+
+func (f *fakeSource) SampleRateHz() uint32 { return 0 }
 
 func (f *fakeSource) SendIQ(samples []complex64) {
 	f.mu.Lock()

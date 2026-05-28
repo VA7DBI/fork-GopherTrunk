@@ -5,6 +5,7 @@ import type {
   AudioStatusDTO,
   ImportPreview,
   ImportResult,
+  RIDDTO,
   SettingsPatch,
   SettingsResponse,
   TalkgroupDTO,
@@ -14,6 +15,18 @@ export interface TalkgroupPatch {
   priority?: number;
   lockout?: boolean;
   scan?: boolean;
+}
+
+export interface RIDPatch {
+  alias?: string;
+  description?: string;
+  tag?: string;
+  group?: string;
+  owner?: string;
+  priority?: number;
+  lockout?: boolean;
+  watch?: boolean;
+  icon?: string;
 }
 
 export interface AudioPatch {
@@ -28,6 +41,9 @@ export const writes = {
 
   updateTalkgroup: (c: ClientConfig, id: number, patch: TalkgroupPatch) =>
     request<TalkgroupDTO>(c, "PATCH", `/api/v1/talkgroups/${id}`, patch),
+
+  updateRID: (c: ClientConfig, id: number, patch: RIDPatch) =>
+    request<RIDDTO>(c, "PATCH", `/api/v1/rids/${id}`, patch),
 
   sweepRetention: (c: ClientConfig) =>
     request<void>(c, "POST", "/api/v1/retention/sweep"),

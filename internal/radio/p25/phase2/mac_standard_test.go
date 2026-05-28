@@ -35,6 +35,53 @@ func TestAsUnitToUnitVoiceChannelGrant(t *testing.T) {
 	}
 }
 
+// TestAsGroupVoiceChannelUserAbbreviated round-trips the in-call
+// User PDU (MAC opcode 0x01) — the broadcast that backfills source
+// RID + SVC_OPTIONS during an active call on real Phase 2 systems
+// whose CC grant arrives in a compressed form (src=0, enc=false).
+func TestAsGroupVoiceChannelUserAbbreviated(t *testing.T) {
+	in := GroupVoiceChannelUser{
+		ServiceOptions: 0x40, // bit 6 = encrypted
+		GroupAddress:   0x4EEA,
+		SourceID:       315203, // the field reporter's MMR sample RID
+	}
+	got, ok := EncodeGroupVoiceChannelUser(in, false).AsGroupVoiceChannelUser()
+	if !ok {
+		t.Fatal("AsGroupVoiceChannelUser returned !ok for Abbreviated form")
+	}
+	if got != in {
+		t.Errorf("round-trip = %+v, want %+v", got, in)
+	}
+}
+
+// TestAsGroupVoiceChannelUserExtended confirms the Extended form
+// (opcode 0x21) decodes the same first three fields — only the
+// trailing SUID bytes (WACN/System/ID) differ from the Abbreviated
+// form, and AsGroupVoiceChannelUser ignores them here.
+func TestAsGroupVoiceChannelUserExtended(t *testing.T) {
+	in := GroupVoiceChannelUser{
+		ServiceOptions: 0x00,
+		GroupAddress:   0x1234,
+		SourceID:       0xABCDEF,
+	}
+	got, ok := EncodeGroupVoiceChannelUser(in, true).AsGroupVoiceChannelUser()
+	if !ok {
+		t.Fatal("AsGroupVoiceChannelUser returned !ok for Extended form")
+	}
+	if got != in {
+		t.Errorf("round-trip = %+v, want %+v", got, in)
+	}
+}
+
+// TestAsGroupVoiceChannelUserWrongOpcode rejects PDUs that aren't
+// one of the two User opcodes — e.g. an actual grant.
+func TestAsGroupVoiceChannelUserWrongOpcode(t *testing.T) {
+	pdu := MACPDU{Opcode: OpGroupVoiceChannelGrant, Payload: make([]byte, 9)}
+	if _, ok := pdu.AsGroupVoiceChannelUser(); ok {
+		t.Error("AsGroupVoiceChannelUser accepted a non-User opcode")
+	}
+}
+
 func TestAsUnitToUnitWrongOpcode(t *testing.T) {
 	pdu := MACPDU{Opcode: OpGroupVoiceChannelGrant, Payload: make([]byte, 9)}
 	if _, ok := pdu.AsUnitToUnitVoiceChannelGrant(); ok {

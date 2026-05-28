@@ -92,6 +92,23 @@ func (m *MuellerMuller) Process(dst []float32, src []float32) []float32 {
 	return dst
 }
 
+// Mu returns the current sub-sample phase accumulator (rad-equivalent;
+// in (-1, sps] depending on where the loop is in the symbol period).
+// At steady state on a noise-free signal mu cycles deterministically
+// around the symbol period; a slow monotonic drift indicates the
+// nominal sps does not match the stream's actual sample-rate / baud
+// ratio. Exposed read-only for issue-#402-style diagnostics where the
+// daemon (or replay) periodically logs the loop's internal state so a
+// persistent clock slip can be distinguished from a slicer / AFC
+// failure. Not safe for concurrent calls with Process.
+func (m *MuellerMuller) Mu() float64 { return m.mu }
+
+// SPS returns the nominal samples-per-symbol the loop was constructed
+// with. Paired with Mu() so a diagnostic log line can render mu as a
+// fraction of the symbol period without re-deriving the construction
+// value.
+func (m *MuellerMuller) SPS() float64 { return m.sps }
+
 func sgn(x float32) float64 {
 	if x > 0 {
 		return 1

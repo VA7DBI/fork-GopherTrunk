@@ -181,13 +181,46 @@ func newP25Phase1Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 				"spacing_hz", e.SpacingHz, "tx_offset_hz", e.TxOffsetHz)
 		}
 	}
+	// Parse the same Phase 2 FEC YAML knobs newP25Phase2Pipeline reads
+	// (below), so a hybrid Phase 1 CC + Phase 2 TC system (issue #376,
+	// MMR) can stamp its TDMA grants with the FEC config the voice
+	// composer's Phase 2 chain needs. Unrecognised values produce the
+	// same warn-then-fallback behaviour as the Phase 2 pipeline; an
+	// empty per-system value retains the same default (Trellis=on,
+	// everything else=off). Operators with Protocol="p25" override per
+	// system via the existing p25_phase2_*_mode YAML keys.
+	p2Trellis, p2TrellisOK := p25phase2.ParseTrellisMode(opts.System.P25Phase2TrellisMode)
+	if !p2TrellisOK {
+		log.Warn("ccdecoder: unrecognised p25_phase2_trellis_mode; falling back to on",
+			"system", opts.SystemName, "value", opts.System.P25Phase2TrellisMode)
+	}
+	p2RS, p2RSOK := p25phase2.ParseRSMode(opts.System.P25Phase2RSMode)
+	if !p2RSOK {
+		log.Warn("ccdecoder: unrecognised p25_phase2_rs_mode; falling back to off",
+			"system", opts.SystemName, "value", opts.System.P25Phase2RSMode)
+	}
+	p2Interleave, p2IlOK := p25phase2.ParseInterleaveMode(opts.System.P25Phase2InterleaveMode)
+	if !p2IlOK {
+		log.Warn("ccdecoder: unrecognised p25_phase2_interleave_mode; falling back to off",
+			"system", opts.SystemName, "value", opts.System.P25Phase2InterleaveMode)
+	}
+	p2Scrambler, p2ScrOK := p25phase2.ParseScramblerMode(opts.System.P25Phase2ScramblerMode)
+	if !p2ScrOK {
+		log.Warn("ccdecoder: unrecognised p25_phase2_scrambler_mode; falling back to off",
+			"system", opts.SystemName, "value", opts.System.P25Phase2ScramblerMode)
+	}
 	cc := p25phase1.New(p25phase1.Options{
-		Bus:         opts.Bus,
-		Log:         opts.Log,
-		SystemName:  opts.SystemName,
-		FrequencyHz: opts.FrequencyHz,
-		BandPlan:    bandPlan,
-		Rotations:   rotations,
+		Bus:                 opts.Bus,
+		Log:                 opts.Log,
+		SystemName:          opts.SystemName,
+		FrequencyHz:         opts.FrequencyHz,
+		BandPlan:            bandPlan,
+		Rotations:           rotations,
+		P25Phase1DemodMode:  opts.System.P25Phase1DemodMode,
+		P25Phase2Trellis:    uint8(p2Trellis),
+		P25Phase2RS:         uint8(p2RS),
+		P25Phase2Interleave: uint8(p2Interleave),
+		P25Phase2Scrambler:  uint8(p2Scrambler),
 	})
 	rx := p25phase1rx.New(p25phase1rx.Options{
 		SampleRateHz: opts.SampleRateHz,

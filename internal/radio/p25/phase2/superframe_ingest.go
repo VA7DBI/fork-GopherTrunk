@@ -9,30 +9,36 @@ import "github.com/MattCheramie/GopherTrunk/internal/radio/framing"
 // (raw) or macPDUDibitsTrellis (trellis-coded), selected by TrellisMode.
 const MACPayloadOffset = ISCHOffset + ISCHDibits
 
-// IngestSuperframe routes every MAC-bearing sub-frame of sf through the
-// MAC-PDU FEC chain into Ingest. It is the superframe-structured
-// counterpart of the flat Process adapter: the SuperframeDecoder has
-// already locked the 360 ms superframe, sliced the 12 sub-frames, and
-// decoded each ISCH SlotType, so this routes only the sub-frames whose
-// SlotType.IsMAC() and skips voice sub-frames — the composer voice
-// chain (internal/voice/composer/p25p2_voice.go) owns voice extraction.
-//
-// Because superframe sync pins which of the 12 TDMA slots a sub-frame
-// occupies, the PN44 descrambler can be handed its true per-slot offset
-// (slotPN44Offset) instead of blind-probing every offset.
-func (c *ControlChannel) IngestSuperframe(sf Superframe) {
-	c.mu.Lock()
-	mode := c.trellisMode
-	rsMode := c.rsMode
-	interleaveMode := c.interleaveMode
-	scramblerMode := c.scramblerMode
-	scramblerSeed := c.scramblerSeed
-	c.mu.Unlock()
+// MACDecodeConfig collects the per-channel FEC parameters
+// DecodeSuperframeMACPDUs needs to lift MAC PDUs out of a Phase 2
+// superframe's MAC sub-frames. The fields mirror the ControlChannel
+// setters one-for-one so a CC can hand its current config to a voice
+// composer (which does not own a CC) without exposing internal state.
+type MACDecodeConfig struct {
+	Trellis    TrellisMode
+	RS         RSMode
+	Interleave InterleaveMode
+	Scrambler  ScramblerMode
+	Seed       uint64
+}
 
+// DecodeSuperframeMACPDUs returns every successfully decoded MAC PDU
+// found in sf's MAC-typed sub-frames, in sub-frame order. Voice
+// sub-frames are skipped. Both the control-channel ingest path and the
+// voice-channel composer call this — Phase 2 voice traffic channels
+// interleave MAC sub-frames (signalling, talker alias, encryption
+// sync, …) with voice sub-frames, and the composer needs the same MAC
+// dispatch the CC runs.
+//
+// The PN44 descrambler is handed the spec's per-slot offset
+// (slotPN44Offset) because superframe sync pins which of the 12 TDMA
+// slots each sub-frame occupies.
+func DecodeSuperframeMACPDUs(sf Superframe, cfg MACDecodeConfig) []MACPDU {
 	macLen := macPDUDibits
-	if mode == TrellisOn {
+	if cfg.Trellis == TrellisOn {
 		macLen = macPDUDibitsTrellis
 	}
+	var out []MACPDU
 	for _, sub := range sf.Subframes {
 		if !sub.SlotType.IsMAC() {
 			continue
@@ -42,10 +48,35 @@ func (c *ControlChannel) IngestSuperframe(sf Superframe) {
 		}
 		macDibits := sub.Dibits[MACPayloadOffset : MACPayloadOffset+macLen]
 		offset := slotPN44Offset(sub.Index)
-		if pdu, ok := decodeMACPDUDibits(macDibits, mode, rsMode, interleaveMode,
-			scramblerMode, scramblerSeed, offset); ok {
-			c.Ingest(pdu)
+		if pdu, ok := decodeMACPDUDibits(macDibits, cfg.Trellis, cfg.RS,
+			cfg.Interleave, cfg.Scrambler, cfg.Seed, offset); ok {
+			out = append(out, pdu)
 		}
+	}
+	return out
+}
+
+// IngestSuperframe routes every MAC-bearing sub-frame of sf through the
+// MAC-PDU FEC chain into Ingest. It is the superframe-structured
+// counterpart of the flat Process adapter: the SuperframeDecoder has
+// already locked the 360 ms superframe, sliced the 12 sub-frames, and
+// decoded each ISCH SlotType, so this routes only the sub-frames whose
+// SlotType.IsMAC() and skips voice sub-frames — the composer voice
+// chain (internal/voice/composer/p25p2_voice.go) owns voice extraction
+// and runs its own MAC dispatch for talker-alias fragments via
+// DecodeSuperframeMACPDUs.
+func (c *ControlChannel) IngestSuperframe(sf Superframe) {
+	c.mu.Lock()
+	cfg := MACDecodeConfig{
+		Trellis:    c.trellisMode,
+		RS:         c.rsMode,
+		Interleave: c.interleaveMode,
+		Scrambler:  c.scramblerMode,
+		Seed:       c.scramblerSeed,
+	}
+	c.mu.Unlock()
+	for _, pdu := range DecodeSuperframeMACPDUs(sf, cfg) {
+		c.Ingest(pdu)
 	}
 }
 

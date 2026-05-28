@@ -9,6 +9,266 @@ for tagged releases.
 
 ### Added
 
+- **APRS DSP frontend — pipeline is now end-to-end.** Fifth and
+  load-bearing slice of Phase 5 (#365 plan): the
+  `internal/radio/aprs/afsk` package wires an `afsk.Receiver`
+  per configured APRS channel between the iqtap broker and the
+  bit-stream orchestrator that shipped in #401. Pipeline: IQ →
+  `demod.FM` → real resampler down to 9600 sps → `demod.FFSK`
+  tone discriminator (mark 1200 Hz, space 2200 Hz) → Mueller-
+  Müller symbol-timing recovery → DC-tracking slicer → NRZI
+  decode → HDLC framer → AX.25 + APRS info-field parse →
+  `events.KindAPRSPacket`. New top-level `aprs.channels` config
+  schema (`internal/config.APRSChannelConfig`, mirroring
+  `paging.pocsag`); daemon constructs one receiver per entry,
+  subscribes each to its SDR's iqtap broker via the standard
+  spawn closure. `Stats()` surfaces IQ-samples-seen + bits-
+  emitted; the bit-stream layer's frame counters remain reachable
+  via `Inner().Stats()`. Operators add an entry like
+  `serial: antenna-pi, frequency_hz: 144_390_000` and packets
+  start landing on the bus, the `aprs_log` SQLite table,
+  `/api/v1/aprs/packets`, and the `/aprs` web panel.
+  Tests cover NRZI round-trip (transition / no-transition
+  polarity, clamping, reset), receiver option validation,
+  Process ctx-cancel + nil-input + clean-close, and stats
+  counter accumulation. The synthetic IQ end-to-end test is
+  currently `t.Skip`-ped pending a captured `samples/aprs/`
+  fixture (same posture as POCSAG #378 — the receiver code is
+  exercised by the unit-level coverage above and the orchestrator
+  tests from #401).
+- **P25 Phase 2 traffic-channel metadata backfill (issue #376
+  follow-up).** Resolves the symptoms surfaced by @er-imagery's
+  2026-05-28 MMR field test: Phase 2 grants on encrypted
+  talkgroups arrived with `src=0` + `enc=false`, ALGID/KID never
+  populated, and `composer: p25p2 talker alias` log lines never
+  fired — even after #403 wired alias dispatch into the voice
+  chain. Root cause: the MAC opcode constant `OpMACPTT = 0x01`
+  was a fictional name; the real TIA-102 / SDRTrunk opcode at
+  0x01 is `GROUP_VOICE_CHANNEL_USER_ABBREVIATED`, the in-call
+  broadcast that carries SOURCE_ID + SVC_OPTIONS on the traffic
+  channel during an active call. Real MMR PDUs at 0x01 were
+  being parsed as "MAC PTT" and discarded.
+  - `phase2.OpMACPTT` is removed and replaced by
+    `phase2.OpGroupVoiceChannelUserAbbreviated = 0x01`. New
+    `OpGroupVoiceChannelUserExtended = 0x21` covers the SUID-
+    extended variant.
+  - New `phase2.GroupVoiceChannelUser` struct +
+    `MACPDU.AsGroupVoiceChannelUser()` accessor parses the
+    SDRTrunk-confirmed layout: SVC_OPTIONS at payload[0],
+    GROUP_ADDRESS at payload[1..2], SOURCE_ADDRESS at
+    payload[3..5].
+  - New `events.KindCallSourceUpdate` event +
+    `trunking.CallSourceUpdate` payload + `VoicePool.UpdateSource`
+    method + `Engine.handleCallSourceUpdate` handler form the
+    backfill path: composer publishes, engine patches
+    `ActiveCall.Grant.SourceID/.Encrypted`, republishes with the
+    call's identity. `AffiliationTracker` subscribes so RID
+    chips populate from the backfilled source.
+  - The voice composer's Phase 2 chain now also dispatches
+    in-call `OpEncryptionSync` (existing parser, just hooked up)
+    via the existing `KindCallEncryption` event, mirroring the
+    Phase 1 LDU2 path. ALGID/KID flow onto the active call as
+    the EncryptionSync PDU arrives.
+  - Diagnostic safety net: one Info log line per (opcode, MFID)
+    per call —
+    `composer: p25p2 mac pdu system=… serial=… opcode=… mfid=…
+    payload_len=…` — so if MMR emits a vendor opcode we still
+    don't dispatch (e.g. a different talker-alias opcode), the
+    next field test pinpoints exactly what we saw.
+  - Pre-existing `phase2.OpGroupVoiceChannelUserExt = 0x46` is
+    renamed to `OpUnitToUnitGrantUpdateAbbreviated` to match
+    its actual TIA-102 / SDRTrunk identity. No parser was
+    wired to it; the rename is name-only.
+- **P25 Phase 2 voice-channel talker-alias decode.** Resolves the
+  follow-up half of #376: on Motorola MMR (and any Phase 2 system
+  whose CC never emits talker-alias PDUs), display names ride MAC
+  sub-frames that interleave with voice sub-frames on the traffic
+  channel. The voice composer's Phase 2 chain now runs the same
+  MAC-PDU dispatch the CC does — refactored into the new exported
+  `phase2.DecodeSuperframeMACPDUs` — and publishes
+  `events.KindTalkerAlias` when a fragment sequence completes. The
+  CC's per-channel FEC config (trellis / RS / interleave /
+  scrambler mode + 44-bit PN44 seed) rides on the published Grant
+  via a new `trunking.P25Phase2Decode` field so the composer can
+  decode MAC PDUs without owning a CC reference. Field-reporter
+  re-test on MMR is the real verifier; #397's Phase 1
+  Motorola-form path is unchanged.
+- **APRS HDLC framer + receiver.** Fourth slice of Phase 5 (#365).
+  `internal/radio/aprs/hdlc` is the bit-stream → frame-bytes
+  layer: sliding-flag detector with bit-stuffing reversal,
+  shared-flag packing tolerance, and 7+-ones abort sequence
+  handling. `internal/radio/aprs/receiver` is the orchestrator
+  that threads bits through the framer, parses each emitted
+  frame with `ax25.Parse`, decodes the info field with
+  `aprs.Decode`, and publishes one `events.KindAPRSPacket` per
+  successfully-decoded UI frame. The bus payload is a
+  `storage.APRSPacket` carrying the AX.25 envelope + APRS
+  sub-type label + summary + (for position-bearing types)
+  lat/lon, so the SQLite log + REST endpoint + `/aprs` web
+  panel from #384 light up the moment a DSP layer pushes wire
+  bits at `receiver.Push`. `DropBadFCS` / `DropNonUI` opt-ins;
+  in/parsed/CRC-failed/emitted counters for future `/metrics`.
+  See [docs/aprs.md](docs/aprs.md).
+
+### Fixed
+
+- **P25 Phase 1 voice chain now honours `p25_phase1_demod_mode`
+  (issue #356 follow-up, reporter @v2maldo).** The per-call P25
+  Phase 1 voice receiver was hardcoded to the C4FM
+  FM-discriminator path regardless of the system-level
+  `trunking.systems[].p25_phase1_demod_mode` setting. On a
+  simulcast / LSM site the control channel decoded fine (the
+  ccdecoder connector already honoured the setting) but every
+  voice grant landed in an FM-discriminator that couldn't sync on
+  LSM-modulated dibits — the LDU sink never fired, the
+  frame-activity counter from #356's earlier fix never advanced,
+  and the watchdog reaped the call at `call_timeout_ms` with an
+  empty WAV. The mode string is now plumbed through
+  `trunking.Grant` and the voice composer passes it into
+  `p25p1rx.Options.DemodMode`. Empty / unrecognised values warn-log
+  and fall back to C4FM so a typo doesn't silently kill a
+  previously-working system.
+- **RTL-SDR cold-boot stall on Windows: wider recovery envelope for the
+  most stubborn clone dongles (issue #395).** A Windows 10 reporter on
+  v0.2.4 still hit `rtlsdr: init baseband: init baseband step 0 ...
+  ERROR_GEN_FAILURE` after the prior #382 + #393 fixes — warmup succeeded
+  but the byte-identical step 0 of `InitBaseband` failed, and all three
+  attempts of the previous 3-attempt / 100 ms+200 ms backoff envelope
+  also failed. The open-time bring-up envelope now runs 5 attempts (4
+  resets) with exponential backoff (200 / 400 / 800 / 1200 ms), and the
+  WinUSB `Reset()` settle grows from 50 ms to 150 ms — both targeted at
+  Windows USB-stack timing for the wedged-firmware recovery path.
+  Healthy dongles still open on attempt 0 with zero delay; only dongles
+  that actually need recovery pay the new costs. The surfaced hint for
+  `ErrPipeStalled` now also recommends unplugging the dongle for 10 s
+  before re-plugging (which physically clears the firmware state) and
+  references the issue for users hitting this after a Windows
+  sleep/resume.
+
+### Changed
+
+- **Operator-visible warnings for two silent-degradation paths
+  surfaced by issue #356 triage.** Both fix observability gaps
+  rather than behaviour, so a working config keeps working but a
+  misconfigured one now logs a single line at startup pointing
+  the operator at the fix.
+  - `sdr: no gain configured for device ... use \`gain: auto\` for
+    AGC or a specific tenth-dB value` — fires once per device that
+    has a `sdr.devices[]` entry but no `gain:` key. The librtlsdr
+    default isn't safe across every tuner / antenna / LNA chain;
+    on some clones it leaves the SDR deaf and the symptom looks
+    like a broken voice chain. See [docs/hardware.md](docs/hardware.md).
+  - `conv: tone gating configured but scanner sample rate is zero;
+    tone gate disabled` — fires when a conventional-scanner channel
+    has `tone.mode: ctcss` or `dcs` but `sdr.sample_rate` is
+    unset. The channel previously appeared in scan rotation with
+    the gate silently bypassed (every signal passing), with no log
+    explaining why CTCSS / DCS wasn't engaging.
+- **Motorola voice-channel talker-alias decoder (issue #376
+  follow-up).** Field-testing on a real MMR system surfaced that
+  the standard TIA-102.AABF HEADER + BLOCK1 + BLOCK2 form #389
+  implemented does NOT match what Motorola actually emits — real
+  Motorola P25 systems use a vendor-specific variant: LCO 0x15
+  header (talkgroup + variable block_count + sequence number) +
+  N × LCO 0x17 data blocks (44-bit fragment each), with the
+  reassembled message running the encoded alias through a
+  proprietary lookup-table + accumulator cipher to recover the
+  UTF-16 character stream. Replaced `StandardTalkerAliasBuf`
+  with a clean-room Go port of the Motorola form
+  (`phase1.MotorolaTalkerAliasBuf` +
+  `phase1.decodeAliasBytes`). The voice composer dispatch on
+  `IsTalkerAliasLCO` is unchanged at the call site; the Info
+  log line now reads "composer: p25p1 motorola talker alias
+  src=... alias=..." so operators can see decode events in the
+  daemon log. The cipher LUT and arithmetic are treated as
+  facts about Motorola's wire protocol (the algorithm is
+  reverse-engineered prior art across multiple open-source
+  decoders).
+
+## [v0.2.4] — 2026-05-27
+
+Phase-5 (APRS) + Phase-3 (POCSAG) + Phase-1 (Radio IDs) feature-density
+follow-up to v0.2.3. The APRS scaffold landed (events bus / SQLite log /
+REST / web panel — #384) and immediately got its protocol layer
+(pure-Go AX.25 frame parser + APRS info-field decoder — #390), with
+the Bell-202 AFSK DSP receiver as the remaining follow-up. POCSAG
+closed end-to-end with the DSP receiver + daemon wiring (#378), so a
+tuned SDR's IQ now flows demod → bit-slicer → syncer → page event →
+SQLite log / REST / web panel without further plumbing. Radio IDs
+landed in three slices: the `RIDDB` alias catalogue + REST + gRPC +
+`/rids` web panel mirroring `TalkgroupDB` (#387), the standard
+TIA-102.AABF P25 voice-channel talker-alias LC decoder (LDU1 LCOs
+0x15 / 0x16 / 0x17 — #389) closing the second half of issue #376, and
+a docs pass under [docs/radio-ids.md](docs/radio-ids.md). One-dongle
+deployments got more powerful: the `role: wideband` channelizer now
+hosts P25 Phase 1 and Phase 2 control channels alongside DMR T2/T3
+(#385), and a new "virtual voice pool" (#386) follows trunked voice
+grants whose frequency lands inside the wideband IQ window — so a
+single SDR can cover P25 CC + voice end-to-end. The wideband engine
+also routes through the iqtap broker so the spectrum view works on
+wideband-only deployments (#377). Two more Windows RTL-SDR cold-boot
+stall paths now self-recover: #382 classifies the
+`ERROR_GEN_FAILURE` NAK as `ErrPipeStalled` and clears the control
+halt, and #393 makes WinUSB `Reset` re-open the device handle
+(matching `libusb_reset_device`) and allows up to two settles during
+open. Plus polish: r82xx PLL nint encoding limit widened to 268 so
+V4-class dongles tune above ~140 MHz on the 16 MHz xtal (#391,
+closes #264), CC Activity super-group patches finally render member
+counts (#392, closes #374), and the misleading "voice pool full"
+message is replaced with an actionable startup WARN pointing at
+`docs/hardware.md` when no `role: voice` SDR is attached (#383,
+closes #379).
+
+### Added
+
+- **AX.25 frame parser + APRS info-field decoder.** Third slice
+  of Phase 5 (#365), the protocol layer that plugs into the
+  bus/log/REST/UI scaffolding from #384. Pure-Go AX.25 frame
+  parser (`internal/radio/aprs/ax25`): 7-byte address packing,
+  up to 8 digipeater path entries, HDLC CRC-16-CCITT validation,
+  conventional `W1AW-9` / `WIDE2-1*` display helpers. Plus an
+  APRS info-field decoder (`internal/radio/aprs`) for positions
+  (`!`, `=`, `/`, `@`), messages (`:`) with ack/rej + bulletins,
+  status (`>`); Mic-E / weather / telemetry / object types are
+  type-tagged with payloads stashed for follow-up decoders. The
+  DSP receiver (Bell-202 AFSK demod → HDLC de-stuff → frame
+  delivery → bus event) is the next focused PR. See
+  [docs/aprs.md](docs/aprs.md).
+- **Radio IDs as first-class entities (#387, #376).** New
+  `trunking.RIDDB` operator-configured alias catalogue mirroring
+  `TalkgroupDB`: per-system `rid_alias_file` (CSV or JSON, dispatched
+  by extension) carrying `Decimal/DEC/ID` plus optional `Alias`,
+  `Description`, `Tag`, `Group`, `Owner`, `Priority`, `Lockout`,
+  `Watch`, `Icon` columns. `AffiliationTracker` gained `TalkerAlias`,
+  `TalkerAliasAt`, `CallCount`, `FirstSeen` on `UnitActivity` and
+  now subscribes to `KindTalkerAlias`. New HTTP routes `GET
+  /api/v1/rids`, `GET /api/v1/rids/{id}`, `GET
+  /api/v1/rids/{id}/history` (backed by `HistoryFilter.SourceID`),
+  and `PATCH /api/v1/rids/{id}`. New gRPC `RIDService`
+  (`ListRIDs` / `GetRID` / `ListRIDHistory`). New `/rids` web panel
+  with the configured ∪ live merge, last-50-calls detail modal, and
+  write-mode mutation controls. CC Activity RID chips are now
+  clickable links into the detail view. See [docs/radio-ids.md](docs/radio-ids.md).
+- **Standard P25 talker-alias voice-channel decoder.** Follow-up to
+  #387 closing the second half of issue #376. Phase 1 LDU1 Link
+  Control opcodes 0x15 (HEADER) / 0x16 (BLOCK1) / 0x17 (BLOCK2) are
+  now reassembled by `phase1.StandardTalkerAliasBuf` (one buffer
+  per active voice chain) and published as `KindTalkerAlias` events
+  with the call's SourceID; the affiliation tracker stamps the
+  decoded alias onto the RID row so it surfaces in
+  `/api/v1/rids` and the Radio IDs panel. The existing Motorola
+  vendor TSBK form (control channel) is unchanged. Phase 2 voice-MAC
+  alias dispatch remains a follow-up.
+- **APRS bus event + SQLite log + REST + web panel.** Second
+  slice of Phase 5 (#365), building on the protocol layer from
+  #381. New `events.KindAPRSPacket` bus event, `aprs_log`
+  SQLite table, `storage.APRSLog` bus subscriber (mirrors
+  `PagerLog`), `GET /api/v1/aprs/packets?limit=N` REST endpoint,
+  and `/aprs` web panel rendering the live packet list (received
+  time, src → dst + path, type, body, lat/lon, CRC-OK flag with
+  yellow highlight on CRC failure). DSP wiring (Bell-202 AFSK
+  demod → HDLC de-stuff → AX.25 framer → packet decoder → bus)
+  is the remaining piece and lands in a focused follow-up PR.
 - **POCSAG DSP receiver + daemon wiring.** Third slice of Phase 3
   (#365). New `internal/radio/pager/pocsag/receiver` package wires
   the FM demod → rational resampler → integrator-and-slicer → bit
@@ -25,6 +285,155 @@ for tagged releases.
   [docs/pocsag.md](docs/pocsag.md) for the configuration knob and
   what's pending (timing-recovery tuning against real fixtures,
   multi-channel-from-one-SDR DDC, FLEX).
+- **Wideband channelizer hosts P25 Phase 1 + Phase 2 control
+  channels (#385).** A single SDR pinned to a centre frequency can
+  now host a P25 trunked control channel inside the wideband
+  channelizer, alongside the existing DMR Tier II and Tier III state
+  machines. The per-channel wiring uses a small `narrowbandReceiver`
+  interface (`Process([]complex64)`) so the engine itself stays
+  protocol-agnostic; P25 Phase 1 honours the system's
+  `p25_phase1_demod_mode` (C4FM vs CQPSK / LSM) and any
+  operator-supplied `P25BandPlan` entries, and P25 Phase 2 reuses the
+  existing trellis / RS / interleave / scrambler / clock-mode knobs
+  and the PN44 seed derivation so a wideband CC tap decodes
+  identically to a dedicated CC dongle. Config validator accepts
+  protocol `p25` / `p25-phase2` for wideband channels with the same
+  control-channel-membership rule that already applies to DMR Tier
+  III. Docs and `config.example.yaml` updated with worked P25
+  examples. Voice grants on these protocols still route to the
+  daemon's existing physical voice pool — the virtual voice pool
+  (next bullet) covers in-window grants.
+- **Virtual voice pool on the wideband dongle (#386).** A wideband
+  dongle can now also follow trunked voice grants whose frequency
+  lands inside its IQ window — DMR Tier III, P25 Phase 1, P25
+  Phase 2 — without a separate `role: voice` SDR. New
+  `internal/sdr/wbvoice` package: `VirtualTuner` implements both
+  `trunking.Tuner` (`SetCenterFreq`, `CanTune`) and
+  `composer.IQSource` (`StreamIQ`, `SampleRateHz`). Each tap
+  subscribes to the wideband dongle's iqtap broker on demand, runs a
+  single-tap DDC at the (target − wideband) offset, and emits 48
+  kHz IQ to the composer's existing P25 / DMR voice chains — no
+  changes to the receivers themselves. `voicepool.FindFreeForFrequency`
+  consults an optional `FrequencyChecker.CanTune` on each free
+  device, so a voice grant outside the wideband window passes over
+  a virtual tuner and lands on the physical `role: voice` SDR when
+  one is configured. One SDR end-to-end for any system whose
+  carriers fit in a single 2.4 MHz band.
+- **Wideband engine routes IQ + tuning through the iqtap broker
+  (#377).** Wideband-only DMR Tier 2 deployments (single SDR,
+  `role: wideband`, multiple T2 systems) couldn't render the
+  spectrum waterfall because the engine consumed `StreamIQ` from
+  the raw device and never fed the broker's fan-out. The wideband
+  engine now takes the broker (mirroring the CC decoder wiring) so
+  the spectrum panel works on wideband-only deployments. Also seeds
+  each broker's sample-rate cache in `wrapIQBrokers` from
+  `cfg.SDR.SampleRate` — the pool programs the rate on the raw
+  device before the broker wraps it, so `Broker.SetSampleRate`'s
+  cache path never ran and frames stamped `sample_rate_hz=0` for
+  every device.
+
+### Fixed
+
+- **RTL-SDR cold-boot stall on Windows: deeper recovery for wedged
+  clone dongles (issue #333).** The previous fix (#382) mapped
+  `ERROR_GEN_FAILURE (0x1F)` to `ErrPipeStalled` and ran one
+  clear-halt + re-claim retry, which recovers a stale endpoint halt
+  but not a wedged firmware state from a prior crashed process.
+  WinUSB `Transport.Reset()` now matches what `libusb_reset_device`
+  does on Windows: clear-halt the control endpoint, drop the WinUSB
+  handles, then re-open the device via `CreateFile` +
+  `WinUsb_Initialize` (a true device-object re-bind, not just a pipe
+  reset). The open-time bring-up envelope now allows up to two such
+  resets per `Open` with 100 ms / 200 ms backoff, giving clones that
+  need two settles to come back a chance to recover before surfacing
+  the Zadig / port-choice / `gophertrunk sdr doctor` hint. Healthy
+  dongles still open with zero resets and zero delay.
+- **RTL-SDR cold-boot stall on Windows now self-recovers (#382).**
+  Clone dongles (and some power-marginal hubs) latch the first
+  USB_SYSCTL=0x09 vendor-OUT write, then NAK the byte-identical
+  second write in `init baseband` step 0 with `ERROR_GEN_FAILURE
+  (0x1F)`. The Linux equivalent (`EPIPE`) was already covered by the
+  bring-up reset+retry envelope; the Windows path wasn't because (a)
+  `ERROR_GEN_FAILURE` wasn't classified as resetable, and (b) the
+  WinUSB `Transport.Reset()` was a no-op. WinUSB now clears the
+  control-pipe halt via `WinUsb_ResetPipe(0)` (USB
+  `CLEAR_FEATURE(ENDPOINT_HALT)`), the new `usb.ErrPipeStalled`
+  sentinel keys the existing retry envelope, and a clone-dongle hint
+  pointing at Zadig / port choice / `gophertrunk sdr doctor` is
+  appended when the second attempt still fails.
+- **r82xx setPLL nint encoding limit widened to 268 (closes #264).**
+  The overflow guard used `0x3F + 13 = 76`, which only accounts for
+  ni's 6-bit width and ignores that si's 2 extra bits also encode
+  part of nint (register 0x14 = `ni | si<<6`; nint = `13 + 4*ni + si`).
+  The real encoding cap is `13 + 4*0x3F + 0x3 = 268`. With R820T /
+  R820T2's 28.8 MHz xtal the VCO range capped nint near 67 so the
+  bug was latent; PR #266's correct R828D xtal (16 MHz) halves
+  `pllRef` and pushes nint up to ~121 — the guard then rejected
+  tunes above ~140 MHz on the V4 dongle, e.g. 153.5875 MHz →
+  nint=78 overflows. Regression test pins the nint=78 math for the
+  reporter's frequency.
+- **CC Activity panel renders super-group patches with member counts
+  (closes #374).** `eventToDTO` had no case for `trunking.Patch`,
+  so the payload fell through to default and was JSON-marshalled
+  with Go's PascalCase names (`SuperGroup`, `Members`, `Add`). The
+  CC Activity panel reads snake_case fields (`super_group`,
+  `members`, `add`) and was getting `undefined` for all of them —
+  hence "super-group 0 · add" on every patch. New `PatchDTO`
+  mirrors the established DTO pattern (snake_case JSON tags),
+  `eventToDTO` dispatches to it, and the frontend cancel-detect
+  honours the wire field (`add: false`) alongside the existing
+  legacy fallbacks. SSE wire shape pinned by test using the values
+  from the issue report.
+- **Actionable "voice pool empty" diagnostic when no `role: voice`
+  SDR is attached (closes #379).** When an operator booted with a
+  trunked system but no voice SDR, every grant logged "voice pool
+  full but no actives" — which read as "pool full" while the pool
+  was in fact empty, and gave no clue that a second SDR or a
+  wideband channelizer is required. `HandleGrant` now distinguishes
+  the two cases: empty pool logs a one-shot actionable WARN
+  pointing at [docs/hardware.md](docs/hardware.md) and drops
+  subsequent grants at DEBUG; the genuine impossible state
+  (devices > 0 but no actives) becomes Error so the bug stays
+  visible. A new one-shot startup WARN from `Daemon.Run` surfaces
+  the problem before the first grant arrives. Non-trunked
+  deployments (POCSAG, conventional FM scanner, wideband T2
+  capture-only, baseband recording) still run cleanly because the
+  warning is gated on `len(systems) > 0`.
+
+## [v0.2.3] — 2026-05-26
+
+The "multi-consumer SDR + new operator panels" release. The new
+iqtap broker (#365) made multi-consumer SDR fan-out possible without
+forking IQ streams in each subscriber, which immediately unlocked a
+batch of new operator-console capabilities: a Constellation viewer
+that renders live IQ scatter alongside decode (#370), a CC Activity
+panel that filters the events stream down to control-channel chatter
+(#369), a UI-managed Bookmarks frequency manager backed by a new
+SQLite table (#368), spectrum-panel click-to-tune + bookmark markers
+(#371), a Hamlib `rigctld` TCP server for external amateur tooling
+(Cloudlog, GridTracker, PSTRotator, `rigctl(1)` — #367), and a
+remote `rtl_tcp` driver mounting any number of remote SDR servers as
+virtual tuners alongside locally-attached USB dongles (#366). POCSAG
+paging landed as the first two slices of Phase 3 of the
+trunking-adjacent feature plan (#365): the BCH(31,21) FEC + codeword
+wrapper + numeric / alphanumeric message decoders shipped as a
+pure-protocol slice (#372), and the syncer + page assembler + bus /
+log / REST / web panel scaffold plugged it into the operator surface
+(#373); the DSP receiver wiring landed the following day in v0.2.4.
+The wideband channelizer gained DMR Tier III control-channel support
+(#363) and per-channel `ClockGain` matching the dedicated-dongle
+path (#364) so wideband-hosted DMR repeaters lock as cleanly.
+Windows 11 RTL-SDR driver-binding woes got a diagnostic answer
+(`gophertrunk sdr doctor` — #359) since Windows has no equivalent
+of `USBDEVFS_DISCONNECT`. Airspy R2 open ordering on Windows fixed
+(#358) so it stops failing with `device disconnected` when
+`sdr list` did detect the dongle. And the stuck voice-chain footgun
+(#356) closed: the four voice composers now gate `Engine.Touch` on
+actual decoder progress so the 30 s inactivity watchdog can fire
+and release the bound voice SDR when transmission stops.
+
+### Added
+
 - **POCSAG syncer + page assembler + bus event + SQLite log +
   web panel.** Second slice of Phase 3 (#365), building on the
   protocol layer landed in #372. The new `pocsag.Syncer`
@@ -125,38 +534,6 @@ for tagged releases.
   sources just like local ones. Plaintext on the wire — restrict
   to trusted networks or wrap with SSH/WireGuard/Tailscale. See
   [docs/hardware.md](docs/hardware.md).
-
-### Fixed
-
-- **RTL-SDR cold-boot stall on Windows now self-recovers.** Clone
-  dongles (and some power-marginal hubs) latch the first
-  USB_SYSCTL=0x09 vendor-OUT write, then NAK the byte-identical
-  second write in `init baseband` step 0 with `ERROR_GEN_FAILURE
-  (0x1F)`. The Linux equivalent (`EPIPE`) was already covered by the
-  bring-up reset+retry envelope; the Windows path wasn't because (a)
-  `ERROR_GEN_FAILURE` wasn't classified as resetable, and (b) the
-  WinUSB `Transport.Reset()` was a no-op. WinUSB now clears the
-  control-pipe halt via `WinUsb_ResetPipe(0)` (USB
-  `CLEAR_FEATURE(ENDPOINT_HALT)`), the new `usb.ErrPipeStalled`
-  sentinel keys the existing retry envelope, and a clone-dongle hint
-  pointing at Zadig / port choice / `gophertrunk sdr doctor` is
-  appended when the second attempt still fails.
-- **Wideband DMR receiver loop-gain now matches the single-channel
-  ccdecoder path.** The Stage 2 / Stage 3 wideband engine was
-  instantiating `dmr/receiver.Receiver` with the default
-  `ClockGain: 0.05`, which the existing ccdecoder pipelines
-  explicitly lowered (0.015 for Tier II, 0.025 for Tier III) because
-  the default doesn't reliably lock the Mueller-Müller clock loop on
-  T2/T3 symbol distributions. The wideband engine now picks the
-  right value per channel based on the system's tier, so wideband-
-  hosted DMR repeaters lock as cleanly as the dedicated-dongle path.
-  Verified by a new in-package end-to-end test in
-  `internal/scanner/widebandt2/engine_e2e_test.go` that feeds
-  synthesized Voice LC Header IQ through the engine and asserts a
-  grant event lands on the bus.
-
-### Added
-
 - **`role: wideband` SDR devices — one dongle, many DMR Tier II
   repeaters and DMR Tier III control channels.** A single SDR pinned
   to a centre frequency now decodes every conventional DMR repeater
@@ -176,7 +553,8 @@ for tagged releases.
   and `samples/dmr-tier2-multichannel/`. Tier III voice grants still
   route through the existing physical voice pool (a `role: voice`
   SDR follows the call); decoding T3 voice directly on the wideband
-  dongle via a virtual voice pool is the next planned step.
+  dongle via a virtual voice pool is the next planned step (landed
+  in v0.2.4 as #386).
 - **`gophertrunk sdr doctor` — per-dongle driver-binding report.**
   Many Windows 11 users reported their RTL-SDR dongles weren't being
   recognized despite appearing in Device Manager, mirroring the
@@ -206,6 +584,19 @@ for tagged releases.
 
 ### Fixed
 
+- **Wideband DMR receiver loop-gain now matches the single-channel
+  ccdecoder path.** The Stage 2 / Stage 3 wideband engine was
+  instantiating `dmr/receiver.Receiver` with the default
+  `ClockGain: 0.05`, which the existing ccdecoder pipelines
+  explicitly lowered (0.015 for Tier II, 0.025 for Tier III) because
+  the default doesn't reliably lock the Mueller-Müller clock loop on
+  T2/T3 symbol distributions. The wideband engine now picks the
+  right value per channel based on the system's tier, so wideband-
+  hosted DMR repeaters lock as cleanly as the dedicated-dongle path.
+  Verified by a new in-package end-to-end test in
+  `internal/scanner/widebandt2/engine_e2e_test.go` that feeds
+  synthesized Voice LC Header IQ through the engine and asserts a
+  grant event lands on the bus.
 - **trunking/composer**: Voice chains no longer keep a call alive
   forever via an unconditional 1 s heartbeat. The four chains
   (P25 Phase 1, P25 Phase 2, DMR, NBFM) now gate `Engine.Touch` on
@@ -222,7 +613,6 @@ for tagged releases.
   systems with consistently clean signaling (lower for snappier
   teardown) or chatty channels with long transmission pauses
   (higher). Issue #356.
-
 - **airspy**: Defer `SET_SAMPLE_TYPE` from `Open()` to `StreamIQ()`,
   matching libairspy's open ordering (`GET_SAMPLERATES` IN first,
   no vendor OUT during open). Fixes Airspy R2 failing to open on

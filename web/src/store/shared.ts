@@ -12,6 +12,7 @@ import type {
   EventDTO,
   Health,
   Mutations,
+  RIDDTO,
   ScannerStatusDTO,
   SystemDTO,
   TalkgroupDTO,
@@ -34,6 +35,7 @@ interface SharedState {
   audio: AudioStatusDTO | null;
   systems: SystemDTO[];
   talkgroups: TalkgroupDTO[];
+  rids: RIDDTO[];
   activeCalls: ActiveCallDTO[];
   devices: DeviceDTO[];
   scanner: ScannerStatusDTO | null;
@@ -53,6 +55,7 @@ interface SharedState {
   setAudio(a: AudioStatusDTO | null): void;
   setSystems(s: SystemDTO[]): void;
   setTalkgroups(t: TalkgroupDTO[]): void;
+  setRIDs(r: RIDDTO[]): void;
   setActiveCalls(a: ActiveCallDTO[]): void;
   setDevices(d: DeviceDTO[]): void;
   setScanner(s: ScannerStatusDTO | null): void;
@@ -74,6 +77,7 @@ export const useShared = create<SharedState>((set, get) => ({
   audio: null,
   systems: [],
   talkgroups: [],
+  rids: [],
   activeCalls: [],
   devices: [],
   scanner: null,
@@ -111,6 +115,9 @@ export const useShared = create<SharedState>((set, get) => ({
   },
   setTalkgroups(t) {
     set({ talkgroups: t });
+  },
+  setRIDs(r) {
+    set({ rids: r });
   },
   setActiveCalls(a) {
     set({ activeCalls: a });
@@ -168,6 +175,7 @@ export const useShared = create<SharedState>((set, get) => ({
       audio: null,
       systems: [],
       talkgroups: [],
+      rids: [],
       activeCalls: [],
       devices: [],
       scanner: null,

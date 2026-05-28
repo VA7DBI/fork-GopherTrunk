@@ -15,6 +15,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/events"
 	p25phase1 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
 	p25phase1rx "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1/receiver"
+	"github.com/MattCheramie/GopherTrunk/internal/scanner/ccdecoder"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
@@ -135,12 +136,38 @@ FLAGS:`)
 		Rotations:     rotations,
 		NIDSearchSpan: *nidSearchSpan,
 	})
+
+	// Mirror the production ccdecoder DDC for the C4FM path (issue
+	// #402 Phase 2): the daemon decimates raw SDR IQ down to ~48 kHz
+	// before the receiver sees it; without the same step here replay
+	// feeds the receiver wideband IQ (e.g. 2.4 MHz), the matched
+	// filter sizes for ~500 samples per symbol, and AFC / AGC time
+	// constants are off by ~50× compared to what runs in production.
+	// A capture that fails in the daemon would then decode (or fail)
+	// differently in replay, defeating the whole point of using
+	// replay as a reproducer. The DDC is only enabled when the demod
+	// is C4FM and the supplied -sample-rate exceeds the production
+	// target — CQPSK and already-channelized captures are unchanged.
+	var ddc *ccdecoder.Downconverter
+	receiverRate := *sampleRate
+	if demodMode == p25phase1rx.DemodC4FM && *sampleRate > ccdecoder.DDCTargetRateHz {
+		ddc = ccdecoder.NewDownconverter(*sampleRate, ccdecoder.DDCTargetRateHz)
+		receiverRate = ddc.OutRateHz()
+	}
+
 	// Surface the active configuration the same way the ccdecoder
 	// pipeline does, so the replay log line is directly comparable
 	// to a daemon's startup line — and a non-default span (the
 	// bisect knob) is visible without re-reading the command.
 	fmt.Fprintf(os.Stderr, "replay: p25/phase1 configured  demod=%s  rotations=%v  nid_search_span=%d  nid_accept_errs=%d  nid_marginal_max=%d\n",
 		*demod, rotations, *nidSearchSpan, p25phase1.NIDAcceptErrs, p25phase1.NIDMarginalMaxErrs)
+	if ddc != nil {
+		fmt.Fprintf(os.Stderr, "replay: ddc enabled  sdr_rate_hz=%g  pipeline_rate_hz=%g\n",
+			*sampleRate, receiverRate)
+	} else {
+		fmt.Fprintf(os.Stderr, "replay: ddc bypassed  pipeline_rate_hz=%g  (sample rate already at or below the C4FM target, or demod=cqpsk)\n",
+			receiverRate)
+	}
 
 	var dibitCount int64
 	var diagAcc *iqDiag
@@ -148,7 +175,7 @@ FLAGS:`)
 		diagAcc = &iqDiag{}
 	}
 	rxOpts := p25phase1rx.Options{
-		SampleRateHz: *sampleRate,
+		SampleRateHz: receiverRate,
 		DeviationHz:  1800.0,
 		DemodMode:    demodMode,
 		DibitSink: func(dibits []uint8, baseIdx int) {
@@ -175,9 +202,34 @@ FLAGS:`)
 		}
 	}()
 
+	// Per-second receiver-state observer (issue #402 Phase 2): after
+	// every secondsPerStateLog seconds of wall-clock IQ have flowed
+	// through the receiver, log the AFC bias, symbol-AGC level/target,
+	// and Mueller-Müller clock state. Lets the reporter (and us) see
+	// whether one stage's internal state slowly drifts after the CC
+	// locks, which is what the disproven-DC-spike-hypothesis pivot now
+	// points at. The cadence is measured in IQ-stream seconds (totalSamples
+	// / sampleRate), not wall clock — so the same capture produces the
+	// same log lines regardless of how fast replay can chew through it.
+	const stateLogIntervalSec = 1.0
+	var nextStateLogAt float64 = stateLogIntervalSec
+	logReceiverState := func(at float64) {
+		fmt.Fprintf(os.Stderr,
+			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f\n",
+			at,
+			rx.AFCBiasRadPerSample(),
+			rx.AFCBiasRadPerSample()*receiverRate/(2*math.Pi),
+			rx.AGCLevel(),
+			rx.AGCTarget(),
+			ratioOrZero(rx.AGCTarget(), rx.AGCLevel()),
+			rx.MMClockMu(),
+			rx.MMClockSPS())
+	}
+
 	const chunkSamples = 8192
 	buf := make([]byte, chunkSamples*bytesPerSample)
 	samples := make([]complex64, chunkSamples)
+	var ddcOut []complex64 // reused across the read loop
 	var totalSamples int64
 	for {
 		n, rerr := io.ReadFull(f, buf)
@@ -191,8 +243,21 @@ FLAGS:`)
 				samples = make([]complex64, pairs)
 			}
 			decode(buf[:pairs*pairBytes], samples[:pairs])
-			rx.Process(samples[:pairs])
+			feed := samples[:pairs]
+			if ddc != nil {
+				ddcOut = ddc.Process(ddcOut, feed)
+				feed = ddcOut
+			}
+			rx.Process(feed)
 			totalSamples += int64(pairs)
+
+			// Throttle the state log on IQ-stream time, not wall
+			// clock. *sampleRate is the input rate even when the
+			// DDC is active — that's the rate totalSamples counts.
+			if t := float64(totalSamples) / *sampleRate; t >= nextStateLogAt {
+				logReceiverState(t)
+				nextStateLogAt = t + stateLogIntervalSec
+			}
 		}
 		if errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF) {
 			break
@@ -208,10 +273,21 @@ FLAGS:`)
 	bus.Close()
 	<-doneEvents
 
-	printSummary(filepath.Base(*in), totalSamples, *sampleRate, dibitCount, stats)
+	printSummary(filepath.Base(*in), totalSamples, *sampleRate, dibitCount, stats, cc.Stats())
 	if diagAcc != nil {
 		diagAcc.printReport(os.Stdout)
 	}
+}
+
+// ratioOrZero returns num / den, or 0 if den is too small to divide
+// safely. Used by the state log so a not-yet-seeded AGC level
+// (level=0) renders as gain=0 rather than panicking on divide-by-zero
+// or printing +Inf.
+func ratioOrZero(num, den float64) float64 {
+	if den < 1e-12 && den > -1e-12 {
+		return 0
+	}
+	return num / den
 }
 
 // replayStats accumulates bus events seen during the replay so the
@@ -260,8 +336,11 @@ func handleEvent(ev events.Event, s *replayStats) {
 
 // printSummary writes the EOF report — what the operator pastes into
 // the GitHub issue alongside the live log. Includes the effective-baud
-// self-diagnostic the anakie_short.zip mislabel taught us we need.
-func printSummary(name string, samples int64, sampleRate float64, dibits int64, s replayStats) {
+// self-diagnostic the anakie_short.zip mislabel taught us we need, plus
+// the per-frame outcome breakdown the ControlChannel keeps in CCStats
+// (issue #402 Phase 2: lets the reporter answer "did anything decode?"
+// without scrolling through every debug line).
+func printSummary(name string, samples int64, sampleRate float64, dibits int64, s replayStats, cc p25phase1.CCStats) {
 	fmt.Fprintln(os.Stdout, "----")
 	duration := float64(samples) / sampleRate
 	fmt.Fprintf(os.Stdout, "replay: %s — %d samples (%.2fs at %.0f Hz), %d dibits emitted\n",
@@ -287,13 +366,40 @@ func printSummary(name string, samples int64, sampleRate float64, dibits int64, 
 	if s.grants > 0 {
 		fmt.Fprintf(os.Stdout, "replay: %d grant(s) across %d frequencies\n", s.grants, len(s.grantFreqs))
 	}
+
+	// Per-frame outcome breakdown from CCStats. NID-tier counts split
+	// "passed BCH+parity cleanly" from "needed TSBK corroboration",
+	// and TSBK counts split the failure mode (trellis vs CRC). On a
+	// healthy site every FSW hit becomes NIDTrusted + TSBKDecoded;
+	// the issue-#402 shape is high NIDFailed + high TSBKCRCFailed
+	// (gross dibit corruption that BCH can't recover and Viterbi
+	// barely can).
+	nidAttempts := cc.NIDTrusted + cc.NIDMarginal + cc.NIDFailed
+	tsbkAttempts := cc.TSBKDecoded + cc.TSBKTrellisFailed + cc.TSBKCRCFailed
+	fmt.Fprintf(os.Stdout, "replay: nid   trusted=%d  marginal=%d  uncorrectable=%d  (of %d FSW-hit attempts; %s ok)\n",
+		cc.NIDTrusted, cc.NIDMarginal, cc.NIDFailed, nidAttempts,
+		pctOf(cc.NIDTrusted+cc.NIDMarginal, nidAttempts))
+	fmt.Fprintf(os.Stdout, "replay: tsbk  decoded=%d  trellis_failed=%d  crc_failed=%d  (of %d NID-passed frames; %s ok)\n",
+		cc.TSBKDecoded, cc.TSBKTrellisFailed, cc.TSBKCRCFailed, tsbkAttempts,
+		pctOf(cc.TSBKDecoded, tsbkAttempts))
+
 	if len(s.decodeErrors) > 0 {
 		parts := make([]string, 0, len(s.decodeErrors))
 		for stage, n := range s.decodeErrors {
 			parts = append(parts, fmt.Sprintf("%s=%d", stage, n))
 		}
-		fmt.Fprintf(os.Stdout, "replay: decode errors: %s\n", strings.Join(parts, " "))
+		fmt.Fprintf(os.Stdout, "replay: decode errors (from bus): %s\n", strings.Join(parts, " "))
 	}
+}
+
+// pctOf renders num/den as a percentage string, or "n/a" when den is
+// zero. Used by the EOF summary so "0 / 0 = NaN%" doesn't appear in
+// the operator's pasted output.
+func pctOf(num, den int64) string {
+	if den <= 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1f%%", 100*float64(num)/float64(den))
 }
 
 // pickSampleDecoder maps the -format flag to a (decoder, bytes-per-IQ-pair)

@@ -39,6 +39,15 @@ type IdentifierUpdate struct {
 	SpacingHz   uint32 // channel-to-channel step
 	TxOffsetHz  int64  // signed transmit offset (uplink = downlink + offset)
 	BaseHz      uint64 // downlink base frequency for channel 0
+	// AccessTDMA is true when this slot was advertised via opcode 0x33
+	// (OpIdentifierUpdateTDMA) — i.e. the granted voice channels are
+	// P25 Phase 2 H-DQPSK TDMA carriers. The Phase 1 control channel
+	// uses this to route grants on TDMA channels into the Phase 2
+	// voice composer chain (Protocol="p25-phase2") rather than the
+	// Phase 1 FDMA chain. Issue #376: without this, MMR-class systems
+	// (Phase 1 CC + Phase 2 TC) silently lose their Phase 2 MAC PDU
+	// dispatch (talker alias, in-call src/enc backfill).
+	AccessTDMA bool
 }
 
 // ParseIdentifierUpdate decodes the 8-byte payload of opcode 0x3D
@@ -201,6 +210,7 @@ func ParseIdentifierUpdateTDMA(p [8]byte) IdentifierUpdate {
 		SpacingHz:   spacingHz,
 		TxOffsetHz:  txOffsetHz,
 		BaseHz:      uint64(freq5Hz) * 5,
+		AccessTDMA:  true,
 	}
 }
 
@@ -380,4 +390,16 @@ func (b *BandPlan) Known(channelID uint8) bool {
 		return false
 	}
 	return b.known[channelID]
+}
+
+// IsTDMA reports whether the channel ID was advertised via opcode 0x33
+// (OpIdentifierUpdateTDMA). Returns false for unknown channel IDs and
+// for FDMA channels. The Phase 1 control channel queries this at grant
+// publish time so voice grants targeting Phase 2 TDMA carriers get
+// routed to the composer's Phase 2 MAC dispatch path.
+func (b *BandPlan) IsTDMA(channelID uint8) bool {
+	if int(channelID) >= len(b.known) || !b.known[channelID] {
+		return false
+	}
+	return b.slots[channelID].AccessTDMA
 }

@@ -3,6 +3,18 @@ groups:
     items:
       - title: The Story of GopherTrunk
         url: /story.html
+  - label: Blog
+    items:
+      - title: All posts
+        url: /blog/
+      - title: Announcements
+        url: /blog/category/announcements/
+      - title: Releases
+        url: /blog/category/releases/
+      - title: Deep dives
+        url: /blog/category/deep-dives/
+      - title: Tutorials
+        url: /blog/category/tutorials/
   - label: Install
     items:
       - title: Downloads
@@ -33,6 +45,8 @@ groups:
         url: /bookmarks.html
       - title: CC Activity
         url: /cc-activity.html
+      - title: Radio IDs
+        url: /radio-ids.html
       - title: Constellation
         url: /constellation.html
       - title: rigctld integration
@@ -51,6 +65,8 @@ groups:
         url: /dmr-encryption.html
       - title: POCSAG paging
         url: /pocsag.html
+      - title: APRS / AX.25
+        url: /aprs.html
       - title: Opt-in features
         url: /opt-in-features.html
       - title: Status

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/events"
+	"github.com/MattCheramie/GopherTrunk/internal/radio/framing"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
@@ -90,12 +92,85 @@ type ControlChannel struct {
 	// Options falls back to NIDSearchSpan, so production wiring is
 	// unaffected.
 	nidSearchSpan int
+
+	// p25Phase1DemodMode is the system-level operator-set demod-mode
+	// string (e.g. "cqpsk" / "c4fm"). Stamped onto every published
+	// trunking.Grant so the voice composer can route the voice IQ
+	// through the matching symbol-recovery path; without this an LSM
+	// simulcast site's voice grants would land in a hardcoded C4FM
+	// voice receiver and never decode (issue #356 follow-up). Empty
+	// string preserves the C4FM default in the voice chain.
+	p25Phase1DemodMode string
+
+	// p25Phase2Trellis / p25Phase2RS / p25Phase2Interleave /
+	// p25Phase2Scrambler carry the operator-configured Phase 2 FEC
+	// modes the CC stamps onto any grant whose channel ID was
+	// advertised as TDMA via opcode 0x33. Without this, a Phase 1 CC
+	// could not give the voice composer enough information to run
+	// the Phase 2 MAC dispatch path on the traffic channel, so
+	// MMR-class hybrid sites silently lost in-call source ID +
+	// alias + encryption-sync metadata (issue #376).
+	p25Phase2Trellis    uint8
+	p25Phase2RS         uint8
+	p25Phase2Interleave uint8
+	p25Phase2Scrambler  uint8
+
+	// stats is the per-frame outcome counter exposed via Stats().
+	// Atomic so the daemon's API / diagnostic goroutines can read it
+	// concurrently with Process. Issue #402: gives replay and any
+	// future operator dashboard a per-run "of the frames the FSW
+	// correlator delivered, how many cleared each acceptance gate"
+	// breakdown — the steady-state shape that distinguishes "demod
+	// is broken" from "demod is fine but one frame in N is corrupt".
+	stats CCStats
+}
+
+// CCStats is the snapshot Stats() returns. All counters are
+// monotonically increasing from ControlChannel construction.
+//
+// NIDTrusted counts NIDs that cleared the BCH+parity gate at
+// errs ≤ NIDAcceptErrs (the searchNID "trusted tier"). NIDMarginal
+// counts NIDs in (NIDAcceptErrs, NIDMarginalMaxErrs] that were
+// admitted only because the frame's 98-dibit TSBK ALSO Viterbi+CRC
+// decoded under the same alignment. NIDFailed counts FSW hits where
+// no alignment in the grid produced an acceptable NID under either
+// tier — the "all 28 BCH-uncorrectable" shape from the issue-#402
+// report.
+//
+// TSBKDecoded counts frames whose 98-dibit channel block cleared
+// Viterbi + CRC and reached dispatchTSBK. TSBKTrellisFailed and
+// TSBKCRCFailed split the post-NID failure mode (Viterbi diverged
+// vs. trellis decoded but the trailer CRC didn't match) — both also
+// surface as events.KindDecodeError on the bus, but the bus event
+// is sampled by tests / Prometheus and may miss frames a synchronous
+// snapshot needs.
+type CCStats struct {
+	NIDTrusted        int64
+	NIDMarginal       int64
+	NIDFailed         int64
+	TSBKDecoded       int64
+	TSBKTrellisFailed int64
+	TSBKCRCFailed     int64
 }
 
 // NetworkSnapshot returns the system topology accumulated from the
 // site's Network / RFSS / Secondary-CC / Adjacent-Site status TSBKs.
 func (c *ControlChannel) NetworkSnapshot() NetworkConfig {
 	return c.netModel.Snapshot()
+}
+
+// Stats returns a snapshot of the per-frame outcome counters. Safe
+// for concurrent calls — each counter is read with atomic.LoadInt64.
+// See CCStats for the meaning of each field. Issue #402.
+func (c *ControlChannel) Stats() CCStats {
+	return CCStats{
+		NIDTrusted:        atomic.LoadInt64(&c.stats.NIDTrusted),
+		NIDMarginal:       atomic.LoadInt64(&c.stats.NIDMarginal),
+		NIDFailed:         atomic.LoadInt64(&c.stats.NIDFailed),
+		TSBKDecoded:       atomic.LoadInt64(&c.stats.TSBKDecoded),
+		TSBKTrellisFailed: atomic.LoadInt64(&c.stats.TSBKTrellisFailed),
+		TSBKCRCFailed:     atomic.LoadInt64(&c.stats.TSBKCRCFailed),
+	}
 }
 
 // pendingHit is an FSW match awaiting enough buffered dibits to decode
@@ -136,6 +211,34 @@ type Options struct {
 	// the search reach a true alignment that lies past the default
 	// edge.
 	NIDSearchSpan int
+
+	// P25Phase1DemodMode is the raw system-level demod-mode string
+	// (e.g. "cqpsk" / "c4fm") from the system config. Stamped onto
+	// every published trunking.Grant so the voice composer can route
+	// the voice IQ through the matching symbol-recovery path. Empty
+	// preserves the C4FM default in the voice chain — and is what the
+	// existing replay / unit tests pass.
+	P25Phase1DemodMode string
+
+	// P25Phase2Trellis / P25Phase2RS / P25Phase2Interleave /
+	// P25Phase2Scrambler hold the per-system FEC mode the voice
+	// composer's Phase 2 chain needs to decode MAC PDUs that
+	// interleave with H-DQPSK voice on a Phase 2 TDMA traffic
+	// channel. Encoded as the uint8 values
+	// trunking.P25Phase2Decode round-trips (numerically aligned to
+	// the phase2 enum constants of the same name). The ccdecoder
+	// pipeline parses the matching YAML keys via phase2.Parse*Mode
+	// and passes the result through; left zero means
+	// Trellis=off/RS=off/Interleave=off/Scrambler=off, which matches
+	// the phase2 ccdecoder's empty-YAML default for symmetry. Issue
+	// #376: needed so a Phase 1 CC can publish grants that target
+	// Phase 2 TDMA carriers (MMR-class systems) with FEC config the
+	// voice composer can use to decode in-call source ID + alias +
+	// encryption-sync PDUs.
+	P25Phase2Trellis    uint8
+	P25Phase2RS         uint8
+	P25Phase2Interleave uint8
+	P25Phase2Scrambler  uint8
 }
 
 // New constructs a ControlChannel from Options. SystemName ends up on
@@ -163,16 +266,21 @@ func New(opts Options) *ControlChannel {
 		span = NIDSearchSpan
 	}
 	return &ControlChannel{
-		bus:           opts.Bus,
-		log:           log,
-		det:           det,
-		systemName:    opts.SystemName,
-		freqHz:        opts.FrequencyHz,
-		bandPlan:      bp,
-		now:           now,
-		aliasAsm:      NewTalkerAliasAssembler(now),
-		rotations:     resolveRotations(opts.Rotations),
-		nidSearchSpan: span,
+		bus:                 opts.Bus,
+		log:                 log,
+		det:                 det,
+		systemName:          opts.SystemName,
+		freqHz:              opts.FrequencyHz,
+		bandPlan:            bp,
+		now:                 now,
+		aliasAsm:            NewTalkerAliasAssembler(now),
+		rotations:           resolveRotations(opts.Rotations),
+		nidSearchSpan:       span,
+		p25Phase1DemodMode:  opts.P25Phase1DemodMode,
+		p25Phase2Trellis:    opts.P25Phase2Trellis,
+		p25Phase2RS:         opts.P25Phase2RS,
+		p25Phase2Interleave: opts.P25Phase2Interleave,
+		p25Phase2Scrambler:  opts.P25Phase2Scrambler,
 	}
 }
 
@@ -342,6 +450,7 @@ func (c *ControlChannel) Process(dibits []uint8, baseIdx int) int {
 func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 	best, found, diag := c.searchNID(buf, nidStart, fswRot)
 	if !found {
+		atomic.AddInt64(&c.stats.NIDFailed, 1)
 		c.log.Debug("nid parse failed", "system", c.systemName,
 			"freq_hz", c.freqHz, "diag", diag)
 		c.bus.Publish(events.Event{
@@ -349,6 +458,15 @@ func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 			Payload: events.DecodeError{Protocol: "p25", Stage: events.StageNIDBCH},
 		})
 		return
+	}
+	// Trusted vs. marginal tier discrimination matches the
+	// "corroborated" log field below: a NID with more than
+	// NIDAcceptErrs BCH corrections was only admitted because the
+	// frame TSBK ALSO verified under the same alignment.
+	if best.errs > NIDAcceptErrs {
+		atomic.AddInt64(&c.stats.NIDMarginal, 1)
+	} else {
+		atomic.AddInt64(&c.stats.NIDTrusted, 1)
 	}
 	if best.errs > 0 {
 		c.log.Debug("nid corrected", "errs", best.errs, "nac", best.nid.NAC,
@@ -379,6 +497,11 @@ func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 	tsbkChannel, _ := gatherFrameDibits(buf, best.tsbkStart, 98, fswStart, best.strip)
 	tsbk, metric, err := DecodeTSBKChannel(rotateDibits(tsbkChannel, best.rot))
 	if err != nil {
+		if errors.Is(err, CRCError) {
+			atomic.AddInt64(&c.stats.TSBKCRCFailed, 1)
+		} else {
+			atomic.AddInt64(&c.stats.TSBKTrellisFailed, 1)
+		}
 		c.log.Debug("tsbk decode failed", "err", err, "metric", metric, "nac", best.nid.NAC)
 		stage := events.StageTSBKTrellis
 		if errors.Is(err, CRCError) {
@@ -705,6 +828,7 @@ func InjectControlStatusSymbols(stream []uint8) []uint8 {
 // logged at debug but not republished, since they're the bulk of what
 // a busy site emits and would drown signal in noise.
 func (c *ControlChannel) dispatchTSBK(t TSBK, nac uint16, metric int) {
+	atomic.AddInt64(&c.stats.TSBKDecoded, 1)
 	// Manufacturer-specific TSBKs are decoded in the vendor's opcode
 	// namespace (Motorola patch/regroup, Harris regroup, talker alias)
 	// — see tsbk_vendor.go.
@@ -890,24 +1014,48 @@ func (c *ControlChannel) publishVoiceGrant(g voiceGrant, nac uint16) {
 		return
 	}
 	so := ServiceOptions(g.serviceOptions)
+	// Hybrid Phase 1 CC + Phase 2 TC sites (issue #376, MMR): when the
+	// granted channel ID was advertised as TDMA via opcode 0x33, route
+	// the grant to the voice composer's Phase 2 chain so it can decode
+	// the MAC PDUs that interleave with H-DQPSK voice on the traffic
+	// channel — source-ID + encryption-sync + talker-alias backfill.
+	// Without this, every grant landed in the Phase 1 voice chain and
+	// the Phase 2 MAC dispatch path PR #409 added was dead code on
+	// MMR-class systems.
+	protocol := "p25"
+	var p2dec trunking.P25Phase2Decode
+	if c.bandPlan.IsTDMA(g.channelID) {
+		protocol = "p25-phase2"
+		net := c.netModel.Snapshot()
+		seed := framing.PN44SeedFromIdentity(net.WACN, net.SystemID, nac&0x0FFF)
+		p2dec = trunking.P25Phase2Decode{
+			Trellis:    c.p25Phase2Trellis,
+			RS:         c.p25Phase2RS,
+			Interleave: c.p25Phase2Interleave,
+			Scrambler:  c.p25Phase2Scrambler,
+			Seed:       seed,
+		}
+	}
 	c.bus.Publish(events.Event{
 		Kind: events.KindGrant,
 		Payload: trunking.Grant{
-			System:      c.systemName,
-			Protocol:    "p25",
-			GroupID:     g.groupID,
-			SourceID:    g.sourceID,
-			FrequencyHz: freq,
-			ChannelID:   g.channelID,
-			ChannelNum:  g.channelNumber,
-			Encrypted:   so.Encrypted(),
-			Emergency:   so.Emergency(),
-			DataCall:    g.dataCall,
-			At:          c.now(),
+			System:             c.systemName,
+			Protocol:           protocol,
+			GroupID:            g.groupID,
+			SourceID:           g.sourceID,
+			FrequencyHz:        freq,
+			ChannelID:          g.channelID,
+			ChannelNum:         g.channelNumber,
+			Encrypted:          so.Encrypted(),
+			Emergency:          so.Emergency(),
+			DataCall:           g.dataCall,
+			P25Phase1DemodMode: c.p25Phase1DemodMode,
+			P25Phase2Decode:    p2dec,
+			At:                 c.now(),
 		},
 	})
 	c.log.Debug("p25: grant",
-		"system", c.systemName, "nac", nac,
+		"system", c.systemName, "nac", nac, "protocol", protocol,
 		"tg", g.groupID, "src", g.sourceID,
 		"id", g.channelID, "num", g.channelNumber, "freq_hz", freq,
 		"enc", so.Encrypted(), "emer", so.Emergency(), "data", g.dataCall)

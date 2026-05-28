@@ -146,17 +146,17 @@ WaitLoop:
 //   - 400-dibit warmup cycling 0..3 so the matched filter +
 //     differential decoder converge on the constellation centre
 //   - `repeats` × a full 12-sub-frame TDMA superframe, every
-//     sub-frame a MAC sub-frame carrying an OpMACPTT MAC PDU
+//     sub-frame a MAC sub-frame carrying an OpGroupVoiceChannelUserAbbreviated MAC PDU
 //   - 100-dibit trailer for clean flush
 //
 // Each superframe is built with EncodeMACSubframe (ISCH + trellis-coded
 // MAC PDU) + EncodeSuperframe (which injects the 20-dibit outbound
 // sync), so the daemon's SuperframeDecoder-backed pipeline locks the
 // superframe, decodes the ISCH SlotTypes, and routes the MAC PDUs into
-// the control-channel state machine. OpMACPTT is the canonical
+// the control-channel state machine. OpGroupVoiceChannelUserAbbreviated is the canonical
 // non-idle "lock me" MAC PDU.
 func buildP25Phase2MACPTTStream(repeats int) []uint8 {
-	pdu := p25phase2.MACPDU{Opcode: p25phase2.OpMACPTT, Payload: make([]byte, 17)}
+	pdu := p25phase2.MACPDU{Opcode: p25phase2.OpGroupVoiceChannelUserAbbreviated, Payload: make([]byte, 17)}
 	var subs [p25phase2.SubframesPerSuperframe][]uint8
 	for i := range subs {
 		subs[i] = p25phase2.EncodeMACSubframe(

@@ -179,6 +179,31 @@ func TestRecordIQPowerDbFS(t *testing.T) {
 	}
 }
 
+func TestRecordIQDCRatioDb(t *testing.T) {
+	m, _ := New(nil, nil, "test")
+	defer m.Close()
+
+	m.RecordIQDCRatioDb("MMR", -22.0)
+	if got := testutil.ToFloat64(m.iqDCRatioDb.WithLabelValues("MMR")); got != -22.0 {
+		t.Errorf("iq dc ratio = %v, want -22.0", got)
+	}
+
+	m.RecordIQDCRatioDb("MMR", -3.0) // DC-dominated capture
+	if got := testutil.ToFloat64(m.iqDCRatioDb.WithLabelValues("MMR")); got != -3.0 {
+		t.Errorf("iq dc ratio after update = %v, want -3.0", got)
+	}
+
+	m.ClearIQDCRatioDb("MMR")
+	if testutil.CollectAndCount(m.iqDCRatioDb) != 0 {
+		t.Errorf("iq dc ratio series count after clear != 0")
+	}
+
+	m.RecordIQDCRatioDb("", -15.0)
+	if got := testutil.ToFloat64(m.iqDCRatioDb.WithLabelValues("unknown")); got != -15.0 {
+		t.Errorf("iq dc ratio unknown = %v, want -15.0", got)
+	}
+}
+
 func TestHandlerScrapeContainsExpectedSeries(t *testing.T) {
 	m, _ := New(nil, nil, "v1.2.3")
 	defer m.Close()

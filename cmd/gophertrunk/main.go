@@ -98,7 +98,19 @@ func runDaemon(args []string) {
 	wantTUI := fs.Bool("tui", false, "launch the in-process operator TUI after the daemon comes up")
 	wantWeb := fs.Bool("web", false, "open the bundled web UI in the system browser after the daemon comes up")
 	wantHL := fs.Bool("headless", false, "skip the launcher prompt; daemon runs silent (default for non-TTY stdin)")
+	// IQ capture diagnostic — taps a live SDR's iqtap broker and writes
+	// raw IQ samples to a file for offline analysis. Used to capture a
+	// reproducible fixture for replay (issue #402).
+	iqCapture := fs.String("iq-capture", "", "capture raw IQ from a live SDR for offline analysis (issue #402). Format: serial=<s>,path=<file>,seconds=<n>[,format=u8|f32] (default format=f32, GNU Radio cfile)")
 	_ = fs.Parse(args)
+
+	// Parse the iq-capture spec early so a typo doesn't blow up after
+	// the daemon's been running for 10 seconds.
+	captureSpec, err := parseIQCaptureSpec(*iqCapture)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(2)
+	}
 
 	mode, err := pickLaunchMode(*wantTUI, *wantWeb, *wantHL)
 	if err != nil {
@@ -238,6 +250,27 @@ func runDaemon(args []string) {
 			os.Exit(1)
 		}
 		return
+	}
+
+	// --iq-capture (issue #402 diagnostic): with the daemon up,
+	// subscribe to the requested SDR's broker and dump raw IQ to disk
+	// for offline analysis via `gophertrunk replay`. Runs concurrently
+	// with normal decoding; non-fatal on its own — a capture failure
+	// is logged but doesn't tear the daemon down.
+	if captureSpec.Serial != "" {
+		br := d.IQBroker(captureSpec.Serial)
+		if br == nil {
+			fmt.Fprintf(os.Stderr,
+				"iq-capture: no SDR with serial %q in pool (have: %v)\n",
+				captureSpec.Serial, d.IQBrokerSerials())
+			os.Exit(2)
+		}
+		go func() {
+			if err := runIQCapture(ctx, br, captureSpec, logger); err != nil &&
+				!errors.Is(err, context.Canceled) {
+				logger.Warn("iq-capture: failed", "err", err)
+			}
+		}()
 	}
 
 	// Daemon is up. Hand control to the launcher.

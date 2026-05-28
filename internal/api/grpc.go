@@ -27,14 +27,18 @@ import (
 type GRPCServer struct {
 	apiv1.UnimplementedSystemServiceServer
 	apiv1.UnimplementedTalkgroupServiceServer
+	apiv1.UnimplementedRIDServiceServer
 	apiv1.UnimplementedAudioServiceServer
 
-	addr       string
-	systems    []trunking.System
-	talkgroups *trunking.TalkgroupDB
-	engine     EngineSnapshot
-	audio      *AudioPublisher
-	log        *slog.Logger
+	addr         string
+	systems      []trunking.System
+	talkgroups   *trunking.TalkgroupDB
+	rids         *trunking.RIDDB
+	affiliations AffiliationProvider
+	history      HistoryQuery
+	engine       EngineSnapshot
+	audio        *AudioPublisher
+	log          *slog.Logger
 
 	srv *grpc.Server
 }
@@ -44,7 +48,17 @@ type GRPCServerOptions struct {
 	Addr       string
 	Systems    []trunking.System
 	Talkgroups *trunking.TalkgroupDB
-	Engine     EngineSnapshot
+	// RIDs is the operator-configured radio-ID alias table. When nil
+	// the server allocates an empty one so RIDService still serves a
+	// stable shape.
+	RIDs *trunking.RIDDB
+	// Affiliations is the read side of the affiliation tracker —
+	// supplies the live UnitActivity overlay for RIDService. Optional.
+	Affiliations AffiliationProvider
+	// History supplies per-RID call history for ListRIDHistory.
+	// Optional; without it ListRIDHistory returns Unavailable.
+	History HistoryQuery
+	Engine  EngineSnapshot
 	// Audio is the optional AudioPublisher backing StreamAudio.
 	// When nil the RPC still registers (so clients don't churn
 	// at the wire-protocol layer if audio is configured off) but
@@ -72,13 +86,19 @@ func NewGRPCServer(opts GRPCServerOptions) (*GRPCServer, error) {
 	if opts.Talkgroups == nil {
 		opts.Talkgroups = trunking.NewTalkgroupDB()
 	}
+	if opts.RIDs == nil {
+		opts.RIDs = trunking.NewRIDDB()
+	}
 	g := &GRPCServer{
-		addr:       opts.Addr,
-		systems:    append([]trunking.System(nil), opts.Systems...),
-		talkgroups: opts.Talkgroups,
-		engine:     opts.Engine,
-		audio:      opts.Audio,
-		log:        log,
+		addr:         opts.Addr,
+		systems:      append([]trunking.System(nil), opts.Systems...),
+		talkgroups:   opts.Talkgroups,
+		rids:         opts.RIDs,
+		affiliations: opts.Affiliations,
+		history:      opts.History,
+		engine:       opts.Engine,
+		audio:        opts.Audio,
+		log:          log,
 	}
 	// Keep-alive guards long-lived RPCs (StreamAudio in particular)
 	// against silently-dead peers — without server-side pings, a
@@ -114,6 +134,7 @@ func NewGRPCServer(opts GRPCServerOptions) (*GRPCServer, error) {
 	g.srv = grpc.NewServer(srvOpts...)
 	apiv1.RegisterSystemServiceServer(g.srv, g)
 	apiv1.RegisterTalkgroupServiceServer(g.srv, g)
+	apiv1.RegisterRIDServiceServer(g.srv, g)
 	apiv1.RegisterAudioServiceServer(g.srv, g)
 	return g, nil
 }
@@ -187,6 +208,145 @@ func (g *GRPCServer) ListActiveCalls(_ context.Context, _ *apiv1.ListActiveCalls
 		out = append(out, activeCallToPB(ac))
 	}
 	return &apiv1.ListActiveCallsResponse{Calls: out}, nil
+}
+
+// --- RIDService ---
+
+func (g *GRPCServer) ListRIDs(_ context.Context, _ *apiv1.ListRIDsRequest) (*apiv1.ListRIDsResponse, error) {
+	out := g.mergedRIDs()
+	return &apiv1.ListRIDsResponse{Rids: out}, nil
+}
+
+func (g *GRPCServer) GetRID(_ context.Context, req *apiv1.GetRIDRequest) (*apiv1.GetRIDResponse, error) {
+	id := req.GetId()
+	rid := ridToPB(g.rids.Lookup(id), true)
+	if g.affiliations != nil {
+		for _, u := range g.affiliations.Affiliations() {
+			if u.RadioID != id {
+				continue
+			}
+			rid = mergeRIDLivePB(rid, u)
+			break
+		}
+	}
+	if rid == nil || rid.Id == 0 {
+		return nil, status.Errorf(codes.NotFound, "rid %d not found", id)
+	}
+	return &apiv1.GetRIDResponse{Rid: rid}, nil
+}
+
+func (g *GRPCServer) ListRIDHistory(ctx context.Context, req *apiv1.ListRIDHistoryRequest) (*apiv1.ListRIDHistoryResponse, error) {
+	if g.history == nil {
+		return nil, status.Error(codes.Unavailable, "call log persistence is not enabled")
+	}
+	if req.GetId() == 0 {
+		return nil, status.Error(codes.InvalidArgument, "rid id required")
+	}
+	limit := int(req.GetLimit())
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := g.history.History(ctx, HistoryFilter{
+		SourceID: req.GetId(),
+		System:   req.GetSystem(),
+		Limit:    limit,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "history query: %v", err)
+	}
+	out := make([]*apiv1.RIDCallRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, callRowToPB(r))
+	}
+	return &apiv1.ListRIDHistoryResponse{Calls: out}, nil
+}
+
+// mergedRIDs walks both the static RIDDB and the live affiliation
+// tracker, merging by RadioID. Mirrors handleListRIDs / mergedRIDList
+// in the HTTP layer.
+func (g *GRPCServer) mergedRIDs() []*apiv1.RID {
+	byID := map[uint32]*apiv1.RID{}
+	for _, r := range g.rids.All() {
+		byID[r.ID] = ridToPB(r, true)
+	}
+	if g.affiliations != nil {
+		for _, u := range g.affiliations.Affiliations() {
+			byID[u.RadioID] = mergeRIDLivePB(byID[u.RadioID], u)
+		}
+	}
+	out := make([]*apiv1.RID, 0, len(byID))
+	for _, rid := range byID {
+		out = append(out, rid)
+	}
+	return out
+}
+
+func ridToPB(r *trunking.RID, configured bool) *apiv1.RID {
+	if r == nil {
+		return nil
+	}
+	return &apiv1.RID{
+		Id:          r.ID,
+		Alias:       r.Alias,
+		Description: r.Description,
+		Tag:         r.Tag,
+		Group:       r.Group,
+		Owner:       r.Owner,
+		Priority:    uint32(r.Priority),
+		Lockout:     r.Lockout,
+		Watch:       r.Watch,
+		Icon:        r.Icon,
+		Configured:  configured,
+	}
+}
+
+func mergeRIDLivePB(p *apiv1.RID, u trunking.UnitActivity) *apiv1.RID {
+	if p == nil {
+		p = &apiv1.RID{Id: u.RadioID, Watch: true}
+	}
+	p.System = u.System
+	p.Protocol = u.Protocol
+	p.LastTalkgroup = u.Talkgroup
+	p.TalkerAlias = u.TalkerAlias
+	if !u.TalkerAliasAt.IsZero() {
+		p.TalkerAliasAt = u.TalkerAliasAt.UTC().Format(time.RFC3339)
+	}
+	p.CallCount = u.CallCount
+	if !u.FirstSeen.IsZero() {
+		p.FirstSeen = u.FirstSeen.UTC().Format(time.RFC3339)
+	}
+	if !u.LastSeen.IsZero() {
+		p.LastSeen = u.LastSeen.UTC().Format(time.RFC3339)
+	}
+	return p
+}
+
+func callRowToPB(r CallRow) *apiv1.RIDCallRow {
+	pb := &apiv1.RIDCallRow{
+		Id:             r.ID,
+		System:         r.System,
+		Protocol:       r.Protocol,
+		GroupId:        r.GroupID,
+		SourceId:       r.SourceID,
+		FrequencyHz:    r.FrequencyHz,
+		Encrypted:      r.Encrypted,
+		Emergency:      r.Emergency,
+		DataCall:       r.DataCall,
+		DeviceSerial:   r.DeviceSerial,
+		DurationMs:     r.DurationMs,
+		EndReason:      r.EndReason,
+		TalkgroupAlpha: r.TalkgroupAlpha,
+	}
+	if !r.StartedAt.IsZero() {
+		pb.StartedAt = r.StartedAt.UTC().Format(time.RFC3339)
+	}
+	if !r.EndedAt.IsZero() {
+		pb.EndedAt = r.EndedAt.UTC().Format(time.RFC3339)
+	}
+	return pb
 }
 
 // --- AudioService ---

@@ -86,6 +86,38 @@ func (p *VoicePool) FindFree() *VoiceDevice {
 	return nil
 }
 
+// FrequencyChecker is implemented by Tuners that can serve only a
+// limited range of centre frequencies — e.g. a virtual voice tuner
+// backed by a wideband DDC tap can only follow grants inside the
+// wideband dongle's IQ window. FindFreeForFrequency consults this
+// interface to skip incapable tuners; physical SDRs that don't
+// implement it are treated as universally tunable.
+type FrequencyChecker interface {
+	CanTune(hz uint32) bool
+}
+
+// FindFreeForFrequency returns the first free device whose Tuner
+// either doesn't implement FrequencyChecker (physical SDR — accepted
+// unconditionally) or reports CanTune(hz)=true (virtual tuner whose
+// wideband window covers the target). Order matches the device list,
+// so the daemon's preference (physical voice SDRs first, virtual
+// taps after) is preserved. Returns nil when every free device
+// rejects the target — the engine then falls back to preemption.
+func (p *VoicePool) FindFreeForFrequency(hz uint32) *VoiceDevice {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, d := range p.devices {
+		if _, busy := p.active[d.Serial]; busy {
+			continue
+		}
+		if fc, ok := d.Tuner.(FrequencyChecker); ok && !fc.CanTune(hz) {
+			continue
+		}
+		return d
+	}
+	return nil
+}
+
 // LowestPriorityActive returns the active call with the lowest priority
 // among all devices, or nil if no calls are active. Used by the engine
 // when deciding which call to preempt.
@@ -201,5 +233,32 @@ func (p *VoicePool) UpdateEncryption(serial string, algID uint8, keyID uint16) (
 	}
 	ac.Grant.AlgorithmID = algID
 	ac.Grant.KeyID = keyID
+	return ac.Grant, true
+}
+
+// UpdateSource backfills SourceID + Encrypted on the active call
+// bound to serial — used by the engine when an in-call
+// GROUP_VOICE_CHANNEL_USER PDU arrives on the traffic channel after
+// a compressed grant whose SOURCE_ID / SVC_OPTIONS were absent
+// (e.g. P25 Phase 2 MMR). SourceID is only overwritten when the
+// new value is non-zero so a later compressed-form update doesn't
+// blank out a legitimate source. Encrypted is OR-merged so an
+// in-call PDU can flip a non-encrypted grant to encrypted but
+// never the other way (the spec doesn't define mid-call
+// decryption). Returns a copy of the updated Grant + ok=true when
+// a matching call was found.
+func (p *VoicePool) UpdateSource(serial string, sourceID uint32, encrypted bool) (Grant, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ac, ok := p.active[serial]
+	if !ok {
+		return Grant{}, false
+	}
+	if sourceID != 0 {
+		ac.Grant.SourceID = sourceID
+	}
+	if encrypted {
+		ac.Grant.Encrypted = true
+	}
 	return ac.Grant, true
 }
