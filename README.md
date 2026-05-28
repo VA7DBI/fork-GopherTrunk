@@ -81,6 +81,18 @@ Silicon and Intel. Full per-OS recipes at
   plus `events.KindAPRSPacket` bus event, SQLite `aprs_log`,
   `GET /api/v1/aprs/packets`, and `/aprs` web panel.
   See [docs/aprs.md](docs/aprs.md).
+- **AIS marine** — protocol layer for the Automatic Identification
+  System every commercial vessel broadcasts on marine VHF 87B / 88B
+  (161.975 / 162.025 MHz). ITU-R M.1371-5 message-type dispatch:
+  Class A position reports (types 1/2/3), Class B (type 18 + 19
+  extended), base-station (type 4), static + voyage data (type 5),
+  Class B static-data report (type 24 A + B). Signed-integer
+  lat/lon decoder (1/600000 minute resolution), 6-bit ASCII text
+  fields (vessel name, call-sign, destination), spec
+  "not-available" sentinels. Plus `events.KindAISMessage` bus
+  event, SQLite `vessel_log`, `GET /api/v1/ais/vessels`, and
+  `/ais` web panel. DSP frontend (9600 Bd GMSK) is the planned
+  follow-up. See [docs/ais.md](docs/ais.md).
 - **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25
   Phase 2 / DMR) vocoders in Go, no DVSI / mbelib dependency.
   Per-call WAV + raw-frame sidecars; live PCM playback via direct

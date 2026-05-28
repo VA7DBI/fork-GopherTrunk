@@ -7,6 +7,51 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Added
+
+- **AIS marine — protocol layer + bus / storage / REST / panel
+  scaffolding.** First slice of Phase 5 AIS: every SOLAS-covered
+  vessel (passenger ships, tankers, cargo > 300 GT) broadcasts an
+  AIS position every 2-10 s on marine VHF channels 87B / 88B
+  (161.975 / 162.025 MHz) — free wide-area positional data
+  GopherTrunk now has the protocol layer to decode. New
+  `internal/radio/ais` package decodes the operator-visible
+  majority of ITU-R M.1371-5 message types: Class A position
+  reports (types 1/2/3, layout in §3.3.1), Class B position
+  reports (type 18), Class B extended (type 19), base-station
+  reports (type 4), static + voyage data (type 5: vessel name,
+  IMO, call-sign, destination, ETA, ship type, dimensions), and
+  Class B static data (type 24 Parts A + B). MSB-first
+  bit-field readers (`readBitsUint`, `readBitsInt` with proper
+  two's-complement sign-extension) decode the spec's signed
+  lat/lon (28-bit longitude, 27-bit latitude, 1/600000 minute
+  resolution). The 6-bit ASCII text table (M.1371-5 Table 47)
+  unpacks vessel-name / call-sign / destination fields with
+  trailing-padding stripped. Spec "not available" sentinels
+  (lat 91°, lon 181°) collapse the `HasPosition` flag.
+  New `events.KindAISMessage` event + `storage.AISMessage`
+  payload + `vessel_log` SQLite table (one row per decoded
+  message, indexed on `(received_at)` and
+  `(mmsi, received_at)`). `storage.VesselLog` subscriber drains
+  the bus and writes one row per message; the daemon spawns it
+  alongside `aprsLog` / `pagerLog`. New REST endpoint
+  `GET /api/v1/ais/vessels?limit=N` (default 200, max 5000) and
+  web panel `/ais` with columns Received / MMSI / Type / Body /
+  Lat-Lon / SOG-COG. Static-data rows show vessel name + call-
+  sign + destination; position-data rows show lat/lon + SOG /
+  COG. CRC-failed messages highlight yellow. Decoder validated
+  against the gpsd AIVDM canonical samples (Class A position
+  matches lat 37.802118 N, lon -122.341618 W; static-voyage
+  decodes a non-empty vessel name + call-sign).
+  Tests: 14 protocol-layer (bit-readers, sign-extension, 6-bit
+  ASCII table, type dispatch, AIVDM round-trip for types 1, 18,
+  5, "not available" sentinel handling, hex round-trip), 4
+  storage (insert / static / filter / order), 3 REST (503 / list
+  / limit), 4 web (empty / position / static / error). All
+  passing.
+- DSP frontend (9600 Bd GMSK + HDLC framer) follows as the next
+  slice. See [docs/ais.md](docs/ais.md).
+
 ## [v0.2.5] — 2026-05-28
 
 Issue #376 follow-up (Motorola MMR P25 talker alias) closes end-to-end +

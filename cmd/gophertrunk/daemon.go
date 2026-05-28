@@ -110,6 +110,7 @@ type Daemon struct {
 	bookmarks    *storage.BookmarkStore
 	pagerLog     *storage.PagerLog
 	aprsLog      *storage.APRSLog
+	vesselLog    *storage.VesselLog
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -1007,6 +1008,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.aprsLog = al
 
+		vl, err := storage.NewVesselLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: vessel log: %w", err)
+		}
+		d.vesselLog = vl
+
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
 			if err != nil {
@@ -1069,6 +1077,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.aprsLog != nil {
 			opts.APRS = aprsProvider{log: d.aprsLog}
+		}
+		if d.vesselLog != nil {
+			opts.AIS = aisProvider{log: d.vesselLog}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1240,6 +1251,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.aprsLog != nil {
 		d.spawn(runCtx, "aprslog", false, func(ctx context.Context) error {
 			return d.aprsLog.Run(ctx)
+		})
+	}
+	if d.vesselLog != nil {
+		d.spawn(runCtx, "vessellog", false, func(ctx context.Context) error {
+			return d.vesselLog.Run(ctx)
 		})
 	}
 	if d.messageLog != nil {
@@ -1497,6 +1513,9 @@ func (d *Daemon) Close() {
 		}
 		if d.aprsLog != nil {
 			_ = d.aprsLog.Close()
+		}
+		if d.vesselLog != nil {
+			_ = d.vesselLog.Close()
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
@@ -2232,6 +2251,15 @@ type pocsagSpec struct {
 type aprsProvider struct{ log *storage.APRSLog }
 
 func (a aprsProvider) RecentAPRSPackets(limit int) ([]storage.APRSPacket, error) {
+	return a.log.Recent(limit)
+}
+
+// aisProvider adapts storage.VesselLog into api.AISProvider so the
+// api package stays free of the storage import dependency. Read-only
+// — the decoder writes via the events bus.
+type aisProvider struct{ log *storage.VesselLog }
+
+func (a aisProvider) RecentAISMessages(limit int) ([]storage.AISMessage, error) {
 	return a.log.Recent(limit)
 }
 
