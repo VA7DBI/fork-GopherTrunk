@@ -35,7 +35,7 @@ func rms(s []complex64) float64 {
 // narrowband target the down-converter builds no resampler and
 // forwards the chunk unchanged.
 func TestDownconverterPassthrough(t *testing.T) {
-	d := newDownconverter(48_000, 48_000)
+	d := NewDownconverter(48_000, 48_000)
 	if d.resampler != nil {
 		t.Errorf("expected pass-through (nil resampler) for rate == target")
 	}
@@ -53,7 +53,7 @@ func TestDownconverterPassthrough(t *testing.T) {
 // exactly on the 48 kHz target, and the output chunk length must
 // follow the L/M ratio.
 func TestDownconverterDecimationRate(t *testing.T) {
-	d := newDownconverter(2_048_000, 48_000)
+	d := NewDownconverter(2_048_000, 48_000)
 	if d.resampler == nil {
 		t.Fatalf("expected a resampler for 2.048 MHz → 48 kHz")
 	}
@@ -78,14 +78,14 @@ func TestDownconverterIsolatesChannel(t *testing.T) {
 	const n = 262_144
 
 	// In-channel: +5 kHz, comfortably inside the 48 kHz output band.
-	inband := newDownconverter(sdrRate, 48_000).
+	inband := NewDownconverter(sdrRate, 48_000).
 		Process(nil, complexTone(5_000, sdrRate, n, 1.0))
 	gotIn := rms(inband[100:]) // skip filter start-up transient
 
 	// Out of band: +400 kHz. Without filtering this folds to
 	// 400000 mod 48000 = 16 kHz — right in the passband — so the
 	// anti-alias filter is the only thing that can reject it.
-	interf := newDownconverter(sdrRate, 48_000).
+	interf := NewDownconverter(sdrRate, 48_000).
 		Process(nil, complexTone(400_000, sdrRate, n, 1.0))
 	gotInterf := rms(interf[100:])
 
@@ -101,7 +101,7 @@ func TestDownconverterIsolatesChannel(t *testing.T) {
 // is cleared, so re-processing the same input reproduces the first
 // run bit-for-bit.
 func TestDownconverterReset(t *testing.T) {
-	d := newDownconverter(2_048_000, 48_000)
+	d := NewDownconverter(2_048_000, 48_000)
 	in := complexTone(5_000, 2_048_000, 200_000, 1.0)
 
 	first := append([]complex64(nil), d.Process(nil, in)...)
