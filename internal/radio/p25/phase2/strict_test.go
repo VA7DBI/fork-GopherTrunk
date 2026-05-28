@@ -69,9 +69,9 @@ func TestStrictValidationKeepsKnownOpcode(t *testing.T) {
 
 func TestOpcodeIsKnownCoversDocumentedConstants(t *testing.T) {
 	known := []Opcode{
-		OpMACPTT, OpMACEnd, OpMACIdle, OpMACHangtime, OpMACActive,
+		OpGroupVoiceChannelUserAbbreviated, OpMACEnd, OpMACIdle, OpMACHangtime, OpMACActive,
 		OpGroupVoiceChannelGrant, OpGroupVoiceChannelGrantUpdate,
-		OpGroupVoiceChannelUserExt, OpUnitToUnitVoiceChannelGrant,
+		OpUnitToUnitGrantUpdateAbbreviated, OpUnitToUnitVoiceChannelGrant,
 		OpNetworkStatusBroadcastUpdate, OpRFSSStatusBroadcastUpdate,
 	}
 	for _, o := range known {

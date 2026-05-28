@@ -563,6 +563,98 @@ func TestEngineHandleCallEncryptionUnknownDeviceDoesNotPanic(t *testing.T) {
 	})
 }
 
+// TestEngineHandleCallSourceUpdateBackfillsActiveCall guards the
+// Phase 2 traffic-channel source / encryption backfill flow (the
+// MMR fix for issue #376). The CC publishes a grant with src=0 and
+// enc=false (compressed grant form); the voice composer recovers
+// the real source RID + encrypted state from an in-call
+// GROUP_VOICE_CHANNEL_USER PDU on the traffic channel and publishes
+// CallSourceUpdate. The engine must (1) patch the bound
+// ActiveCall.Grant via VoicePool.UpdateSource, (2) republish with
+// System / Protocol / GroupID filled.
+func TestEngineHandleCallSourceUpdateBackfillsActiveCall(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	pool, _ := mkPool(1)
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 5 * time.Second,
+	})
+
+	// Phase 2 grant arrives in a compressed form: src=0, enc=false.
+	e.HandleGrant(Grant{
+		System: "MMR", Protocol: "p25-phase2",
+		GroupID: 20202, FrequencyHz: 421_387_500,
+	})
+	actives := e.ActiveCalls()
+	if len(actives) != 1 {
+		t.Fatalf("expected 1 active call, got %d", len(actives))
+	}
+	dev := actives[0].Device.Serial
+	if actives[0].Grant.SourceID != 0 || actives[0].Grant.Encrypted {
+		t.Fatalf("pre-backfill src/enc should be 0/false, got %v/%v",
+			actives[0].Grant.SourceID, actives[0].Grant.Encrypted)
+	}
+
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	e.handleCallSourceUpdate(CallSourceUpdate{
+		DeviceSerial: dev,
+		SourceID:     315203, // @er-imagery's example MMR radio
+		Encrypted:    true,
+		At:           time.Now(),
+	})
+
+	updated := e.ActiveCalls()
+	if len(updated) != 1 {
+		t.Fatalf("expected 1 active call after backfill, got %d", len(updated))
+	}
+	if updated[0].Grant.SourceID != 315203 || !updated[0].Grant.Encrypted {
+		t.Errorf("backfill did not land on Grant: src=%d enc=%v",
+			updated[0].Grant.SourceID, updated[0].Grant.Encrypted)
+	}
+
+	select {
+	case ev := <-sub.C:
+		if ev.Kind != events.KindCallSourceUpdate {
+			t.Fatalf("expected KindCallSourceUpdate republish, got %s", ev.Kind)
+		}
+		c, ok := ev.Payload.(CallSourceUpdate)
+		if !ok {
+			t.Fatalf("payload type = %T", ev.Payload)
+		}
+		if c.System != "MMR" || c.Protocol != "p25-phase2" || c.GroupID != 20202 {
+			t.Errorf("enriched payload missing identity fields: %+v", c)
+		}
+		if c.SourceID != 315203 || !c.Encrypted {
+			t.Errorf("enriched payload src/enc = %d/%v", c.SourceID, c.Encrypted)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("never received enriched republish")
+	}
+}
+
+// TestEngineHandleCallSourceUpdateUnknownDeviceDoesNotPanic guards
+// the late-arriving PDU after a call ends.
+func TestEngineHandleCallSourceUpdateUnknownDeviceDoesNotPanic(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	pool, _ := mkPool(1)
+	e, _ := NewEngine(EngineOptions{
+		Bus:         bus,
+		VoicePool:   pool,
+		Talkgroups:  NewTalkgroupDB(),
+		CallTimeout: 5 * time.Second,
+	})
+	e.handleCallSourceUpdate(CallSourceUpdate{
+		DeviceSerial: "no-such-device",
+		SourceID:     999,
+	})
+}
+
 func TestEngineEmptyVoicePoolWarnsOnceThenDebug(t *testing.T) {
 	// Issue #379: a daemon with trunking systems but zero `role: voice`
 	// SDRs builds an empty VoicePool. Every grant used to log a

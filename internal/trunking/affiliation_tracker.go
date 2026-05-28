@@ -140,6 +140,16 @@ func (t *AffiliationTracker) handle(ev events.Event) {
 		if a, ok := ev.Payload.(TalkerAlias); ok && a.SourceID != 0 && a.Alias != "" {
 			t.observeAlias(a.SourceID, a.System, a.Protocol, a.Alias)
 		}
+	case events.KindCallSourceUpdate:
+		// In-call source RID backfill (P25 Phase 2 traffic-channel
+		// GROUP_VOICE_CHANNEL_USER). The grant fired with src=0 so
+		// the original KindGrant case above didn't observe; record
+		// the real source now so /rids and history surface it.
+		// countCall=false because the call was already counted on
+		// the grant; this only stamps the source identity.
+		if u, ok := ev.Payload.(CallSourceUpdate); ok && u.SourceID != 0 {
+			t.observe(u.SourceID, u.GroupID, u.System, u.Protocol, false, false, false)
+		}
 	}
 }
 

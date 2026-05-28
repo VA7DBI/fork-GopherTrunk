@@ -10,9 +10,9 @@ import (
 
 // TestProcessLocksOnFirstMACPDUAfterSync: build a dibit stream of
 // 30 padding dibits + 20 outbound sync dibits + 72 dibits whose
-// raw bits form a MAC PDU (opcode = OpMACPTT, no payload). The
+// raw bits form a MAC PDU (opcode = OpGroupVoiceChannelUserAbbreviated, no payload). The
 // state machine should publish a KindCCLocked since
-// OpMACPTT.IsIdle() returns false.
+// OpGroupVoiceChannelUserAbbreviated.IsIdle() returns false.
 func TestProcessLocksOnFirstMACPDUAfterSync(t *testing.T) {
 	bus := events.NewBus(8)
 	defer bus.Close()
@@ -26,7 +26,7 @@ func TestProcessLocksOnFirstMACPDUAfterSync(t *testing.T) {
 		FrequencyHz: 851_062_500,
 	})
 
-	pdu := MACPDU{Opcode: OpMACPTT, Payload: make([]byte, 17)}
+	pdu := MACPDU{Opcode: OpGroupVoiceChannelUserAbbreviated, Payload: make([]byte, 17)}
 	pduBytes := AssembleMACPDU(pdu)
 	if len(pduBytes) != 18 {
 		t.Fatalf("AssembleMACPDU = %d bytes, want 18", len(pduBytes))
@@ -73,7 +73,7 @@ func TestProcessHandlesMACPDUSpanningCalls(t *testing.T) {
 
 	cc := New(Options{Bus: bus, Log: slog.Default(), SystemName: "Sys"})
 
-	pdu := MACPDU{Opcode: OpMACPTT, Payload: make([]byte, 17)}
+	pdu := MACPDU{Opcode: OpGroupVoiceChannelUserAbbreviated, Payload: make([]byte, 17)}
 	pduBits := framing.UnpackBitsMSB(AssembleMACPDU(pdu), 144)
 	pduDibits := framing.BitsToDibits(pduBits)
 

@@ -9,6 +9,49 @@ for tagged releases.
 
 ### Added
 
+- **P25 Phase 2 traffic-channel metadata backfill (issue #376
+  follow-up).** Resolves the symptoms surfaced by @er-imagery's
+  2026-05-28 MMR field test: Phase 2 grants on encrypted
+  talkgroups arrived with `src=0` + `enc=false`, ALGID/KID never
+  populated, and `composer: p25p2 talker alias` log lines never
+  fired — even after #403 wired alias dispatch into the voice
+  chain. Root cause: the MAC opcode constant `OpMACPTT = 0x01`
+  was a fictional name; the real TIA-102 / SDRTrunk opcode at
+  0x01 is `GROUP_VOICE_CHANNEL_USER_ABBREVIATED`, the in-call
+  broadcast that carries SOURCE_ID + SVC_OPTIONS on the traffic
+  channel during an active call. Real MMR PDUs at 0x01 were
+  being parsed as "MAC PTT" and discarded.
+  - `phase2.OpMACPTT` is removed and replaced by
+    `phase2.OpGroupVoiceChannelUserAbbreviated = 0x01`. New
+    `OpGroupVoiceChannelUserExtended = 0x21` covers the SUID-
+    extended variant.
+  - New `phase2.GroupVoiceChannelUser` struct +
+    `MACPDU.AsGroupVoiceChannelUser()` accessor parses the
+    SDRTrunk-confirmed layout: SVC_OPTIONS at payload[0],
+    GROUP_ADDRESS at payload[1..2], SOURCE_ADDRESS at
+    payload[3..5].
+  - New `events.KindCallSourceUpdate` event +
+    `trunking.CallSourceUpdate` payload + `VoicePool.UpdateSource`
+    method + `Engine.handleCallSourceUpdate` handler form the
+    backfill path: composer publishes, engine patches
+    `ActiveCall.Grant.SourceID/.Encrypted`, republishes with the
+    call's identity. `AffiliationTracker` subscribes so RID
+    chips populate from the backfilled source.
+  - The voice composer's Phase 2 chain now also dispatches
+    in-call `OpEncryptionSync` (existing parser, just hooked up)
+    via the existing `KindCallEncryption` event, mirroring the
+    Phase 1 LDU2 path. ALGID/KID flow onto the active call as
+    the EncryptionSync PDU arrives.
+  - Diagnostic safety net: one Info log line per (opcode, MFID)
+    per call —
+    `composer: p25p2 mac pdu system=… serial=… opcode=… mfid=…
+    payload_len=…` — so if MMR emits a vendor opcode we still
+    don't dispatch (e.g. a different talker-alias opcode), the
+    next field test pinpoints exactly what we saw.
+  - Pre-existing `phase2.OpGroupVoiceChannelUserExt = 0x46` is
+    renamed to `OpUnitToUnitGrantUpdateAbbreviated` to match
+    its actual TIA-102 / SDRTrunk identity. No parser was
+    wired to it; the rename is name-only.
 - **P25 Phase 2 voice-channel talker-alias decode.** Resolves the
   follow-up half of #376: on Motorola MMR (and any Phase 2 system
   whose CC never emits talker-alias PDUs), display names ride MAC
