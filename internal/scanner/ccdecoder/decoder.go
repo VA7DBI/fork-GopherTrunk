@@ -157,7 +157,7 @@ type Decoder struct {
 	// ddcTargetForProtocol). pipelineRateHz is what the per-protocol
 	// factories receive as PipelineOptions.SampleRateHz. All three
 	// are owned by handleProgress / pump under mu.
-	ddc            *downconverter
+	ddc            *Downconverter
 	ddcTarget      float64
 	pipelineRateHz float64
 
@@ -174,7 +174,7 @@ type Decoder struct {
 	activeAt string // system name the active pipeline is bound to
 
 	// ddcOut is the reusable down-converter output buffer — pump
-	// hands it to downconverter.Process each chunk so the decimated
+	// hands it to Downconverter.Process each chunk so the decimated
 	// stream doesn't allocate per call.
 	ddcOut []complex64
 
@@ -364,7 +364,7 @@ func (d *Decoder) ensureDownconverterLocked(targetHz float64) {
 	if d.ddc != nil && d.ddcTarget == targetHz {
 		return
 	}
-	d.ddc = newDownconverter(d.sampleRateHz, targetHz)
+	d.ddc = NewDownconverter(d.sampleRateHz, targetHz)
 	d.ddcTarget = targetHz
 	d.pipelineRateHz = d.ddc.outRateHz
 	d.log.Info("ccdecoder: digital down-converter configured",

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/events"
@@ -99,12 +100,63 @@ type ControlChannel struct {
 	// voice receiver and never decode (issue #356 follow-up). Empty
 	// string preserves the C4FM default in the voice chain.
 	p25Phase1DemodMode string
+
+	// stats is the per-frame outcome counter exposed via Stats().
+	// Atomic so the daemon's API / diagnostic goroutines can read it
+	// concurrently with Process. Issue #402: gives replay and any
+	// future operator dashboard a per-run "of the frames the FSW
+	// correlator delivered, how many cleared each acceptance gate"
+	// breakdown — the steady-state shape that distinguishes "demod
+	// is broken" from "demod is fine but one frame in N is corrupt".
+	stats CCStats
+}
+
+// CCStats is the snapshot Stats() returns. All counters are
+// monotonically increasing from ControlChannel construction.
+//
+// NIDTrusted counts NIDs that cleared the BCH+parity gate at
+// errs ≤ NIDAcceptErrs (the searchNID "trusted tier"). NIDMarginal
+// counts NIDs in (NIDAcceptErrs, NIDMarginalMaxErrs] that were
+// admitted only because the frame's 98-dibit TSBK ALSO Viterbi+CRC
+// decoded under the same alignment. NIDFailed counts FSW hits where
+// no alignment in the grid produced an acceptable NID under either
+// tier — the "all 28 BCH-uncorrectable" shape from the issue-#402
+// report.
+//
+// TSBKDecoded counts frames whose 98-dibit channel block cleared
+// Viterbi + CRC and reached dispatchTSBK. TSBKTrellisFailed and
+// TSBKCRCFailed split the post-NID failure mode (Viterbi diverged
+// vs. trellis decoded but the trailer CRC didn't match) — both also
+// surface as events.KindDecodeError on the bus, but the bus event
+// is sampled by tests / Prometheus and may miss frames a synchronous
+// snapshot needs.
+type CCStats struct {
+	NIDTrusted        int64
+	NIDMarginal       int64
+	NIDFailed         int64
+	TSBKDecoded       int64
+	TSBKTrellisFailed int64
+	TSBKCRCFailed     int64
 }
 
 // NetworkSnapshot returns the system topology accumulated from the
 // site's Network / RFSS / Secondary-CC / Adjacent-Site status TSBKs.
 func (c *ControlChannel) NetworkSnapshot() NetworkConfig {
 	return c.netModel.Snapshot()
+}
+
+// Stats returns a snapshot of the per-frame outcome counters. Safe
+// for concurrent calls — each counter is read with atomic.LoadInt64.
+// See CCStats for the meaning of each field. Issue #402.
+func (c *ControlChannel) Stats() CCStats {
+	return CCStats{
+		NIDTrusted:        atomic.LoadInt64(&c.stats.NIDTrusted),
+		NIDMarginal:       atomic.LoadInt64(&c.stats.NIDMarginal),
+		NIDFailed:         atomic.LoadInt64(&c.stats.NIDFailed),
+		TSBKDecoded:       atomic.LoadInt64(&c.stats.TSBKDecoded),
+		TSBKTrellisFailed: atomic.LoadInt64(&c.stats.TSBKTrellisFailed),
+		TSBKCRCFailed:     atomic.LoadInt64(&c.stats.TSBKCRCFailed),
+	}
 }
 
 // pendingHit is an FSW match awaiting enough buffered dibits to decode
@@ -360,6 +412,7 @@ func (c *ControlChannel) Process(dibits []uint8, baseIdx int) int {
 func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 	best, found, diag := c.searchNID(buf, nidStart, fswRot)
 	if !found {
+		atomic.AddInt64(&c.stats.NIDFailed, 1)
 		c.log.Debug("nid parse failed", "system", c.systemName,
 			"freq_hz", c.freqHz, "diag", diag)
 		c.bus.Publish(events.Event{
@@ -367,6 +420,15 @@ func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 			Payload: events.DecodeError{Protocol: "p25", Stage: events.StageNIDBCH},
 		})
 		return
+	}
+	// Trusted vs. marginal tier discrimination matches the
+	// "corroborated" log field below: a NID with more than
+	// NIDAcceptErrs BCH corrections was only admitted because the
+	// frame TSBK ALSO verified under the same alignment.
+	if best.errs > NIDAcceptErrs {
+		atomic.AddInt64(&c.stats.NIDMarginal, 1)
+	} else {
+		atomic.AddInt64(&c.stats.NIDTrusted, 1)
 	}
 	if best.errs > 0 {
 		c.log.Debug("nid corrected", "errs", best.errs, "nac", best.nid.NAC,
@@ -397,6 +459,11 @@ func (c *ControlChannel) parseFrame(buf []uint8, nidStart int, fswRot uint8) {
 	tsbkChannel, _ := gatherFrameDibits(buf, best.tsbkStart, 98, fswStart, best.strip)
 	tsbk, metric, err := DecodeTSBKChannel(rotateDibits(tsbkChannel, best.rot))
 	if err != nil {
+		if errors.Is(err, CRCError) {
+			atomic.AddInt64(&c.stats.TSBKCRCFailed, 1)
+		} else {
+			atomic.AddInt64(&c.stats.TSBKTrellisFailed, 1)
+		}
 		c.log.Debug("tsbk decode failed", "err", err, "metric", metric, "nac", best.nid.NAC)
 		stage := events.StageTSBKTrellis
 		if errors.Is(err, CRCError) {
@@ -723,6 +790,7 @@ func InjectControlStatusSymbols(stream []uint8) []uint8 {
 // logged at debug but not republished, since they're the bulk of what
 // a busy site emits and would drown signal in noise.
 func (c *ControlChannel) dispatchTSBK(t TSBK, nac uint16, metric int) {
+	atomic.AddInt64(&c.stats.TSBKDecoded, 1)
 	// Manufacturer-specific TSBKs are decoded in the vendor's opcode
 	// namespace (Motorola patch/regroup, Harris regroup, talker alias)
 	// — see tsbk_vendor.go.

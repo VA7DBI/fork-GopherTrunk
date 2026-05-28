@@ -316,6 +316,57 @@ func (r *Receiver) Process(iq []complex64) {
 	}
 }
 
+// AFCBiasRadPerSample returns the C4FM coarse-AFC's current DC bias
+// estimate on the FM-discriminator output, in radians per sample at
+// the receiver's input rate. A clean signal converges to ~0; a static
+// carrier offset of Δf Hz leaves the AFC tracking 2π·Δf/SampleRateHz.
+// Returns 0 on the CQPSK path (no AFC stage). Issue #402 diagnostic
+// — exposed so the daemon and replay can periodically log the
+// estimate's evolution after CC lock.
+func (r *Receiver) AFCBiasRadPerSample() float64 {
+	if r.afc == nil {
+		return 0
+	}
+	return r.afc.Offset()
+}
+
+// AGCLevel returns the C4FM symbol-AGC's current EMA estimate of
+// mean|x| on the matched-filter output. Compare to AGCTarget(): the
+// effective slicer gain at any instant is target/level. A level that
+// diverges far from target after CC lock (or oscillates) points at an
+// AGC misbehaviour on the live signal. Returns 0 on the CQPSK path
+// (no symbol-AGC stage). Issue #402 diagnostic.
+func (r *Receiver) AGCLevel() float64 { return float64(r.agc.level) }
+
+// AGCTarget returns the C4FM symbol-AGC's target mean|x|, calibrated
+// at construction from the configured DeviationHz / SampleRateHz so
+// the matched-filter output lands on the slicer's fixed thresholds.
+// Returns 0 on the CQPSK path or when DeviationHz was unset.
+func (r *Receiver) AGCTarget() float64 { return float64(r.agc.target) }
+
+// MMClockMu returns the Mueller-Müller symbol clock's current
+// sub-sample phase accumulator (in [-1, sps]). At steady state on a
+// noise-free input mu cycles deterministically through the symbol
+// period; a slow monotonic drift indicates the receiver's nominal
+// SampleRateHz disagrees with the stream's actual sample-rate / baud
+// ratio. Returns 0 on the CQPSK path (it uses Gardner instead).
+func (r *Receiver) MMClockMu() float64 {
+	if r.clock == nil {
+		return 0
+	}
+	return r.clock.Mu()
+}
+
+// MMClockSPS returns the Mueller-Müller loop's nominal samples per
+// symbol. Paired with MMClockMu() so a diagnostic log can render mu
+// as a fraction of the symbol period.
+func (r *Receiver) MMClockSPS() float64 {
+	if r.clock == nil {
+		return 0
+	}
+	return r.clock.SPS()
+}
+
 // Reset returns the receiver to its initial state. Call on stream
 // re-sync (control-channel hunt success, IQ underrun recovery) so a
 // stale FSW match doesn't bleed across the discontinuity, and so the
