@@ -9,6 +9,32 @@ for tagged releases.
 
 ### Added
 
+- **AIS DSP frontend + receiver glue — pipeline is now end-to-end.**
+  Second slice of Phase 5 AIS: `internal/radio/ais/receiver` is the
+  bit-stream orchestrator (HDLC framer → CRC-CCITT validation →
+  MSB-first bit unpack → `ais.Decode` → bus event); on top of it
+  `internal/radio/ais/gmsk` is the IQ-to-bits frontend (FM demod
+  → real resampler to 76,800 sps → GFSK matched filter at
+  BT = 0.4, span 4 symbols → Mueller-Müller symbol-timing
+  recovery → zero-threshold slicer → NRZI decode → `receiver.Push`).
+  New top-level `ais.channels` config schema mirroring
+  `aprs.channels` (serial, frequency_hz, drop_bad_fcs,
+  drop_non_position). The daemon constructs one `gmsk.Receiver`
+  per entry, subscribes each to its SDR's iqtap broker via the
+  standard spawn closure, and the AIS pipeline goes live the
+  moment an operator pins one SDR to 161.975 (channel 87B) or
+  162.025 (88B). Same `Inner()` accessor for frame-counter
+  metrics that `aprs/afsk` exposes. The bit-stream layer
+  validates the same HDLC FCS algorithm AX.25 uses (reflected
+  polynomial 0x8408, init 0xFFFF, final XOR 0xFFFF) — AIS
+  inherits the link-layer conventions verbatim per
+  ITU-R M.1371-5 §4.2. End-to-end synthetic test drives a real
+  AIVDM type-1 payload (gpsd canonical sample, lat 37.802 N,
+  lon -122.342 W, MMSI 366053209) through `buildAISFrame` →
+  `wrapHDLC` → `Receiver.Push` and asserts the bus event
+  carries the correct MMSI + decoded position. 9 new bit-stream
+  tests + 8 new DSP tests, all passing.
+
 - **AIS marine — protocol layer + bus / storage / REST / panel
   scaffolding.** First slice of Phase 5 AIS: every SOLAS-covered
   vessel (passenger ships, tankers, cargo > 300 GT) broadcasts an

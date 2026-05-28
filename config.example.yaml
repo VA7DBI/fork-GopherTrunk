@@ -277,6 +277,30 @@ sdr:
 #       drop_non_ui: false            # true to silently drop non-UI
 #                                     #  AX.25 frames
 
+# AIS / marine-vessel GMSK receiver. Each entry pins one SDR to
+# an AIS channel (87B = 161.975 MHz or 88B = 162.025 MHz; Class A
+# vessels alternate between them every second, so pinning one SDR
+# to each captures both halves). Pipeline: FM demod → GFSK matched
+# filter (BT = 0.4) → symbol-timing recovery → NRZI decode →
+# HDLC framer → CRC validation → ITU-R M.1371-5 message parser.
+# Decoded messages publish on events.KindAISMessage;
+# storage.VesselLog persists them to the vessel_log SQLite table,
+# the REST endpoint at /api/v1/ais/vessels returns the most
+# recent N, and the /ais web panel renders them live.
+#
+# ais:
+#   channels:
+#     - serial: "marine-antenna"      # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 161_975_000     # AIS channel 87B (or 162_025_000 = 88B)
+#       drop_bad_fcs: false           # true to silently drop CRC-failed
+#                                     #  messages instead of publishing
+#                                     #  them with FCSOK=false
+#       drop_non_position: false      # true to drop static-data / base-
+#                                     #  station / channel-management
+#                                     #  messages and keep only vessel
+#                                     #  position reports
+
 trunking:
   # call_timeout_ms: inactivity window after which the engine's
   # watchdog ends a call (publishes CallEnd with EndReasonTimeout
