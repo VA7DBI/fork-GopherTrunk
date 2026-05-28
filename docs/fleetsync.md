@@ -15,6 +15,8 @@ Current scope in this branch:
 - FleetSync channel config (`fleetsync.channels`) is supported.
 - The daemon can start one FleetSync receiver per configured channel.
 - Receivers publish `events.KindFleetSyncMessage` payloads on the bus.
+- SQLite-backed FleetSync message persistence is available when storage is enabled.
+- Read-only API endpoints expose recent and per-message FleetSync logs.
 - Core parser/demod packages ship with unit tests.
 
 ## Configuration
@@ -58,6 +60,22 @@ The payload is `internal/radio/fleetync.Message` and includes:
 - source and destination addressing
 - emergency/all/priority flags
 - raw frame bytes and parsed payload bytes
+
+## API
+
+When `storage.path` is configured, the daemon persists FleetSync frames
+to SQLite and exposes:
+
+- `GET /api/v1/fleetsync/messages`
+- `GET /api/v1/fleetsync/messages/{id}`
+
+The list endpoint accepts optional query parameters:
+
+- `limit`
+- `source_unit`
+- `destination_unit`
+- `command` (decimal or `0xNN`)
+- `since` / `until` (RFC3339)
 
 ## Validation and errors
 

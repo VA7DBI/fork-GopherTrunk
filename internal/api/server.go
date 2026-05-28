@@ -272,6 +272,11 @@ type Server struct {
 	// routes (pager log). nil disables the routes. Implemented
 	// by the daemon over the SQLite-backed storage.PagerLog.
 	pager PagerProvider
+	// fleetsync is the optional provider backing /api/v1/fleetsync/...
+	// routes (FleetSync message log). nil disables the routes.
+	// Implemented by the daemon over the SQLite-backed
+	// storage.FleetSyncLog.
+	fleetsync FleetSyncProvider
 
 	mu     sync.Mutex
 	srv    *http.Server
@@ -466,6 +471,10 @@ type ServerOptions struct {
 	// POCSAG (and eventually FLEX) pager messages. Wired by the
 	// daemon over the SQLite-backed storage.PagerLog.
 	Pager PagerProvider
+	// FleetSync, when non-nil, enables the read-only FleetSync log
+	// endpoints under /api/v1/fleetsync/messages. Wired by the daemon
+	// over the SQLite-backed storage.FleetSyncLog.
+	FleetSync FleetSyncProvider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -561,6 +570,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		bookmarks:      opts.Bookmarks,
 		diag:           opts.Diag,
 		pager:          opts.Pager,
+		fleetsync:      opts.FleetSync,
 	}, nil
 }
 
@@ -753,6 +763,11 @@ func (s *Server) routes() *http.ServeMux {
 	// Pager log — recent POCSAG (and eventually FLEX) messages.
 	// Read-only; the decoder writes via the events bus → PagerLog.
 	mux.HandleFunc("GET /api/v1/pager/messages", s.handlePagerMessages)
+
+	// FleetSync log — recent decoded FleetSync I/II messages.
+	// Read-only; the decoder writes via the events bus -> FleetSyncLog.
+	mux.HandleFunc("GET /api/v1/fleetsync/messages", s.handleFleetSyncMessages)
+	mux.HandleFunc("GET /api/v1/fleetsync/messages/{id}", s.handleFleetSyncMessage)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes

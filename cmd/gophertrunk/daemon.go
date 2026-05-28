@@ -106,6 +106,7 @@ type Daemon struct {
 	locationLog  *storage.LocationLog
 	bookmarks    *storage.BookmarkStore
 	pagerLog     *storage.PagerLog
+	fleetsyncLog *storage.FleetSyncLog
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -949,6 +950,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.pagerLog = pl
 
+		fl, err := storage.NewFleetSyncLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: fleetsync log: %w", err)
+		}
+		d.fleetsyncLog = fl
+
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
 			if err != nil {
@@ -1007,6 +1015,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.pagerLog != nil {
 			opts.Pager = pagerProvider{log: d.pagerLog}
+		}
+		if d.fleetsyncLog != nil {
+			opts.FleetSync = fleetsyncProvider{log: d.fleetsyncLog}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1165,6 +1176,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.pagerLog != nil {
 		d.spawn(runCtx, "pagerlog", false, func(ctx context.Context) error {
 			return d.pagerLog.Run(ctx)
+		})
+	}
+	if d.fleetsyncLog != nil {
+		d.spawn(runCtx, "fleetsynclog", false, func(ctx context.Context) error {
+			return d.fleetsyncLog.Run(ctx)
 		})
 	}
 	if d.messageLog != nil {
@@ -1415,6 +1431,9 @@ func (d *Daemon) Close() {
 		}
 		if d.pagerLog != nil {
 			_ = d.pagerLog.Close()
+		}
+		if d.fleetsyncLog != nil {
+			_ = d.fleetsyncLog.Close()
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
@@ -2014,6 +2033,20 @@ type pagerProvider struct{ log *storage.PagerLog }
 
 func (p pagerProvider) RecentPagerMessages(limit int) ([]storage.PagerMessage, error) {
 	return p.log.Recent(limit)
+}
+
+// fleetsyncProvider adapts storage.FleetSyncLog into the
+// api.FleetSyncProvider interface so the api package can stay free of
+// the storage import dependency. Read-only — the decoder writes via
+// the events bus.
+type fleetsyncProvider struct{ log *storage.FleetSyncLog }
+
+func (p fleetsyncProvider) ListFleetSyncMessages(filter storage.FleetSyncFilter) ([]storage.FleetSyncMessage, error) {
+	return p.log.List(filter)
+}
+
+func (p fleetsyncProvider) GetFleetSyncMessage(id int64) (storage.FleetSyncMessage, error) {
+	return p.log.Get(id)
 }
 
 // pocsagSpec captures the broker-side wiring info for one configured

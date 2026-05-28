@@ -146,6 +146,31 @@ CREATE TABLE IF NOT EXISTS pager_log (
 
 CREATE INDEX IF NOT EXISTS idx_pager_log_time ON pager_log(received_at);
 CREATE INDEX IF NOT EXISTS idx_pager_log_ric  ON pager_log(ric, received_at);
+
+-- FleetSync messages persisted from the decoder pipeline. Each row is
+-- one decoded FleetSync I/II frame with parsed addressing, flags,
+-- payload bytes, and raw on-air bytes for later analysis.
+CREATE TABLE IF NOT EXISTS fleetsync_log (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	received_at INTEGER NOT NULL,
+	version     INTEGER NOT NULL,
+	command     INTEGER NOT NULL,
+	subcommand  INTEGER NOT NULL,
+	from_fleet  INTEGER NOT NULL DEFAULT 0,
+	from_unit   INTEGER NOT NULL DEFAULT 0,
+	to_fleet    INTEGER NOT NULL DEFAULT 0,
+	to_unit     INTEGER NOT NULL DEFAULT 0,
+	all_flag    INTEGER NOT NULL DEFAULT 0,
+	emergency   INTEGER NOT NULL DEFAULT 0,
+	priority    INTEGER NOT NULL DEFAULT 0,
+	payload     BLOB    NOT NULL DEFAULT X'',
+	raw_bytes   BLOB    NOT NULL DEFAULT X''
+);
+
+CREATE INDEX IF NOT EXISTS idx_fleetsync_log_time    ON fleetsync_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_fleetsync_log_src     ON fleetsync_log(from_unit, received_at);
+CREATE INDEX IF NOT EXISTS idx_fleetsync_log_dst     ON fleetsync_log(to_unit, received_at);
+CREATE INDEX IF NOT EXISTS idx_fleetsync_log_command ON fleetsync_log(command, received_at);
 `
 
 func (d *DB) migrate() error {
