@@ -27,6 +27,29 @@ type Config struct {
 	Broadcast  BroadcastConfig  `yaml:"broadcast"`
 	Baseband   BasebandConfig   `yaml:"baseband"`
 	Paging     PagingConfig     `yaml:"paging"`
+	FleetSync  FleetSyncConfig  `yaml:"fleetsync"`
+}
+
+// FleetSyncConfig configures Kenwood FleetSync decoders (FleetSync I
+// and FleetSync II). Each entry pins one SDR to a FleetSync-bearing
+// channel and runs the per-channel decoder against its IQ stream.
+type FleetSyncConfig struct {
+	Channels []FleetSyncChannelConfig `yaml:"channels"`
+}
+
+// FleetSyncChannelConfig describes one FleetSync channel to decode.
+// Serial picks the SDR; the daemon tunes it to FrequencyHz and runs
+// the FleetSync decoder against its full IQ stream.
+type FleetSyncChannelConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	Name        string `yaml:"name"`
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	// Version controls decoder mode: auto|fleetsync1|fleetsync2.
+	// Empty defaults to auto.
+	Version string `yaml:"version"`
+	// BaudHz defaults to 1200 when omitted.
+	BaudHz uint32 `yaml:"baud_hz"`
 }
 
 // PagingConfig configures pager decoders (POCSAG today, FLEX
@@ -963,6 +986,25 @@ func (c Config) Validate() error {
 		case "", "control", "voice", "auto":
 		default:
 			return fmt.Errorf("baseband.replay[%d]: role must be control|voice|auto", i)
+		}
+	}
+	for i, ch := range c.FleetSync.Channels {
+		if !ch.Enabled {
+			continue
+		}
+		if strings.TrimSpace(ch.Serial) == "" {
+			return fmt.Errorf("fleetsync.channels[%d]: serial required", i)
+		}
+		if ch.FrequencyHz == 0 {
+			return fmt.Errorf("fleetsync.channels[%d]: frequency_hz required", i)
+		}
+		switch strings.ToLower(strings.TrimSpace(ch.Version)) {
+		case "", "auto", "fleetsync1", "fleetsync2":
+		default:
+			return fmt.Errorf("fleetsync.channels[%d]: version must be auto|fleetsync1|fleetsync2", i)
+		}
+		if ch.BaudHz != 0 && ch.BaudHz != 1200 {
+			return fmt.Errorf("fleetsync.channels[%d]: baud_hz must be 1200 when set", i)
 		}
 	}
 	return nil

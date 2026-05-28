@@ -213,6 +213,20 @@ sdr:
 #                                  #  dispatch / DAPNET / etc.
 #       baud_hz: 1200              # 512 / 1200 / 2400; default 1200
 
+# Kenwood FleetSync decoder channels. Each entry pins one SDR to a
+# FleetSync-bearing channel and emits events.KindFleetSyncMessage with
+# decoded command/subcommand, addressing, flags, and payload bytes.
+#
+# fleetsync:
+#   channels:
+#     - enabled: true
+#       name: "City Utilities FleetSync"
+#       serial: "antenna-pi"       # SDR serial (must be in sdr.devices
+#                                  #  or sdr.rtl_tcp)
+#       frequency_hz: 451_812_500   # target FleetSync channel
+#       version: auto               # auto | fleetsync1 | fleetsync2
+#       baud_hz: 1200               # optional; must be 1200 when set
+
 trunking:
   # call_timeout_ms: inactivity window after which the engine's
   # watchdog ends a call (publishes CallEnd with EndReasonTimeout

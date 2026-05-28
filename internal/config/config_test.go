@@ -32,6 +32,14 @@ sdr:
     - serial: "00000001"
       role: control
       ppm: -2
+fleetsync:
+  channels:
+    - enabled: true
+      name: test-fs
+      serial: "00000002"
+      frequency_hz: 451812500
+      version: auto
+      baud_hz: 1200
 trunking:
   systems:
     - name: TestSystem
@@ -53,6 +61,12 @@ trunking:
 	}
 	if len(cfg.Trunking.Systems) != 1 || cfg.Trunking.Systems[0].Protocol != "p25" {
 		t.Errorf("systems = %+v", cfg.Trunking.Systems)
+	}
+	if len(cfg.FleetSync.Channels) != 1 {
+		t.Fatalf("fleetync.channels = %d, want 1", len(cfg.FleetSync.Channels))
+	}
+	if got := cfg.FleetSync.Channels[0].Version; got != "auto" {
+		t.Errorf("fleetync.channels[0].version = %q, want auto", got)
 	}
 }
 
@@ -206,6 +220,42 @@ func TestValidate(t *testing.T) {
 				},
 			}}},
 			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr-tier2"}}},
+		}, true},
+		{"fleetsync channel ok", Config{
+			FleetSync: FleetSyncConfig{Channels: []FleetSyncChannelConfig{{
+				Enabled:     true,
+				Serial:      "00000002",
+				FrequencyHz: 451_812_500,
+				Version:     "auto",
+				BaudHz:      1200,
+			}},
+			},
+		}, false},
+		{"fleetsync missing serial", Config{
+			FleetSync: FleetSyncConfig{Channels: []FleetSyncChannelConfig{{
+				Enabled:     true,
+				FrequencyHz: 451_812_500,
+			}},
+			},
+		}, true},
+		{"fleetsync invalid version", Config{
+			FleetSync: FleetSyncConfig{Channels: []FleetSyncChannelConfig{{
+				Enabled:     true,
+				Serial:      "00000002",
+				FrequencyHz: 451_812_500,
+				Version:     "fs3",
+			}},
+			},
+		}, true},
+		{"fleetsync invalid baud", Config{
+			FleetSync: FleetSyncConfig{Channels: []FleetSyncChannelConfig{{
+				Enabled:     true,
+				Serial:      "00000002",
+				FrequencyHz: 451_812_500,
+				Version:     "fleetsync1",
+				BaudHz:      2400,
+			}},
+			},
 		}, true},
 	}
 	for _, tc := range cases {

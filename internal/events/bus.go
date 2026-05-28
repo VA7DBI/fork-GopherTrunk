@@ -111,6 +111,12 @@ const (
 	// decoded text + per-page bit-error count. Surfaced over SSE /
 	// WS for the live pager panel.
 	KindPagerMessage Kind = "pager.message"
+	// KindFleetSyncMessage fires when the FleetSync decoder produces
+	// one valid message frame (FleetSync I/II). Payload is
+	// radio/fleetync.Message with command/subcommand, addressing,
+	// flags, and raw bytes. Surfaced over SSE/WS/TUI for live
+	// telemetry panels.
+	KindFleetSyncMessage Kind = "fleetsync.message"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol
