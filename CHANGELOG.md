@@ -7,6 +7,41 @@ for tagged releases.
 
 ## [Unreleased]
 
+## [v0.2.5] — 2026-05-28
+
+Issue #376 follow-up (Motorola MMR P25 talker alias) closes end-to-end +
+Phase-5 (APRS) goes live + issue #402 (RTL-SDR DC-spike on P25 control)
+three-phase investigation. The Motorola MMR talker-alias path now lands:
+#397 ports Motorola's vendor LCO 0x15 / 0x17 form for Phase 1 voice
+channels (the standard TIA-102.AABF form #389 implemented doesn't match
+what real MMR systems emit), #403 dispatches MAC PDUs on the Phase 2
+voice chain so MMR Phase 2 talker-alias decodes too, and #409 backfills
+source RID + ALGID / KID encryption from the voice channel by parsing
+`GROUP_VOICE_CHANNEL_USER_ABBREVIATED` (opcode 0x01, previously
+mis-named `OpMACPTT` and silently discarded). APRS reaches end-to-end
+live: #401 adds the HDLC framer + receiver glue, #411 wires the
+Bell-202 AFSK DSP frontend (IQ → FM → real resample → tone
+discriminator → Mueller-Müller timing → NRZI → HDLC → AX.25 + APRS
+info-field → events bus), so configuring `aprs.channels` with a serial
++ frequency lights up the bus, SQLite log, REST endpoint, and `/aprs`
+web panel from #384 / #390. Issue #402 (RTL-SDR DC-spike pulls the
+P25 control-channel offset estimator into the spike) lands in three
+slices: #406 adds CCStats + per-sample recording-power diagnostics,
+#408 mirrors the replay path through the production DDC and adds
+state-evolution diagnostics, and #412 swaps in a decision-directed AFC
+that defeats data-DC integration. Plus: #399 makes the P25 Phase 1
+voice composer honour `trunking.systems[].p25_phase1_demod_mode` so
+simulcast / LSM grants don't silently fail on FM-discriminator
+hardcode; #398 widens the Windows RTL-SDR cold-boot recovery envelope
+to 5 attempts with 200 / 400 / 800 / 1200 ms backoff and 150 ms
+WinUSB settle (issue #395); #400 surfaces two silent-degradation
+paths at startup (no `gain:` configured per SDR, conventional tone
+gating with zero `sdr.sample_rate`); #413 routes Phase 1 TDMA-channel
+grants to the Phase 2 voice chain; #407 promotes Motorola patch
+member talkgroups over the super-group in CC Activity (issue #405);
+and #396 adds a Markdown blog with per-category archives, RSS, and
+SEO meta to the Pages site.
+
 ### Added
 
 - **APRS DSP frontend — pipeline is now end-to-end.** Fifth and
