@@ -746,6 +746,100 @@ func TestEngineHandleCallSourceUpdateUnknownDeviceDoesNotPanic(t *testing.T) {
 	})
 }
 
+func TestEngineWidebandOnlyOutOfWindowGrantWarnsNotEngineBug(t *testing.T) {
+	// Issue #422 follow-up: a wideband-only pool (one frequency-
+	// constrained tap, no physical voice SDR) that receives a grant
+	// outside its IQ window must not log the misleading "voice pool
+	// full but no actives (engine bug)" Error. It's a coverage gap:
+	// warn once, drop the rest at DEBUG.
+	bus := events.NewBus(8)
+	defer bus.Close()
+	tap := &constrainedTuner{lo: 851_000_000, hi: 852_000_000}
+	pool := NewVoicePool([]*VoiceDevice{{Tuner: tap, Serial: "wb:dev:tap-0"}})
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	e, err := NewEngine(EngineOptions{
+		Bus: bus, Log: log, VoicePool: pool, Talkgroups: NewTalkgroupDB(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 900 MHz is outside the tap's [851, 852] MHz window.
+	g := Grant{System: "X", Protocol: "p25", GroupID: 1, FrequencyHz: 900_000_000}
+	e.HandleGrant(g)
+	e.HandleGrant(g)
+	e.HandleGrant(g)
+
+	out := buf.String()
+	if strings.Contains(out, "engine bug") || strings.Contains(out, "voice pool full but no actives") {
+		t.Errorf("out-of-window grant mislogged as engine bug:\n%s", out)
+	}
+	if c := strings.Count(out, "level=WARN"); c != 1 {
+		t.Errorf("expected exactly one WARN, got %d:\n%s", c, out)
+	}
+	if !strings.Contains(out, "outside every voice device") {
+		t.Errorf("expected actionable coverage WARN:\n%s", out)
+	}
+	if c := strings.Count(out, `msg="dropping grant: no voice device covers frequency"`); c != 3 {
+		t.Errorf("expected 3 DEBUG drops, got %d:\n%s", c, out)
+	}
+	// The tap must never have been retuned to the out-of-window freq.
+	if len(tap.freqs) != 0 {
+		t.Errorf("constrained tap should not have been retuned, got %v", tap.freqs)
+	}
+}
+
+func TestEnginePreemptsFrequencyCapableDeviceNotLowestPriority(t *testing.T) {
+	// Issue #422 follow-up: preemption must target a device that can
+	// actually tune the incoming grant. Here the globally lowest-
+	// priority call sits on a wideband tap whose window excludes the
+	// grant; the engine must instead preempt the (higher-priority but
+	// frequency-capable) physical SDR, leaving the tap's call intact.
+	bus := events.NewBus(8)
+	defer bus.Close()
+	tap := &constrainedTuner{lo: 851_000_000, hi: 852_000_000}
+	phys := &fakeVoiceTuner{}
+	pool := NewVoicePool([]*VoiceDevice{
+		{Tuner: tap, Serial: "wb:dev:tap-0"}, // listed first; preferred in-window
+		{Tuner: phys, Serial: "phys-voice"},
+	})
+	e, err := NewEngine(EngineOptions{
+		Bus: bus, VoicePool: pool, Talkgroups: NewTalkgroupDB(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.talkgroups.Add(&TalkGroup{ID: 200, Priority: 9}) // tap call: lowest priority
+	e.talkgroups.Add(&TalkGroup{ID: 100, Priority: 5}) // phys call
+	e.talkgroups.Add(&TalkGroup{ID: 300, Priority: 1}) // incoming: high priority
+
+	// Bind the tap with an in-window call (group 200).
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 200, FrequencyHz: 851_500_000})
+	// Bind the physical SDR with an out-of-tap-window call (group 100).
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 100, FrequencyHz: 900_000_000})
+	// Incoming high-priority grant at 900 MHz — only the physical SDR
+	// can serve it. It must preempt the physical call (group 100), not
+	// the lower-priority tap call (group 200).
+	e.HandleGrant(Grant{System: "X", Protocol: "p25", GroupID: 300, FrequencyHz: 900_000_001})
+
+	byGroup := map[uint32]*ActiveCall{}
+	for _, ac := range e.ActiveCalls() {
+		byGroup[ac.Grant.GroupID] = ac
+	}
+	if _, ok := byGroup[200]; !ok {
+		t.Error("tap's group-200 call should still be active (tap can't serve 900 MHz)")
+	}
+	if _, ok := byGroup[100]; ok {
+		t.Error("physical's group-100 call should have been preempted")
+	}
+	c300, ok := byGroup[300]
+	if !ok || c300.Device.Serial != "phys-voice" {
+		t.Errorf("incoming group-300 call should be bound to phys-voice, got %+v", c300)
+	}
+}
+
 func TestEngineEmptyVoicePoolWarnsOnceThenDebug(t *testing.T) {
 	// Issue #379: a daemon with trunking systems but zero `role: voice`
 	// SDRs builds an empty VoicePool. Every grant used to log a
