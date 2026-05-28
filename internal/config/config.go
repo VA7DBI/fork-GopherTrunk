@@ -27,6 +27,35 @@ type Config struct {
 	Broadcast  BroadcastConfig  `yaml:"broadcast"`
 	Baseband   BasebandConfig   `yaml:"baseband"`
 	Paging     PagingConfig     `yaml:"paging"`
+	APRS       APRSConfig       `yaml:"aprs"`
+}
+
+// APRSConfig configures the APRS / AX.25 Bell-202 AFSK receiver.
+// Each entry pins an SDR to a 2 m / 70 cm APRS frequency and runs
+// the DSP frontend (FM demod → FFSK discriminator → symbol-timing
+// recovery → NRZI decode → HDLC framer → AX.25 + APRS info-field
+// parsing) against its full IQ stream. Decoded packets publish on
+// events.KindAPRSPacket; the storage.APRSLog subscriber persists
+// them, the REST endpoint at /api/v1/aprs/packets and the /aprs
+// web panel render them.
+type APRSConfig struct {
+	Channels []APRSChannelConfig `yaml:"channels"`
+}
+
+// APRSChannelConfig describes one APRS channel to decode. Serial
+// picks the SDR; the daemon tunes it to FrequencyHz and runs the
+// AFSK receiver against its full IQ stream. The 144.39 MHz North-
+// America primary channel is the most common target; other
+// regions use 144.575 (EU R1), 144.64 (JP), 144.80 (EU R1 short-
+// distance), 145.825 (ISS digipeater), 144.575 (AU). The DropBadFCS
+// and DropNonUI toggles match the receiver's options — leave both
+// false to see marginal traffic on the panel (highlighted in
+// yellow); flip them on if the channel is dominated by noise.
+type APRSChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadFCS  bool   `yaml:"drop_bad_fcs"`
+	DropNonUI   bool   `yaml:"drop_non_ui"`
 }
 
 // PagingConfig configures pager decoders (POCSAG today, FLEX
