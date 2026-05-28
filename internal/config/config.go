@@ -98,6 +98,8 @@ type BroadcastConfig struct {
 	Broadcastify []BroadcastifyFeedConfig `yaml:"broadcastify"`
 	RdioScanner  []RdioScannerFeedConfig  `yaml:"rdioscanner"`
 	OpenMHz      []OpenMHzFeedConfig      `yaml:"openmhz"`
+	Webhook      []WebhookFeedConfig      `yaml:"webhook"`
+	Spool        []SpoolFeedConfig        `yaml:"spool"`
 	Icecast      []IcecastFeedConfig      `yaml:"icecast"`
 }
 
@@ -127,6 +129,22 @@ type OpenMHzFeedConfig struct {
 	APIKey    string   `yaml:"api_key"`
 	ShortName string   `yaml:"short_name"`
 	Systems   []string `yaml:"systems"`
+}
+
+// WebhookFeedConfig is one JSON webhook call-export sink.
+type WebhookFeedConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Name    string   `yaml:"name"`
+	URL     string   `yaml:"url"`
+	Systems []string `yaml:"systems"`
+}
+
+// SpoolFeedConfig is one local file-queue export sink.
+type SpoolFeedConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Name    string   `yaml:"name"`
+	Dir     string   `yaml:"dir"`
+	Systems []string `yaml:"systems"`
 }
 
 // IcecastFeedConfig is one live Icecast/ShoutCast feed.

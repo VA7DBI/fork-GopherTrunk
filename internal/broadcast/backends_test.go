@@ -3,10 +3,13 @@ package broadcast
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -207,6 +210,68 @@ func TestOpenMHzUpload(t *testing.T) {
 	}
 }
 
+func TestWebhookUpload(t *testing.T) {
+	var got webhookPayload
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Errorf("content-type = %q, want application/json", ct)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	be, err := NewWebhook(WebhookConfig{URL: srv.URL}, srv.Client())
+	if err != nil {
+		t.Fatalf("NewWebhook: %v", err)
+	}
+	if err := be.Send(context.Background(), testCall(t)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got.Talkgroup != 4321 || got.AudioMPEGBase64 == "" || got.AudioFilename == "" {
+		t.Fatalf("unexpected webhook payload: %+v", got)
+	}
+}
+
+func TestSpoolWritesCall(t *testing.T) {
+	dir := t.TempDir()
+	be, err := NewSpool(SpoolConfig{Dir: dir}, nil)
+	if err != nil {
+		t.Fatalf("NewSpool: %v", err)
+	}
+	if err := be.Send(context.Background(), testCall(t)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool entry count = %d, want 1", len(entries))
+	}
+	entryDir := filepath.Join(dir, entries[0].Name())
+	meta, err := os.ReadFile(filepath.Join(entryDir, "call.json"))
+	if err != nil {
+		t.Fatalf("ReadFile metadata: %v", err)
+	}
+	audio, err := os.ReadFile(filepath.Join(entryDir, "call.mp3"))
+	if err != nil {
+		t.Fatalf("ReadFile audio: %v", err)
+	}
+	if len(audio) < 2 || audio[0] != 0xFF {
+		t.Fatalf("spooled audio is not MP3")
+	}
+	var got spoolPayload
+	if err := json.Unmarshal(meta, &got); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if got.Talkgroup != 4321 || got.AudioFilename != "4321-"+strconv.FormatInt(testCall(t).StartedAt.Unix(), 10)+".mp3" {
+		t.Fatalf("unexpected metadata: %+v", got)
+	}
+}
+
 func TestBackendConstructorsValidate(t *testing.T) {
 	if _, err := NewBroadcastify(BroadcastifyConfig{SystemID: 1}, nil); err == nil {
 		t.Error("Broadcastify without api_key should error")
@@ -216,6 +281,12 @@ func TestBackendConstructorsValidate(t *testing.T) {
 	}
 	if _, err := NewOpenMHz(OpenMHzConfig{APIKey: "x"}, nil); err == nil {
 		t.Error("OpenMHz without short_name should error")
+	}
+	if _, err := NewWebhook(WebhookConfig{}, nil); err == nil {
+		t.Error("Webhook without url should error")
+	}
+	if _, err := NewSpool(SpoolConfig{}, nil); err == nil {
+		t.Error("Spool without dir should error")
 	}
 	if _, err := NewIcecast(IcecastConfig{Host: "h", Port: 8000}, nil); err == nil {
 		t.Error("Icecast without password should error")

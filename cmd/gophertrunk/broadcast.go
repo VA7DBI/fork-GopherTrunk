@@ -62,6 +62,34 @@ func buildBroadcastManager(cfg config.BroadcastConfig, sampleRate int, bus *even
 		}
 		backends = append(backends, b)
 	}
+	for _, f := range cfg.Webhook {
+		if !f.Enabled {
+			continue
+		}
+		b, err := broadcast.NewWebhook(broadcast.WebhookConfig{
+			Name:    f.Name,
+			URL:     f.URL,
+			Systems: f.Systems,
+		}, nil)
+		if err != nil {
+			return nil, err
+		}
+		backends = append(backends, b)
+	}
+	for _, f := range cfg.Spool {
+		if !f.Enabled {
+			continue
+		}
+		b, err := broadcast.NewSpool(broadcast.SpoolConfig{
+			Name:    f.Name,
+			Dir:     f.Dir,
+			Systems: f.Systems,
+		}, nil)
+		if err != nil {
+			return nil, err
+		}
+		backends = append(backends, b)
+	}
 	for _, f := range cfg.Icecast {
 		if !f.Enabled {
 			continue

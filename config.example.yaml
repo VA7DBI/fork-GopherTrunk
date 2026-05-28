@@ -517,6 +517,18 @@ broadcast:
   #     api_key: "YOUR_OPENMHZ_API_KEY"
   #     short_name: "metro911"
 
+  # webhook:
+  #   - enabled: true
+  #     name: "call-webhook"
+  #     url: "https://example.com/hooks/gophertrunk"
+  #     systems: ["Metro P25"]
+
+  # spool:
+  #   - enabled: true
+  #     name: "local-spool"
+  #     dir: "./call-spool"
+  #     systems: ["Metro P25"]
+
   # icecast:
   #   - enabled: true
   #     name: "live-feed"
