@@ -153,6 +153,22 @@ func summariseEvent(ev client.Event) string {
 		if jsonUnmarshal(ev.Raw, &t) == nil {
 			return fmt.Sprintf("%s  device=%s", t.Profile, t.DeviceSerial)
 		}
+	case "fleetsync.message":
+		var fs struct {
+			Version   uint8  `json:"Version"`
+			Command   uint8  `json:"Command"`
+			FromFleet uint8  `json:"FromFleet"`
+			FromUnit  uint16 `json:"FromUnit"`
+			ToFleet   uint8  `json:"ToFleet"`
+			ToUnit    uint16 `json:"ToUnit"`
+		}
+		if jsonUnmarshal(ev.Raw, &fs) == nil {
+			ver := "FS1"
+			if fs.Version == 2 {
+				ver = "FS2"
+			}
+			return fmt.Sprintf("%s cmd=0x%02X %d/%d -> %d/%d", ver, fs.Command, fs.FromFleet, fs.FromUnit, fs.ToFleet, fs.ToUnit)
+		}
 	}
 	if len(ev.Raw) > 0 && len(ev.Raw) < 64 {
 		return string(ev.Raw)

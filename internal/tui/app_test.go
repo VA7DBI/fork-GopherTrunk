@@ -82,8 +82,7 @@ func TestPanelSwitch_DigitAndTab(t *testing.T) {
 			t.Errorf("after %q active=%v, want %v", c.key, m.active, c.want)
 		}
 	}
-	// Tab cycles forward — Scanner advances to Settings, then to
-	// Import (the new last panel after the live-import work).
+	// Tab cycles forward — Scanner advances to Settings, then Import.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = updated.(*Model)
 	if m.active != state.PanelSettings {
@@ -94,10 +93,16 @@ func TestPanelSwitch_DigitAndTab(t *testing.T) {
 	if m.active != state.PanelImport {
 		t.Errorf("Tab from Settings: active=%v, want Import", m.active)
 	}
-	// Tab again wraps Import → Dashboard.
+	// Tab advances Import -> FleetSync.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(*Model)
+	if m.active != state.PanelFleetSync {
+		t.Errorf("Tab from Import: active=%v, want FleetSync", m.active)
+	}
+	// Tab again wraps FleetSync -> Dashboard.
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = updated.(*Model)
 	if m.active != state.PanelDashboard {
-		t.Errorf("Tab from Import: active=%v, want Dashboard", m.active)
+		t.Errorf("Tab from FleetSync: active=%v, want Dashboard", m.active)
 	}
 }
