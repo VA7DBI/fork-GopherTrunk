@@ -38,11 +38,11 @@ func TestMACPDUParseEmpty(t *testing.T) {
 
 func TestMACPDUIsIdle(t *testing.T) {
 	cases := map[Opcode]bool{
-		OpMACIdle:                true,
-		OpMACHangtime:            true,
-		OpMACEnd:                 true,
-		OpGroupVoiceChannelUserAbbreviated:                 false,
-		OpGroupVoiceChannelGrant: false,
+		OpMACIdle:                          true,
+		OpMACHangtime:                      true,
+		OpMACEnd:                           true,
+		OpGroupVoiceChannelUserAbbreviated: false,
+		OpGroupVoiceChannelGrant:           false,
 	}
 	for op, want := range cases {
 		got := MACPDU{Opcode: op}.IsIdle()
