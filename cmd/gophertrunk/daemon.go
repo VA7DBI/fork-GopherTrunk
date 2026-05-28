@@ -467,6 +467,15 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		d.addWarning("trunking.systems configured but sdr.devices is empty — daemon has nothing to demodulate; add at least one device")
 	}
 
+	// Virtual voice taps on any `role: wideband` dongle, built before the
+	// voice pool (below) and the composer's virtualVoiceMap so a wideband-
+	// only topology actually has voice devices to follow grants with.
+	// Building these after the voice pool was the cause of issue #422
+	// (every grant dropped with "no voice SDR").
+	if err := d.buildVirtualVoiceTuners(cfg, log); err != nil {
+		return nil, err
+	}
+
 	// Metrics — constructed early so downstream components (notably
 	// the cc decoder's IQ-power gauge) can publish into it. Run +
 	// Close are still kicked off later from Daemon.Run / Daemon.Close
@@ -883,41 +892,10 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 				return nil, fmt.Errorf("daemon: widebandt2 %q: %w", devCfg.Serial, err)
 			}
 			d.widebandT2 = append(d.widebandT2, eng)
-			// Spin up virtual voice tuners on this wideband dongle so
-			// trunked voice grants whose frequency lands inside the
-			// IQ window can be followed without retuning a separate
-			// physical role: voice SDR. The taps subscribe to the
-			// dongle's iqtap broker on each StreamIQ call, run a
-			// single-tap DDC, and emit 48 kHz IQ to the composer.
-			// Out-of-window grants surface ErrOutOfBand and fall
-			// back to a physical voice SDR (when present) via the
-			// voice pool's bind retry.
-			taps := devCfg.VoiceTaps
-			if taps < 0 {
-				taps = 0
-			}
-			br := d.iqBrokers[entry.Info.Serial]
-			if br == nil && taps > 0 {
-				log.Warn("daemon: wideband: voice_taps requested but no iqtap broker; virtual voice disabled",
-					"serial", devCfg.Serial, "voice_taps", taps)
-				taps = 0
-			}
-			for i := 0; i < taps; i++ {
-				vt, err := wbvoice.New(wbvoice.Options{
-					Serial:           fmt.Sprintf("wb:%s:tap-%d", entry.Info.Serial, i),
-					Broker:           br,
-					WidebandCenterHz: devCfg.CenterFreqHz,
-					SDRSampleRateHz:  cfg.SDR.SampleRate,
-					Log:              log,
-				})
-				if err != nil {
-					return nil, fmt.Errorf("daemon: wbvoice %q tap %d: %w", devCfg.Serial, i, err)
-				}
-				d.virtualVoiceTuners = append(d.virtualVoiceTuners, vt)
-				log.Info("daemon: wideband: virtual voice tap registered",
-					"wideband_serial", entry.Info.Serial,
-					"tap_serial", vt.Serial())
-			}
+			// Virtual voice taps for this dongle are built earlier by
+			// buildVirtualVoiceTuners (before the voice pool and composer
+			// are constructed) so trunked grants inside the IQ window have
+			// a device to land on. See issue #422.
 		}
 	}
 
@@ -1730,6 +1708,61 @@ func (d *Daemon) spawn(ctx context.Context, name string, essential bool, fn func
 		}
 		d.log.Warn("daemon: component exited with error", "component", name, "err", err)
 	}()
+}
+
+// buildVirtualVoiceTuners spins up one wbvoice.VirtualTuner per voice tap
+// on every `role: wideband` dongle. The taps subscribe to the dongle's
+// iqtap broker on each StreamIQ call, run a single-tap DDC, and emit
+// 48 kHz IQ to the composer. Out-of-window grants surface ErrOutOfBand
+// and fall back to a physical voice SDR (when present) via the voice
+// pool's bind retry.
+//
+// This must run before the voice pool (collectVoiceDevices) and the
+// composer's virtualVoiceMap are built — otherwise a wideband-only
+// topology yields an empty voice pool and every grant is dropped with
+// "no voice SDR" (issue #422).
+func (d *Daemon) buildVirtualVoiceTuners(cfg config.Config, log *slog.Logger) error {
+	if d.pool == nil {
+		return nil
+	}
+	for _, devCfg := range cfg.SDR.Devices {
+		if devCfg.Role != "wideband" {
+			continue
+		}
+		entry := d.pool.FindBySerial(devCfg.Serial)
+		if entry == nil {
+			// The wideband engine loop logs the missing-dongle warning;
+			// stay quiet here to avoid duplicating it.
+			continue
+		}
+		taps := devCfg.VoiceTaps
+		if taps < 0 {
+			taps = 0
+		}
+		br := d.iqBrokers[entry.Info.Serial]
+		if br == nil && taps > 0 {
+			log.Warn("daemon: wideband: voice_taps requested but no iqtap broker; virtual voice disabled",
+				"serial", devCfg.Serial, "voice_taps", taps)
+			taps = 0
+		}
+		for i := 0; i < taps; i++ {
+			vt, err := wbvoice.New(wbvoice.Options{
+				Serial:           fmt.Sprintf("wb:%s:tap-%d", entry.Info.Serial, i),
+				Broker:           br,
+				WidebandCenterHz: devCfg.CenterFreqHz,
+				SDRSampleRateHz:  cfg.SDR.SampleRate,
+				Log:              log,
+			})
+			if err != nil {
+				return fmt.Errorf("daemon: wbvoice %q tap %d: %w", devCfg.Serial, i, err)
+			}
+			d.virtualVoiceTuners = append(d.virtualVoiceTuners, vt)
+			log.Info("daemon: wideband: virtual voice tap registered",
+				"wideband_serial", entry.Info.Serial,
+				"tap_serial", vt.Serial())
+		}
+	}
+	return nil
 }
 
 func (d *Daemon) collectVoiceDevices() []*trunking.VoiceDevice {
