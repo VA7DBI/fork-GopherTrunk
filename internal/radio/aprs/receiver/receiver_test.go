@@ -171,6 +171,47 @@ func TestReceiverEmitsPositionPacket(t *testing.T) {
 	}
 }
 
+// TestReceiverEmitsMicEPacket exercises the Mic-E decode path: the
+// orchestrator hands the AX.25 destination callsign to
+// aprs.DecodeWithDst, so a Mic-E info field arrives with lat/lon
+// populated even though the position lives half in the destination
+// address. Verifies the bus event carries the decoded position so
+// the storage layer + /aprs panel get usable coordinates.
+func TestReceiverEmitsMicEPacket(t *testing.T) {
+	bus, sub := newTestBus(t)
+	r := New(Options{Bus: bus})
+
+	// Dst encodes lat 33° 25.64' N, +100° offset, W hemisphere,
+	// M3 Returning. Info encodes lon 112° 09.18' W, speed 20 kn,
+	// course 251°, car symbol on the primary table.
+	dst := "S32UVT"
+	info := []byte{
+		'`',     // DTI: Mic-E current GPS data
+		12 + 28, // lon deg (raw 12, +100° offset → 112)
+		9 + 28,  // lon min
+		18 + 28, // lon hun
+		2 + 28,  // sp
+		2 + 28,  // dc
+		51 + 28, // se
+		'>',     // symbol code (car)
+		'/',     // symbol table (primary)
+	}
+	body := buildAX25Body(dst, 0, "W1AW", 9, info)
+	bits := wrapHDLC(body)
+	pushAll(r, bits)
+
+	pkt := awaitPacket(t, sub)
+	if pkt.Type != "mic-e" {
+		t.Errorf("Type = %q, want mic-e", pkt.Type)
+	}
+	if pkt.Latitude < 33.4 || pkt.Latitude > 33.5 {
+		t.Errorf("Latitude = %f, want ≈ 33.42", pkt.Latitude)
+	}
+	if pkt.Longitude > -112.1 || pkt.Longitude < -112.2 {
+		t.Errorf("Longitude = %f, want ≈ -112.15", pkt.Longitude)
+	}
+}
+
 func TestReceiverEmitsMessagePacket(t *testing.T) {
 	bus, sub := newTestBus(t)
 	r := New(Options{Bus: bus})

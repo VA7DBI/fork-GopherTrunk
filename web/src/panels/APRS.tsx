@@ -70,13 +70,13 @@ export function APRS() {
             {packets.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-3 py-4 text-center text-muted">
-                  No APRS packets yet. Tune an SDR to your local APRS
-                  channel (NA: 144.39 MHz · EU: 144.800 MHz · JP:
-                  144.64 MHz) and decoded packets will land here as
-                  they arrive. DSP wiring (1200 Bd Bell-202 AFSK →
-                  HDLC de-stuff → AX.25 frame) is the planned
-                  follow-up; once that ships, packets will flow
-                  end-to-end into this panel.
+                  No APRS packets yet. Add an{" "}
+                  <code className="text-accent">aprs.channels</code>{" "}
+                  entry to your config (NA primary: 144.39 MHz · EU R1:
+                  144.800 MHz · JP: 144.64 MHz · ISS: 145.825 MHz) and
+                  decoded packets — position beacons, messages,
+                  bulletins, status, Mic-E — will land here as they
+                  arrive.
                 </td>
               </tr>
             ) : (

@@ -9,6 +9,28 @@ for tagged releases.
 
 ### Added
 
+- **APRS Mic-E decoder.** Mobile-tracker packets (Kenwood TH-D74,
+  Yaesu FT-3D, vehicle trackers) compressed-encode position +
+  speed + course + altitude + a 3-bit message code across the
+  7-byte AX.25 destination address and a 9-byte info field — a
+  third the size of an uncompressed beacon, which is why every
+  mobile tracker emits it. `aprs.DecodeWithDst(info, dst)` walks
+  the Table 10.5 destination-char encoding (six latitude digits +
+  message bits + N/S + lon-offset + W/E), then the §10.4
+  speed/course interleaved encoding with the standard 800/400
+  wrap corrections, then the optional base-91 `XXX}` altitude
+  marker. Resulting `MicE` carries Latitude / Longitude / Speed
+  (knots) / Course (deg) / SymbolTable / SymbolCode / MessageCode
+  (`"M3 Returning"`, `"Emergency"`, custom-code variants) /
+  Standard (std vs custom range) / Altitude (m) / HasAltitude /
+  Comment. Latitude + Longitude also surface through the standard
+  `Position` field so the storage row, the `/api/v1/aprs/packets`
+  payload, and the `/aprs` panel pick the coordinates up without
+  special-casing Mic-E. The bit-stream orchestrator
+  (`aprs/receiver`) calls `DecodeWithDst` with the AX.25
+  destination call so the path is wired end-to-end. Spec: APRS
+  Protocol Reference 1.0.1 §10. Refreshes the `/aprs` panel
+  empty-state copy now that the DSP frontend has shipped.
 - **APRS DSP frontend — pipeline is now end-to-end.** Fifth and
   load-bearing slice of Phase 5 (#365 plan): the
   `internal/radio/aprs/afsk` package wires an `afsk.Receiver`
