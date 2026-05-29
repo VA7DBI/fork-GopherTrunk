@@ -2139,7 +2139,7 @@ func (p fleetsyncProvider) FleetSyncRuntimeStats() api.FleetSyncRuntimeStatsDTO 
 		}
 		out.Export.Backends = make([]api.FleetSyncExportBackendStatsDTO, 0, len(es.Backends))
 		for _, name := range es.Backends {
-			out.Export.Backends = append(out.Export.Backends, api.FleetSyncExportBackendStatsDTO{
+			backendStats := api.FleetSyncExportBackendStatsDTO{
 				Name:            name,
 				Sent:            es.Sent[name],
 				SentLast60s:     es.SentLast60s[name],
@@ -2149,7 +2149,13 @@ func (p fleetsyncProvider) FleetSyncRuntimeStats() api.FleetSyncRuntimeStatsDTO 
 				AttemptsLast60s: es.AttemptsLast60s[name],
 				Retried:         es.Retried[name],
 				RetriedLast60s:  es.RetriedLast60s[name],
-			})
+			}
+			rollingOutcomes := backendStats.SentLast60s + backendStats.FailedLast60s
+			if rollingOutcomes > 0 {
+				backendStats.SuccessRateLast60s = float64(backendStats.SentLast60s) / float64(rollingOutcomes)
+				backendStats.FailureRateLast60s = float64(backendStats.FailedLast60s) / float64(rollingOutcomes)
+			}
+			out.Export.Backends = append(out.Export.Backends, backendStats)
 		}
 	}
 	return out

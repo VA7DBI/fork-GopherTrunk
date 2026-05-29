@@ -119,8 +119,10 @@ Exporter health is included under `runtime.export`:
 - `name`
 - `sent`
 - `sent_last_60s`
+- `success_rate_last_60s`
 - `failed`
 - `failed_last_60s`
+- `failure_rate_last_60s`
 - `attempts`
 - `attempts_last_60s`
 - `retried`
