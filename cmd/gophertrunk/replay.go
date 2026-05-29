@@ -67,6 +67,10 @@ func runReplay(args []string) {
 	// for A/B experimentation on a capture without turning it on in
 	// production. C4FM only.
 	enableDDA := fs.Bool("dda", false, "enable the experimental decision-directed AFC on the C4FM path (off by default; see issue #402)")
+	// Issue #402: the adaptive C4FM slicer is off by default (the fixed
+	// slicer outperformed it on the original capture's closed/asymmetric
+	// eye). This knob enables it for A/B experimentation. C4FM only.
+	enableAdaptiveSlicer := fs.Bool("adaptive-slicer", false, "enable the adaptive C4FM slicer on the C4FM path (off by default; see issue #402)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `gophertrunk replay — decode a raw IQ capture file offline.
 
@@ -165,8 +169,8 @@ FLAGS:`)
 	// pipeline does, so the replay log line is directly comparable
 	// to a daemon's startup line — and a non-default span (the
 	// bisect knob) is visible without re-reading the command.
-	fmt.Fprintf(os.Stderr, "replay: p25/phase1 configured  demod=%s  rotations=%v  nid_search_span=%d  nid_accept_errs=%d  nid_marginal_max=%d\n",
-		*demod, rotations, *nidSearchSpan, p25phase1.NIDAcceptErrs, p25phase1.NIDMarginalMaxErrs)
+	fmt.Fprintf(os.Stderr, "replay: p25/phase1 configured  demod=%s  rotations=%v  nid_search_span=%d  nid_accept_errs=%d  nid_marginal_max=%d  dda=%t  adaptive_slicer=%t\n",
+		*demod, rotations, *nidSearchSpan, p25phase1.NIDAcceptErrs, p25phase1.NIDMarginalMaxErrs, *enableDDA, *enableAdaptiveSlicer)
 	if ddc != nil {
 		fmt.Fprintf(os.Stderr, "replay: ddc enabled  sdr_rate_hz=%g  pipeline_rate_hz=%g\n",
 			*sampleRate, receiverRate)
@@ -185,6 +189,7 @@ FLAGS:`)
 		DeviationHz:               1800.0,
 		DemodMode:                 demodMode,
 		EnableDecisionDirectedAFC: *enableDDA,
+		EnableAdaptiveC4FMSlicer:  *enableAdaptiveSlicer,
 		DibitSink: func(dibits []uint8, baseIdx int) {
 			dibitCount += int64(len(dibits))
 			if diagAcc != nil {
