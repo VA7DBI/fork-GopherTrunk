@@ -124,6 +124,8 @@ type FleetSyncStats struct {
 	QueueDepth                      int                `json:"queue_depth"`
 	QueueCapacity                   int                `json:"queue_capacity"`
 	QueueUtilization                float64            `json:"queue_utilization"`
+	QueueUtilizationLast60sAvg      float64            `json:"queue_utilization_last_60s_avg,omitempty"`
+	QueueUtilizationLast60sPeak     float64            `json:"queue_utilization_last_60s_peak,omitempty"`
 	DroppedBySource                 map[string]int     `json:"dropped_by_source"`
 	DroppedPerMinuteBySource        map[string]float64 `json:"dropped_per_minute_by_source,omitempty"`
 	DroppedLast60sTotal             int                `json:"dropped_last_60s_total,omitempty"`
@@ -169,6 +171,7 @@ type FleetSyncExporter struct {
 	lastEventAt         time.Time
 	lastSendAt          time.Time
 	lastFailureAt       time.Time
+	recentQueueSamples  []queueUtilizationSample
 	droppedBySource     map[string]int
 	recentDropsBySource map[string][]time.Time
 	sent                map[string]int
@@ -179,6 +182,11 @@ type FleetSyncExporter struct {
 	recentAttempts      map[string][]time.Time
 	retried             map[string]int
 	recentRetried       map[string][]time.Time
+}
+
+type queueUtilizationSample struct {
+	at          time.Time
+	utilization float64
 }
 
 func NewFleetSyncExporter(opts FleetSyncOptions) (*FleetSyncExporter, error) {
@@ -271,6 +279,7 @@ func (f *FleetSyncExporter) dispatch(msg *FleetSyncEvent) {
 		f.mu.Lock()
 		f.lastEventAt = time.Now().UTC()
 		f.queued++
+		f.recordQueueUtilizationLocked(time.Now())
 		f.mu.Unlock()
 	default:
 		f.mu.Lock()
@@ -280,6 +289,7 @@ func (f *FleetSyncExporter) dispatch(msg *FleetSyncEvent) {
 		now := time.Now()
 		f.recentDropsBySource[msg.Source] = append(f.recentDropsBySource[msg.Source], now)
 		f.pruneRecentDropsLocked(now.Add(-60 * time.Second))
+		f.recordQueueUtilizationLocked(now)
 		f.mu.Unlock()
 		f.log.Warn("broadcast/fleetsync: export queue full, dropping message",
 			"source", msg.Source, "command", msg.Command, "from_unit", msg.FromUnit)
@@ -305,6 +315,9 @@ func (f *FleetSyncExporter) pruneRecentDropsLocked(cutoff time.Time) {
 func (f *FleetSyncExporter) worker() {
 	defer f.wg.Done()
 	for msg := range f.jobs {
+		f.mu.Lock()
+		f.recordQueueUtilizationLocked(time.Now())
+		f.mu.Unlock()
 		for _, backend := range f.backends {
 			if !backend.AcceptsSource(msg.Source) {
 				continue
@@ -392,6 +405,7 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	now := time.Now()
 	f.pruneRecentDropsLocked(now.Add(-60 * time.Second))
 	f.pruneRecentBackendLocked(now.Add(-60 * time.Second))
+	f.recordQueueUtilizationLocked(now)
 	for key, value := range f.droppedBySource {
 		out.DroppedBySource[key] = value
 		out.DroppedPerMinuteBySource[key] = float64(value) / mins
@@ -444,6 +458,18 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	if attemptsLast60sTotal > 0 {
 		out.RetryRateLast60s = float64(out.RetriedLast60sTotal) / float64(attemptsLast60sTotal)
 	}
+	if len(f.recentQueueSamples) > 0 {
+		sum := 0.0
+		peak := 0.0
+		for _, sample := range f.recentQueueSamples {
+			sum += sample.utilization
+			if sample.utilization > peak {
+				peak = sample.utilization
+			}
+		}
+		out.QueueUtilizationLast60sAvg = sum / float64(len(f.recentQueueSamples))
+		out.QueueUtilizationLast60sPeak = peak
+	}
 	latest := out.LastEventAt
 	if out.LastSendAt.After(latest) {
 		latest = out.LastSendAt
@@ -462,6 +488,22 @@ func (f *FleetSyncExporter) pruneRecentBackendLocked(cutoff time.Time) {
 	pruneTimestampMapLocked(f.recentFailed, cutoff)
 	pruneTimestampMapLocked(f.recentAttempts, cutoff)
 	pruneTimestampMapLocked(f.recentRetried, cutoff)
+}
+
+func (f *FleetSyncExporter) recordQueueUtilizationLocked(now time.Time) {
+	utilization := 0.0
+	if cap(f.jobs) > 0 {
+		utilization = float64(len(f.jobs)) / float64(cap(f.jobs))
+	}
+	f.recentQueueSamples = append(f.recentQueueSamples, queueUtilizationSample{at: now, utilization: utilization})
+	cutoff := now.Add(-60 * time.Second)
+	idx := 0
+	for idx < len(f.recentQueueSamples) && f.recentQueueSamples[idx].at.Before(cutoff) {
+		idx++
+	}
+	if idx > 0 {
+		f.recentQueueSamples = append([]queueUtilizationSample(nil), f.recentQueueSamples[idx:]...)
+	}
 }
 
 func pruneTimestampMapLocked(values map[string][]time.Time, cutoff time.Time) {

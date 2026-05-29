@@ -113,6 +113,8 @@ Exporter health is included under `runtime.export`:
 - `queue_depth` (current messages waiting in exporter queue)
 - `queue_capacity` (configured exporter queue size)
 - `queue_utilization` (fraction of queue in use, from 0.0 to 1.0)
+- `queue_utilization_last_60s_avg` (rolling 60-second average queue utilization)
+- `queue_utilization_last_60s_peak` (rolling 60-second peak queue utilization)
 - `dropped_by_source` (map of source label to dropped count)
 - `dropped_per_minute_by_source` (map of source label to average drops/minute since exporter start)
 - `sent_last_60s_total` (rolling total successful backend deliveries across all backends)

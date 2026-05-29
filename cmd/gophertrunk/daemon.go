@@ -2123,6 +2123,8 @@ func (p fleetsyncProvider) FleetSyncRuntimeStats() api.FleetSyncRuntimeStatsDTO 
 		out.Export.QueueDepth = es.QueueDepth
 		out.Export.QueueCapacity = es.QueueCapacity
 		out.Export.QueueUtilization = es.QueueUtilization
+		out.Export.QueueUtilizationLast60sAvg = es.QueueUtilizationLast60sAvg
+		out.Export.QueueUtilizationLast60sPeak = es.QueueUtilizationLast60sPeak
 		out.Export.SentLast60sTotal = es.SentLast60sTotal
 		out.Export.FailedLast60sTotal = es.FailedLast60sTotal
 		out.Export.SuccessRateLast60s = es.SuccessRateLast60s

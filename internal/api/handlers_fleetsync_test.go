@@ -238,6 +238,8 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 			QueueDepth:                      4,
 			QueueCapacity:                   1024,
 			QueueUtilization:                4.0 / 1024.0,
+			QueueUtilizationLast60sAvg:      0.25,
+			QueueUtilizationLast60sPeak:     0.75,
 			SentLast60sTotal:                4,
 			FailedLast60sTotal:              1,
 			SuccessRateLast60s:              0.8,
@@ -300,6 +302,9 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 	}
 	if got.Runtime.Export.QueueUtilization != 4.0/1024.0 {
 		t.Fatalf("runtime.export.queue_utilization = %f", got.Runtime.Export.QueueUtilization)
+	}
+	if got.Runtime.Export.QueueUtilizationLast60sAvg != 0.25 || got.Runtime.Export.QueueUtilizationLast60sPeak != 0.75 {
+		t.Fatalf("runtime.export.queue_trend = avg=%f peak=%f", got.Runtime.Export.QueueUtilizationLast60sAvg, got.Runtime.Export.QueueUtilizationLast60sPeak)
 	}
 	if got.Runtime.Export.LastEventAt.IsZero() || got.Runtime.Export.LastSendAt.IsZero() || got.Runtime.Export.LastFailureAt.IsZero() || got.Runtime.Export.TelemetryAgeSeconds != 10 {
 		t.Fatalf("runtime.export.liveness = event=%v send=%v failure=%v age=%f", got.Runtime.Export.LastEventAt, got.Runtime.Export.LastSendAt, got.Runtime.Export.LastFailureAt, got.Runtime.Export.TelemetryAgeSeconds)
