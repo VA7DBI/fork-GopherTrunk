@@ -83,15 +83,18 @@ type AdaptiveC4FMSlicer struct {
 const adaptiveSlicerRate = 1.0 / 512.0
 
 // adaptiveSlicerLeak is a regularization pull back toward the nominal eye,
-// applied to every tracked level each symbol alongside the data-directed
-// update. It makes "degrade gracefully to the fixed slicer" a real
-// property rather than just a clamp: a level only departs nominal as far
-// as the data persistently supports it. At equilibrium a level settles at
-// rate/(rate+leak) of the way from nominal to the observed centroid — with
-// leak = rate/4 that's 0.8, so a strongly-supported asymmetry (the #402
-// +3 rail at ~1.6× nominal) still tracks most of the way, while an
-// ambiguous or partly-closed eye — where decision-directed tracking would
-// otherwise run away and do *worse* than fixed — is held near nominal.
+// applied alongside the data-directed update. It makes "degrade gracefully
+// to the fixed slicer" a real property rather than just a clamp: a level
+// only departs nominal as far as the data persistently supports it. At
+// equilibrium a level settles at rate/(rate+leak) of the way from nominal
+// to the observed centroid — with leak = rate/4 that's 0.8, so a
+// strongly-supported asymmetry (the #402 +3 rail at ~1.6× nominal) still
+// tracks most of the way, while an ambiguous or partly-closed eye — where
+// decision-directed tracking would otherwise run away and do *worse* than
+// fixed — is held near nominal. Both the data pull and this leak are scaled
+// by the per-symbol responsibility in update(), so each rail is regularized
+// in proportion to the evidence it receives and the 0.8 mix is independent
+// of the symbol prior.
 const adaptiveSlicerLeak = adaptiveSlicerRate / 4
 
 // adaptiveSlicerSigmaFrac sets the Gaussian-responsibility width used by the
@@ -239,9 +242,15 @@ func (a *AdaptiveC4FMSlicer) update(soft float32, sliced int8) {
 	}
 	for k := int8(0); k < 4; k++ {
 		rk := w[k] / sum
-		// Responsibility-weighted pull toward the sample, plus the same leak
-		// back toward nominal that regularizes the estimate (adaptiveSlicerLeak).
-		a.level[k] += a.rate*rk*(soft-a.level[k]) + adaptiveSlicerLeak*(a.nominal[k]-a.level[k])
+		// Responsibility-weighted pull toward the sample AND a
+		// responsibility-weighted leak back toward nominal. Both terms scale
+		// by rk so each rail is updated at the same cadence the hard
+		// decided-rail EMA used (its symbol prior), preserving the intended
+		// equilibrium mix level = rate/(rate+leak) ≈ 0.8 of the way from
+		// nominal to the observed centroid. (Leaking on every sample while
+		// pulling only by rk halved that mix and made the outer rail
+		// under-track — issue #402 follow-up to #439.)
+		a.level[k] += rk * (a.rate*(soft-a.level[k]) + adaptiveSlicerLeak*(a.nominal[k]-a.level[k]))
 		a.clampLevel(k)
 	}
 	a.enforceOrder()
