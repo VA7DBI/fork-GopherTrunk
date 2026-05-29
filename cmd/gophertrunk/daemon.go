@@ -1026,7 +1026,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			opts.Pager = pagerProvider{log: d.pagerLog}
 		}
 		if d.fleetsyncLog != nil {
-			opts.FleetSync = fleetsyncProvider{log: d.fleetsyncLog}
+			opts.FleetSync = fleetsyncProvider{log: d.fleetsyncLog, receivers: d.fleetsyncReceivers, exporter: d.fleetsyncExp}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -2065,7 +2065,11 @@ func (p pagerProvider) RecentPagerMessages(limit int) ([]storage.PagerMessage, e
 // api.FleetSyncProvider interface so the api package can stay free of
 // the storage import dependency. Read-only — the decoder writes via
 // the events bus.
-type fleetsyncProvider struct{ log *storage.FleetSyncLog }
+type fleetsyncProvider struct {
+	log       *storage.FleetSyncLog
+	receivers []*fleetsyncrx.Receiver
+	exporter  *broadcast.FleetSyncExporter
+}
 
 func (p fleetsyncProvider) ListFleetSyncMessages(filter storage.FleetSyncFilter) ([]storage.FleetSyncMessage, error) {
 	return p.log.List(filter)
@@ -2077,6 +2081,69 @@ func (p fleetsyncProvider) GetFleetSyncMessage(id int64) (storage.FleetSyncMessa
 
 func (p fleetsyncProvider) FleetSyncStats(filter storage.FleetSyncFilter) (storage.FleetSyncStats, error) {
 	return p.log.Stats(filter)
+}
+
+func (p fleetsyncProvider) FleetSyncRuntimeStats() api.FleetSyncRuntimeStatsDTO {
+	var out api.FleetSyncRuntimeStatsDTO
+	out.Channels = make([]api.FleetSyncRuntimeChannelStatsDTO, 0, len(p.receivers))
+	for _, receiver := range p.receivers {
+		if receiver == nil {
+			continue
+		}
+		m := receiver.Metrics()
+		ch := api.FleetSyncRuntimeChannelStatsDTO{
+			Source:          receiver.Source(),
+			MessagesEmitted: m.MessagesEmitted,
+			TotalSamples:    m.Demod.TotalSamples,
+			TotalMessagesRx: m.Demod.TotalMessagesRx,
+			SyncErrors:      m.Demod.SyncErrors,
+			CRCErrors:       m.Demod.CRCErrors,
+			LastMessageTime: m.Demod.LastMessageTime,
+			MessageRate:     m.Demod.MessageRate,
+		}
+		out.Channels = append(out.Channels, ch)
+		out.MessagesEmitted += m.MessagesEmitted
+		out.TotalSamples += m.Demod.TotalSamples
+		out.TotalMessagesRx += m.Demod.TotalMessagesRx
+		out.SyncErrors += m.Demod.SyncErrors
+		out.CRCErrors += m.Demod.CRCErrors
+		out.MessageRate += m.Demod.MessageRate
+		if m.Demod.LastMessageTime.After(out.LastMessageTime) {
+			out.LastMessageTime = m.Demod.LastMessageTime
+		}
+	}
+	if p.exporter != nil {
+		es := p.exporter.Stats()
+		out.Export.Queued = es.Queued
+		out.Export.Dropped = es.Dropped
+		out.Export.DroppedBySource = make(map[string]int, len(es.DroppedBySource))
+		out.Export.DroppedPerMinuteBySource = make(map[string]float64, len(es.DroppedPerMinuteBySource))
+		out.Export.DroppedLast60sBySource = make(map[string]int, len(es.DroppedLast60sBySource))
+		out.Export.DroppedPerMinuteLast60sBySource = make(map[string]float64, len(es.DroppedPerMinuteLast60sBySource))
+		for source, dropped := range es.DroppedBySource {
+			out.Export.DroppedBySource[source] = dropped
+		}
+		for source, perMin := range es.DroppedPerMinuteBySource {
+			out.Export.DroppedPerMinuteBySource[source] = perMin
+		}
+		for source, dropped := range es.DroppedLast60sBySource {
+			out.Export.DroppedLast60sBySource[source] = dropped
+		}
+		for source, perMin := range es.DroppedPerMinuteLast60sBySource {
+			out.Export.DroppedPerMinuteLast60sBySource[source] = perMin
+		}
+		out.Export.Backends = make([]api.FleetSyncExportBackendStatsDTO, 0, len(es.Backends))
+		for _, name := range es.Backends {
+			out.Export.Backends = append(out.Export.Backends, api.FleetSyncExportBackendStatsDTO{
+				Name:     name,
+				Sent:     es.Sent[name],
+				Failed:   es.Failed[name],
+				Attempts: es.Attempts[name],
+				Retried:  es.Retried[name],
+			})
+		}
+	}
+	return out
 }
 
 // pocsagSpec captures the broker-side wiring info for one configured

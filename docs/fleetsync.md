@@ -81,6 +81,42 @@ The list endpoint accepts optional query parameters:
 The stats endpoint accepts the same filters (except `limit`) and
 returns aggregate counters plus a per-command histogram.
 
+It also includes a `runtime` section with live decoder telemetry:
+
+- `messages_emitted`
+- `total_samples`
+- `total_messages_rx`
+- `sync_errors`
+- `crc_errors`
+- `last_message_time`
+- `message_rate`
+
+And a `runtime.channels[]` per-receiver breakdown keyed by:
+
+- `source`
+- `messages_emitted`
+- `total_samples`
+- `total_messages_rx`
+- `sync_errors`
+- `crc_errors`
+- `last_message_time`
+- `message_rate`
+
+Exporter health is included under `runtime.export`:
+
+- `queued`
+- `dropped`
+- `dropped_by_source` (map of source label to dropped count)
+- `dropped_per_minute_by_source` (map of source label to average drops/minute since exporter start)
+- `dropped_last_60s_by_source` (map of source label to drops observed in the rolling last 60 seconds)
+- `dropped_per_minute_last_60s_by_source` (rolling last-60s drops normalized to per-minute)
+- `backends[]` with per backend:
+- `name`
+- `sent`
+- `failed`
+- `attempts`
+- `retried`
+
 ## Export
 
 FleetSync Epic 5 adds outbound export feeds under `broadcast.fleetsync`.

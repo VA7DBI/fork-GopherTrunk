@@ -87,8 +87,21 @@ func (d *Demodulator) Metrics() FSyncMetrics {
 	m := FSyncMetrics{}
 	for i := 0; i < ND; i++ {
 		if d.decoders[i] != nil {
+			m.TotalSamples += d.decoders[i].totalSamples
+			m.TotalMessagesRx += d.decoders[i].totalMessages
+			m.SyncErrors += d.decoders[i].syncErrors
+			m.CRCErrors += d.decoders[i].crcErrors
+			if d.decoders[i].lastMessageUTC.After(m.LastMessageTime) {
+				m.LastMessageTime = d.decoders[i].lastMessageUTC
+			}
 			m.ChannelStates[i] = fmt.Sprintf("state:%d bits:%d",
 				d.decoders[i].syncState, d.decoders[i].goodBits)
+		}
+	}
+	if d.sampleRate > 0 && m.TotalSamples > 0 {
+		secs := float64(m.TotalSamples) / float64(d.sampleRate*ND)
+		if secs > 0 {
+			m.MessageRate = float64(m.TotalMessagesRx) / secs
 		}
 	}
 	return m
@@ -114,6 +127,7 @@ func newDecoder() *Decoder {
 // processSample handles one audio sample in this decoder channel.
 // Returns true if a message was successfully decoded.
 func (d *Decoder) processSample(sample int) bool {
+	d.totalSamples++
 	// Accumulate sample (simplified bit detection)
 	// In a full implementation, this would be a proper matched filter
 	// or correlator bank. For now, use zero-crossing detection.
@@ -179,6 +193,8 @@ func (d *Decoder) trySync(bit int) bool {
 				if d.validateCRC(d.message[0:32]) {
 					d.word1 = d.bitsToWord(d.message[0:32])
 					d.goodBits++
+				} else {
+					d.crcErrors++
 				}
 			}
 
@@ -190,9 +206,17 @@ func (d *Decoder) trySync(bit int) bool {
 					if d.goodBits >= GDTHRESH {
 						// Valid message: parse and emit
 						if d.parseMessage() {
+							d.totalMessages++
+							d.lastMessageUTC = time.Now().UTC()
 							decoded = true
+						} else {
+							d.syncErrors++
 						}
+					} else {
+						d.syncErrors++
 					}
+				} else {
+					d.crcErrors++
 				}
 				d.syncState = 0
 				d.goodBits = 0

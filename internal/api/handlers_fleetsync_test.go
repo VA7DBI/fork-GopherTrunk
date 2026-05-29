@@ -16,6 +16,7 @@ import (
 type fakeFleetSyncProvider struct {
 	rows            []storage.FleetSyncMessage
 	stats           storage.FleetSyncStats
+	runtime         FleetSyncRuntimeStatsDTO
 	listErr         error
 	getErr          error
 	statsErr        error
@@ -49,6 +50,10 @@ func (f *fakeFleetSyncProvider) FleetSyncStats(filter storage.FleetSyncFilter) (
 		return storage.FleetSyncStats{}, f.statsErr
 	}
 	return f.stats, nil
+}
+
+func (f *fakeFleetSyncProvider) FleetSyncRuntimeStats() FleetSyncRuntimeStatsDTO {
+	return f.runtime
 }
 
 func newFleetSyncTestServer(t *testing.T, prov FleetSyncProvider) *httptest.Server {
@@ -211,6 +216,29 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 		FirstSeen: time.Unix(1700000000, 0).UTC(),
 		LastSeen:  time.Unix(1700000200, 0).UTC(),
 		Commands:  []storage.FleetSyncCommandStat{{Command: 0x01, Count: 2}, {Command: 0x02, Count: 1}},
+	}, runtime: FleetSyncRuntimeStatsDTO{
+		MessagesEmitted: 9,
+		TotalSamples:    48000,
+		TotalMessagesRx: 3,
+		SyncErrors:      1,
+		CRCErrors:       2,
+		LastMessageTime: time.Unix(1700000200, 0).UTC(),
+		MessageRate:     1.5,
+		Channels: []FleetSyncRuntimeChannelStatsDTO{
+			{Source: "utilities-east", MessagesEmitted: 5, TotalSamples: 30000, TotalMessagesRx: 2, SyncErrors: 1, CRCErrors: 0, MessageRate: 1.0},
+			{Source: "utilities-west", MessagesEmitted: 4, TotalSamples: 18000, TotalMessagesRx: 1, SyncErrors: 0, CRCErrors: 2, MessageRate: 0.5},
+		},
+		Export: FleetSyncExportRuntimeStatsDTO{
+			Queued:                          10,
+			Dropped:                         1,
+			DroppedBySource:                 map[string]int{"utilities-west": 1},
+			DroppedPerMinuteBySource:        map[string]float64{"utilities-west": 2.5},
+			DroppedLast60sBySource:          map[string]int{"utilities-west": 1},
+			DroppedPerMinuteLast60sBySource: map[string]float64{"utilities-west": 1.0},
+			Backends: []FleetSyncExportBackendStatsDTO{
+				{Name: "webhook-main", Sent: 8, Failed: 1, Attempts: 11, Retried: 3},
+			},
+		},
 	}}
 	ts := newFleetSyncTestServer(t, prov)
 	resp, err := http.Get(ts.URL + "/api/v1/fleetsync/stats?command=0x01")
@@ -230,6 +258,27 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 	}
 	if got.Total != 3 || len(got.Commands) != 2 {
 		t.Fatalf("stats = %+v", got)
+	}
+	if got.Runtime.MessagesEmitted != 9 || got.Runtime.SyncErrors != 1 || got.Runtime.CRCErrors != 2 {
+		t.Fatalf("runtime = %+v", got.Runtime)
+	}
+	if len(got.Runtime.Channels) != 2 || got.Runtime.Channels[0].Source != "utilities-east" {
+		t.Fatalf("runtime.channels = %+v", got.Runtime.Channels)
+	}
+	if got.Runtime.Export.Dropped != 1 || len(got.Runtime.Export.Backends) != 1 || got.Runtime.Export.Backends[0].Retried != 3 {
+		t.Fatalf("runtime.export = %+v", got.Runtime.Export)
+	}
+	if got.Runtime.Export.DroppedBySource["utilities-west"] != 1 {
+		t.Fatalf("runtime.export.dropped_by_source = %+v", got.Runtime.Export.DroppedBySource)
+	}
+	if got.Runtime.Export.DroppedPerMinuteBySource["utilities-west"] != 2.5 {
+		t.Fatalf("runtime.export.dropped_per_minute_by_source = %+v", got.Runtime.Export.DroppedPerMinuteBySource)
+	}
+	if got.Runtime.Export.DroppedLast60sBySource["utilities-west"] != 1 {
+		t.Fatalf("runtime.export.dropped_last_60s_by_source = %+v", got.Runtime.Export.DroppedLast60sBySource)
+	}
+	if got.Runtime.Export.DroppedPerMinuteLast60sBySource["utilities-west"] != 1.0 {
+		t.Fatalf("runtime.export.dropped_per_minute_last_60s_by_source = %+v", got.Runtime.Export.DroppedPerMinuteLast60sBySource)
 	}
 }
 

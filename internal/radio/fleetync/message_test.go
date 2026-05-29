@@ -22,15 +22,15 @@ func TestParseStatusWord(t *testing.T) {
 	p := NewMessageParser()
 
 	tests := []struct {
-		name            string
-		word            uint32
-		expectCmd       uint8
-		expectSubcmd    uint8
-		expectFromUnit  uint16
-		expectToUnit    uint16
-		expectEmerg     bool
-		expectAll       bool
-		expectPriority  bool
+		name           string
+		word           uint32
+		expectCmd      uint8
+		expectSubcmd   uint8
+		expectFromUnit uint16
+		expectToUnit   uint16
+		expectEmerg    bool
+		expectAll      bool
+		expectPriority bool
 	}{
 		{
 			"Simple message",
@@ -305,10 +305,10 @@ func TestExtractPayloadFields(t *testing.T) {
 	p := NewMessageParser()
 
 	tests := []struct {
-		name       string
-		cmd        uint8
-		payload    []byte
-		checkKey   string
+		name     string
+		cmd      uint8
+		payload  []byte
+		checkKey string
 	}{
 		{
 			"Voice grant with frequency",

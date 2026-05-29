@@ -115,11 +115,17 @@ type FleetSyncOptions struct {
 
 // FleetSyncStats is a point-in-time snapshot of exporter counters.
 type FleetSyncStats struct {
-	Queued   int            `json:"queued"`
-	Dropped  int            `json:"dropped"`
-	Sent     map[string]int `json:"sent"`
-	Failed   map[string]int `json:"failed"`
-	Backends []string       `json:"backends"`
+	Queued                          int                `json:"queued"`
+	Dropped                         int                `json:"dropped"`
+	DroppedBySource                 map[string]int     `json:"dropped_by_source"`
+	DroppedPerMinuteBySource        map[string]float64 `json:"dropped_per_minute_by_source,omitempty"`
+	DroppedLast60sBySource          map[string]int     `json:"dropped_last_60s_by_source,omitempty"`
+	DroppedPerMinuteLast60sBySource map[string]float64 `json:"dropped_per_minute_last_60s_by_source,omitempty"`
+	Sent                            map[string]int     `json:"sent"`
+	Failed                          map[string]int     `json:"failed"`
+	Attempts                        map[string]int     `json:"attempts"`
+	Retried                         map[string]int     `json:"retried"`
+	Backends                        []string           `json:"backends"`
 }
 
 // FleetSyncExporter fans decoded FleetSync frames out to outbound
@@ -137,11 +143,16 @@ type FleetSyncExporter struct {
 	runDone   chan struct{}
 	closeOnce sync.Once
 
-	mu      sync.Mutex
-	queued  int
-	dropped int
-	sent    map[string]int
-	failed  map[string]int
+	mu                  sync.Mutex
+	startedAt           time.Time
+	queued              int
+	dropped             int
+	droppedBySource     map[string]int
+	recentDropsBySource map[string][]time.Time
+	sent                map[string]int
+	failed              map[string]int
+	attempts            map[string]int
+	retried             map[string]int
 }
 
 func NewFleetSyncExporter(opts FleetSyncOptions) (*FleetSyncExporter, error) {
@@ -161,16 +172,21 @@ func NewFleetSyncExporter(opts FleetSyncOptions) (*FleetSyncExporter, error) {
 		opts.RetryBase = defaultRetryBase
 	}
 	f := &FleetSyncExporter{
-		bus:        opts.Bus,
-		log:        opts.Log,
-		backends:   opts.Backends,
-		maxRetries: opts.MaxRetries,
-		retryBase:  opts.RetryBase,
-		sub:        opts.Bus.Subscribe(),
-		jobs:       make(chan *FleetSyncEvent, defaultQueueDepth),
-		runDone:    make(chan struct{}),
-		sent:       make(map[string]int),
-		failed:     make(map[string]int),
+		bus:                 opts.Bus,
+		log:                 opts.Log,
+		backends:            opts.Backends,
+		maxRetries:          opts.MaxRetries,
+		retryBase:           opts.RetryBase,
+		startedAt:           time.Now(),
+		sub:                 opts.Bus.Subscribe(),
+		jobs:                make(chan *FleetSyncEvent, defaultQueueDepth),
+		runDone:             make(chan struct{}),
+		droppedBySource:     make(map[string]int),
+		recentDropsBySource: make(map[string][]time.Time),
+		sent:                make(map[string]int),
+		failed:              make(map[string]int),
+		attempts:            make(map[string]int),
+		retried:             make(map[string]int),
 	}
 	for i := 0; i < opts.Workers; i++ {
 		f.wg.Add(1)
@@ -228,9 +244,29 @@ func (f *FleetSyncExporter) dispatch(msg *FleetSyncEvent) {
 	default:
 		f.mu.Lock()
 		f.dropped++
+		f.droppedBySource[msg.Source]++
+		now := time.Now()
+		f.recentDropsBySource[msg.Source] = append(f.recentDropsBySource[msg.Source], now)
+		f.pruneRecentDropsLocked(now.Add(-60 * time.Second))
 		f.mu.Unlock()
 		f.log.Warn("broadcast/fleetsync: export queue full, dropping message",
 			"source", msg.Source, "command", msg.Command, "from_unit", msg.FromUnit)
+	}
+}
+
+func (f *FleetSyncExporter) pruneRecentDropsLocked(cutoff time.Time) {
+	for source, stamps := range f.recentDropsBySource {
+		idx := 0
+		for idx < len(stamps) && stamps[idx].Before(cutoff) {
+			idx++
+		}
+		if idx == len(stamps) {
+			delete(f.recentDropsBySource, source)
+			continue
+		}
+		if idx > 0 {
+			f.recentDropsBySource[source] = append([]time.Time(nil), stamps[idx:]...)
+		}
 	}
 }
 
@@ -249,6 +285,12 @@ func (f *FleetSyncExporter) worker() {
 func (f *FleetSyncExporter) sendWithRetry(backend FleetSyncBackend, msg *FleetSyncEvent) {
 	backoff := f.retryBase
 	for attempt := 0; attempt <= f.maxRetries; attempt++ {
+		f.mu.Lock()
+		f.attempts[backend.Name()]++
+		if attempt > 0 {
+			f.retried[backend.Name()]++
+		}
+		f.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		err := backend.Send(ctx, msg)
 		cancel()
@@ -276,16 +318,42 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := FleetSyncStats{
-		Queued:  f.queued,
-		Dropped: f.dropped,
-		Sent:    make(map[string]int, len(f.sent)),
-		Failed:  make(map[string]int, len(f.failed)),
+		Queued:                          f.queued,
+		Dropped:                         f.dropped,
+		DroppedBySource:                 make(map[string]int, len(f.droppedBySource)),
+		DroppedPerMinuteBySource:        make(map[string]float64, len(f.droppedBySource)),
+		DroppedLast60sBySource:          make(map[string]int, len(f.recentDropsBySource)),
+		DroppedPerMinuteLast60sBySource: make(map[string]float64, len(f.recentDropsBySource)),
+		Sent:                            make(map[string]int, len(f.sent)),
+		Failed:                          make(map[string]int, len(f.failed)),
+		Attempts:                        make(map[string]int, len(f.attempts)),
+		Retried:                         make(map[string]int, len(f.retried)),
+	}
+	mins := time.Since(f.startedAt).Minutes()
+	if mins <= 0 {
+		mins = 1.0 / 60.0
+	}
+	now := time.Now()
+	f.pruneRecentDropsLocked(now.Add(-60 * time.Second))
+	for key, value := range f.droppedBySource {
+		out.DroppedBySource[key] = value
+		out.DroppedPerMinuteBySource[key] = float64(value) / mins
+	}
+	for key, recent := range f.recentDropsBySource {
+		out.DroppedLast60sBySource[key] = len(recent)
+		out.DroppedPerMinuteLast60sBySource[key] = float64(len(recent))
 	}
 	for key, value := range f.sent {
 		out.Sent[key] = value
 	}
 	for key, value := range f.failed {
 		out.Failed[key] = value
+	}
+	for key, value := range f.attempts {
+		out.Attempts[key] = value
+	}
+	for key, value := range f.retried {
+		out.Retried[key] = value
 	}
 	for _, backend := range f.backends {
 		out.Backends = append(out.Backends, backend.Name())

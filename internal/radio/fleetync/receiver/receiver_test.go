@@ -147,4 +147,24 @@ func TestPublishNilMessageIsIgnored(t *testing.T) {
 	}
 }
 
+func TestMetricsSnapshot(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	r, err := New(Options{InputRateHz: 2_400_000, Bus: bus, SourceName: "utilities-east"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if r.Source() != "utilities-east" {
+		t.Fatalf("Source=%q want %q", r.Source(), "utilities-east")
+	}
+	r.publish(&dummyMsg)
+	m := r.Metrics()
+	if m.MessagesEmitted != 1 {
+		t.Fatalf("MessagesEmitted=%d want 1", m.MessagesEmitted)
+	}
+	if len(m.Demod.ChannelStates) != fleetync.ND {
+		t.Fatalf("ChannelStates len=%d want %d", len(m.Demod.ChannelStates), fleetync.ND)
+	}
+}
+
 var dummyMsg = fleetync.Message{Timestamp: time.Now(), Version: fleetync.VersionFleetSync1}

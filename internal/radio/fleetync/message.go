@@ -14,10 +14,11 @@ func NewMessageParser() *MessageParser {
 
 // ParseStatusWord interprets a 32-bit status word into structured fields.
 // Status word format (FleetSync standard):
-//   [31:24] Subcommand (with flags for emergency, all-flag, priority)
-//   [23:16] Command
-//   [15:8]  To Unit ID (lower 8 bits)
-//   [7:0]   From Unit ID (lower 8 bits)
+//
+//	[31:24] Subcommand (with flags for emergency, all-flag, priority)
+//	[23:16] Command
+//	[15:8]  To Unit ID (lower 8 bits)
+//	[7:0]   From Unit ID (lower 8 bits)
 func (p *MessageParser) ParseStatusWord(word uint32) *Message {
 	msg := &Message{
 		Command:    uint8((word >> 16) & 0xFF),

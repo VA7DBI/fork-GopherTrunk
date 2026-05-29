@@ -17,6 +17,7 @@ type FleetSyncProvider interface {
 	ListFleetSyncMessages(filter storage.FleetSyncFilter) ([]storage.FleetSyncMessage, error)
 	GetFleetSyncMessage(id int64) (storage.FleetSyncMessage, error)
 	FleetSyncStats(filter storage.FleetSyncFilter) (storage.FleetSyncStats, error)
+	FleetSyncRuntimeStats() FleetSyncRuntimeStatsDTO
 }
 
 // FleetSyncMessageDTO is the JSON wire shape for FleetSync log endpoints.
@@ -45,6 +46,52 @@ type FleetSyncStatsDTO struct {
 	FirstSeen time.Time                      `json:"first_seen"`
 	LastSeen  time.Time                      `json:"last_seen"`
 	Commands  []storage.FleetSyncCommandStat `json:"commands"`
+	Runtime   FleetSyncRuntimeStatsDTO       `json:"runtime"`
+}
+
+// FleetSyncRuntimeStatsDTO captures live decoder/receiver telemetry.
+type FleetSyncRuntimeStatsDTO struct {
+	MessagesEmitted uint64                            `json:"messages_emitted"`
+	TotalSamples    int64                             `json:"total_samples"`
+	TotalMessagesRx int64                             `json:"total_messages_rx"`
+	SyncErrors      int64                             `json:"sync_errors"`
+	CRCErrors       int64                             `json:"crc_errors"`
+	LastMessageTime time.Time                         `json:"last_message_time"`
+	MessageRate     float64                           `json:"message_rate"`
+	Channels        []FleetSyncRuntimeChannelStatsDTO `json:"channels,omitempty"`
+	Export          FleetSyncExportRuntimeStatsDTO    `json:"export"`
+}
+
+// FleetSyncRuntimeChannelStatsDTO is per-receiver live telemetry.
+type FleetSyncRuntimeChannelStatsDTO struct {
+	Source          string    `json:"source"`
+	MessagesEmitted uint64    `json:"messages_emitted"`
+	TotalSamples    int64     `json:"total_samples"`
+	TotalMessagesRx int64     `json:"total_messages_rx"`
+	SyncErrors      int64     `json:"sync_errors"`
+	CRCErrors       int64     `json:"crc_errors"`
+	LastMessageTime time.Time `json:"last_message_time"`
+	MessageRate     float64   `json:"message_rate"`
+}
+
+// FleetSyncExportRuntimeStatsDTO is exporter/back-end health telemetry.
+type FleetSyncExportRuntimeStatsDTO struct {
+	Queued                          int                              `json:"queued"`
+	Dropped                         int                              `json:"dropped"`
+	DroppedBySource                 map[string]int                   `json:"dropped_by_source,omitempty"`
+	DroppedPerMinuteBySource        map[string]float64               `json:"dropped_per_minute_by_source,omitempty"`
+	DroppedLast60sBySource          map[string]int                   `json:"dropped_last_60s_by_source,omitempty"`
+	DroppedPerMinuteLast60sBySource map[string]float64               `json:"dropped_per_minute_last_60s_by_source,omitempty"`
+	Backends                        []FleetSyncExportBackendStatsDTO `json:"backends,omitempty"`
+}
+
+// FleetSyncExportBackendStatsDTO captures per-backend delivery counters.
+type FleetSyncExportBackendStatsDTO struct {
+	Name     string `json:"name"`
+	Sent     int    `json:"sent"`
+	Failed   int    `json:"failed"`
+	Attempts int    `json:"attempts"`
+	Retried  int    `json:"retried"`
 }
 
 func fleetSyncMessageToDTO(m storage.FleetSyncMessage) FleetSyncMessageDTO {
@@ -139,6 +186,7 @@ func (s *Server) handleFleetSyncStats(w http.ResponseWriter, r *http.Request) {
 		FirstSeen: stats.FirstSeen,
 		LastSeen:  stats.LastSeen,
 		Commands:  stats.Commands,
+		Runtime:   s.fleetsync.FleetSyncRuntimeStats(),
 	})
 }
 

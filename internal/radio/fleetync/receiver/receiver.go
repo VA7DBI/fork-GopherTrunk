@@ -52,6 +52,12 @@ type Receiver struct {
 	messagesEmitted atomic.Uint64
 }
 
+// RuntimeMetrics is a snapshot of receiver-level telemetry.
+type RuntimeMetrics struct {
+	MessagesEmitted uint64
+	Demod           fleetync.FSyncMetrics
+}
+
 // New constructs a receiver and configures demodulator mode.
 func New(opts Options) (*Receiver, error) {
 	if opts.Bus == nil {
@@ -128,6 +134,17 @@ func (r *Receiver) processChunk(chunk []complex64) {
 
 // MessagesEmitted returns the number of bus events published.
 func (r *Receiver) MessagesEmitted() uint64 { return r.messagesEmitted.Load() }
+
+// Source returns the configured receiver source label.
+func (r *Receiver) Source() string { return r.source }
+
+// Metrics returns receiver runtime telemetry for diagnostics.
+func (r *Receiver) Metrics() RuntimeMetrics {
+	return RuntimeMetrics{
+		MessagesEmitted: r.messagesEmitted.Load(),
+		Demod:           r.demod.Metrics(),
+	}
+}
 
 func (r *Receiver) publish(msg *fleetync.Message) {
 	if msg == nil {

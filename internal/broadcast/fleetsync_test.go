@@ -145,6 +145,7 @@ type fakeFleetSyncBackend struct {
 	name      string
 	filter    sourceFilter
 	failFirst int
+	blockFor  time.Duration
 
 	mu       sync.Mutex
 	attempts int
@@ -156,6 +157,9 @@ func (f *fakeFleetSyncBackend) AcceptsSource(source string) bool { return f.filt
 func (f *fakeFleetSyncBackend) Send(_ context.Context, msg *FleetSyncEvent) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.blockFor > 0 {
+		time.Sleep(f.blockFor)
+	}
 	f.attempts++
 	if f.attempts <= f.failFirst {
 		return errors.New("transient failure")
@@ -238,8 +242,82 @@ func TestFleetSyncExporterRetriesTransientFailure(t *testing.T) {
 	if backend.tries() != 3 {
 		t.Fatalf("attempts=%d want 3", backend.tries())
 	}
-	if stats := exporter.Stats(); stats.Sent["hook"] != 1 || stats.Failed["hook"] != 0 {
+	if stats := exporter.Stats(); stats.Sent["hook"] != 1 || stats.Failed["hook"] != 0 || stats.Attempts["hook"] != 3 || stats.Retried["hook"] != 2 {
 		t.Fatalf("stats=%+v", stats)
+	}
+}
+
+func TestFleetSyncExporterRecordsPermanentFailure(t *testing.T) {
+	bus := events.NewBus(16)
+	defer bus.Close()
+	backend := &fakeFleetSyncBackend{name: "hook", failFirst: 10}
+	exporter, err := NewFleetSyncExporter(FleetSyncOptions{Bus: bus, Backends: []FleetSyncBackend{backend}, RetryBase: time.Millisecond, MaxRetries: 2})
+	if err != nil {
+		t.Fatalf("NewFleetSyncExporter: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = exporter.Run(ctx) }()
+	defer func() {
+		cancel()
+		_ = exporter.Close()
+	}()
+
+	bus.Publish(events.Event{Kind: events.KindFleetSyncMessage, Payload: testFleetSyncMessage()})
+	waitFor(t, func() bool {
+		stats := exporter.Stats()
+		return stats.Failed["hook"] == 1
+	})
+	stats := exporter.Stats()
+	if stats.Sent["hook"] != 0 || stats.Failed["hook"] != 1 {
+		t.Fatalf("stats=%+v", stats)
+	}
+	if stats.Attempts["hook"] != 3 || stats.Retried["hook"] != 2 {
+		t.Fatalf("retry stats=%+v", stats)
+	}
+}
+
+func TestFleetSyncExporterTracksDroppedBySource(t *testing.T) {
+	bus := events.NewBus(128)
+	defer bus.Close()
+	backend := &fakeFleetSyncBackend{name: "hook", blockFor: 40 * time.Millisecond}
+	exporter, err := NewFleetSyncExporter(FleetSyncOptions{Bus: bus, Backends: []FleetSyncBackend{backend}, Workers: 1, RetryBase: time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewFleetSyncExporter: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = exporter.Run(ctx) }()
+	defer func() {
+		cancel()
+		_ = exporter.Close()
+	}()
+
+	msg := testFleetSyncMessage()
+	for i := 0; i < 1200; i++ {
+		m := msg
+		if i%2 == 0 {
+			m.Source = "utilities-east"
+		} else {
+			m.Source = "utilities-west"
+		}
+		bus.Publish(events.Event{Kind: events.KindFleetSyncMessage, Payload: m})
+	}
+
+	waitFor(t, func() bool {
+		stats := exporter.Stats()
+		return stats.Dropped > 0
+	})
+	stats := exporter.Stats()
+	if stats.DroppedBySource["utilities-east"] == 0 || stats.DroppedBySource["utilities-west"] == 0 {
+		t.Fatalf("dropped_by_source=%+v dropped=%d", stats.DroppedBySource, stats.Dropped)
+	}
+	if stats.DroppedPerMinuteBySource["utilities-east"] <= 0 || stats.DroppedPerMinuteBySource["utilities-west"] <= 0 {
+		t.Fatalf("dropped_per_minute_by_source=%+v", stats.DroppedPerMinuteBySource)
+	}
+	if stats.DroppedLast60sBySource["utilities-east"] <= 0 || stats.DroppedLast60sBySource["utilities-west"] <= 0 {
+		t.Fatalf("dropped_last_60s_by_source=%+v", stats.DroppedLast60sBySource)
+	}
+	if stats.DroppedPerMinuteLast60sBySource["utilities-east"] <= 0 || stats.DroppedPerMinuteLast60sBySource["utilities-west"] <= 0 {
+		t.Fatalf("dropped_per_minute_last_60s_by_source=%+v", stats.DroppedPerMinuteLast60sBySource)
 	}
 }
 

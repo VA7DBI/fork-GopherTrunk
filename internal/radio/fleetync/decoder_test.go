@@ -160,8 +160,8 @@ func TestEmergencyFlagParsing(t *testing.T) {
 	dec := newDecoder()
 
 	tests := []struct {
-		name      string
-		subcommand uint8
+		name        string
+		subcommand  uint8
 		expectEmerg bool
 	}{
 		{"Emergency bit set", 0x80, true},
@@ -231,8 +231,8 @@ func TestCommandParsing(t *testing.T) {
 	dec := newDecoder()
 
 	tests := []struct {
-		name    string
-		word1   uint32
+		name      string
+		word1     uint32
 		expectCmd uint8
 	}{
 		{"Command 0x00", 0x00000000, 0x00},

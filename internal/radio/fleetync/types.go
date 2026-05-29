@@ -82,6 +82,13 @@ type Decoder struct {
 
 	// Callback invoked on successful message decode
 	MessageFunc func(*Message)
+
+	// Runtime counters for telemetry/analytics.
+	totalSamples   int64
+	totalMessages  int64
+	syncErrors     int64
+	crcErrors      int64
+	lastMessageUTC time.Time
 }
 
 // FSyncMetrics holds performance and diagnostic information
