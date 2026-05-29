@@ -138,6 +138,8 @@ type FleetSyncStats struct {
 	AttemptsLast60s                 map[string]int     `json:"attempts_last_60s,omitempty"`
 	Retried                         map[string]int     `json:"retried"`
 	RetriedLast60s                  map[string]int     `json:"retried_last_60s,omitempty"`
+	RetriedLast60sTotal             int                `json:"retried_last_60s_total,omitempty"`
+	RetryRateLast60s                float64            `json:"retry_rate_last_60s,omitempty"`
 	Backends                        []string           `json:"backends"`
 }
 
@@ -406,11 +408,16 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	for key, recent := range f.recentAttempts {
 		out.AttemptsLast60s[key] = len(recent)
 	}
+	attemptsLast60sTotal := 0
+	for _, count := range out.AttemptsLast60s {
+		attemptsLast60sTotal += count
+	}
 	for key, value := range f.retried {
 		out.Retried[key] = value
 	}
 	for key, recent := range f.recentRetried {
 		out.RetriedLast60s[key] = len(recent)
+		out.RetriedLast60sTotal += len(recent)
 	}
 	for _, backend := range f.backends {
 		out.Backends = append(out.Backends, backend.Name())
@@ -419,6 +426,9 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	if rollingOutcomes > 0 {
 		out.SuccessRateLast60s = float64(out.SentLast60sTotal) / float64(rollingOutcomes)
 		out.FailureRateLast60s = float64(out.FailedLast60sTotal) / float64(rollingOutcomes)
+	}
+	if attemptsLast60sTotal > 0 {
+		out.RetryRateLast60s = float64(out.RetriedLast60sTotal) / float64(attemptsLast60sTotal)
 	}
 	return out
 }

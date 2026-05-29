@@ -2123,6 +2123,8 @@ func (p fleetsyncProvider) FleetSyncRuntimeStats() api.FleetSyncRuntimeStatsDTO 
 		out.Export.FailedLast60sTotal = es.FailedLast60sTotal
 		out.Export.SuccessRateLast60s = es.SuccessRateLast60s
 		out.Export.FailureRateLast60s = es.FailureRateLast60s
+		out.Export.RetriedLast60sTotal = es.RetriedLast60sTotal
+		out.Export.RetryRateLast60s = es.RetryRateLast60s
 		out.Export.DroppedLast60sTotal = es.DroppedLast60sTotal
 		out.Export.DroppedPerMinuteLast60sTotal = es.DroppedPerMinuteLast60sTotal
 		out.Export.DroppedBySource = make(map[string]int, len(es.DroppedBySource))
