@@ -186,6 +186,20 @@ type Options struct {
 	// CQPSK path. <=0 uses defaultGardnerGain. Ignored when
 	// DemodMode == DemodC4FM (the C4FM path uses Mueller-Müller).
 	GardnerGain float64
+	// EnableDecisionDirectedAFC opts the C4FM path into the
+	// decision-directed AFC (DDA) layered on top of CoarseAFC.
+	// Default false: the receiver runs CoarseAFC-alone, the
+	// behaviour that predates the DDA. The DDA is currently
+	// experimental and OFF by default because it can stably
+	// false-lock — on the issue #402 capture it held a wrong offset
+	// and broke control-channel lock that CoarseAFC-alone recovered.
+	// The receiver and the control channel are feed-forward siblings
+	// with no FSW / CC-lock feedback into the demod, so nothing
+	// internal catches a biased-but-self-consistent eye, and the DDA
+	// commits a handoff to it. Leave this off until the eye-skew root
+	// cause is pinned and the handoff is gated on a real lock signal.
+	// Ignored when DemodMode == DemodCQPSK (no AFC stage). Issue #402.
+	EnableDecisionDirectedAFC bool
 	// SoftSink, when non-nil, receives the per-symbol soft samples
 	// produced by the matched filter + symbol-clock recovery, just
 	// before slicing. The C4FM path emits the FM-discriminator +
@@ -348,7 +362,13 @@ func New(opts Options) *Receiver {
 		// which carry a DC gain of ~sps relative to the
 		// FM-discriminator input — same scale factor that drives
 		// the existing AGC's target=slicerScale·2/3 calibration.
-		if slicerScale > 0 {
+		//
+		// Allocated only when the caller opts in: with r.dda nil the
+		// Process loop skips every DDA branch (all guarded on
+		// r.dda != nil / ddaActive / ddaLearning) and runs
+		// CoarseAFC-alone. Off by default — see Options.
+		// EnableDecisionDirectedAFC. Issue #402.
+		if opts.EnableDecisionDirectedAFC && slicerScale > 0 {
 			r.dda = demod.NewDecisionDirectedAFC(maxAFCOffsetHz*sps, opts.SampleRateHz, slicerScale)
 			// Nominal post-AGC values for the four slicer
 			// decisions. Indexed by ((sliced+3)/2) — maps
@@ -568,6 +588,26 @@ func (r *Receiver) AFCBiasRadPerSample() float64 {
 		sum += r.dda.Offset()
 	}
 	return sum
+}
+
+// AFCOffsetHz returns the AFC's current estimate of the *true* carrier
+// frequency offset in Hz. This is the physically meaningful number — a
+// static carrier error of Δf Hz reads back as ≈Δf here.
+//
+// It is NOT AFCBiasRadPerSample()·Fs/(2π): the C4FM matched filter
+// (demod.P25C4FMRxTaps) has a DC gain of sps, so the AFC — which tracks
+// on the matched-filter output — carries a value sps× larger than the
+// raw FM-discriminator offset. The true offset divides that gain back
+// out, which (since sps = Fs/SymbolRate) reduces to
+//
+//	AFCBiasRadPerSample · SymbolRate / (2π)
+//
+// independent of the sample rate. Diagnostics that reported
+// AFCBiasRadPerSample·Fs/(2π) over-stated the offset by ≈sps (≈10× at
+// 48 kHz / 4800 baud) and sent issue #402 chasing a phantom ~10 kHz
+// error that was really ~1 kHz. Returns 0 on the CQPSK path (no AFC).
+func (r *Receiver) AFCOffsetHz() float64 {
+	return r.AFCBiasRadPerSample() * SymbolRate / (2.0 * math.Pi)
 }
 
 // AGCLevel returns the C4FM symbol-AGC's current EMA estimate of

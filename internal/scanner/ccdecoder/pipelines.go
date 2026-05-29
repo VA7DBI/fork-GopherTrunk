@@ -235,6 +235,11 @@ func newP25Phase1Pipeline(opts PipelineOptions) (ProtocolPipeline, error) {
 		// after the matched filter so DeviationHz isn't used.
 		DeviationHz: 1800.0,
 		DemodMode:   demodMode,
+		// EnableDecisionDirectedAFC intentionally left false: the
+		// daemon runs CoarseAFC-alone (the pre-DDA behaviour). The DDA
+		// can stably false-lock with no FSW/CC-lock feedback to catch
+		// it and was a net regression on the issue #402 capture; keep
+		// it off here until the eye-skew root cause is pinned.
 		DibitSink: func(dibits []uint8, baseIdx int) {
 			cc.Process(dibits, baseIdx)
 		},

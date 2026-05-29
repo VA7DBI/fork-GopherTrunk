@@ -431,9 +431,10 @@ func TestReceiverDDAHandoffFiresOnCleanLockedStream(t *testing.T) {
 
 	var totalDibits int
 	r := New(Options{
-		SampleRateHz: sr,
-		DeviationHz:  dev,
-		DibitSink:    func(d []uint8, _ int) { totalDibits += len(d) },
+		SampleRateHz:              sr,
+		DeviationHz:               dev,
+		EnableDecisionDirectedAFC: true,
+		DibitSink:                 func(d []uint8, _ int) { totalDibits += len(d) },
 	})
 	// Feed in chunks — the freeze-then-handoff state machine advances
 	// per Process call, so a single whole-stream call can't exercise it
@@ -460,9 +461,10 @@ func TestReceiverDDAHandoffFiresOnCleanLockedStream(t *testing.T) {
 // slicer.
 func TestReceiverDDAResetClearsHandoffState(t *testing.T) {
 	r := New(Options{
-		SampleRateHz: 48_000,
-		DeviationHz:  1800,
-		Sink:         func([]byte) {},
+		SampleRateHz:              48_000,
+		DeviationHz:               1800,
+		EnableDecisionDirectedAFC: true,
+		Sink:                      func([]byte) {},
 	})
 	// Drive enough traffic through (chunked, so the handoff fires) to
 	// populate the DDA state Reset must clear.
@@ -549,9 +551,10 @@ func TestReceiverFreezesCoarseAFCAtWarmupBoundary(t *testing.T) {
 	iq = demod.ApplyImpairments(iq, sr, demod.Impairments{FreqOffsetHz: offsetHz})
 
 	r := New(Options{
-		SampleRateHz: sr,
-		DeviationHz:  dev,
-		DibitSink:    func([]uint8, int) {},
+		SampleRateHz:              sr,
+		DeviationHz:               dev,
+		EnableDecisionDirectedAFC: true,
+		DibitSink:                 func([]uint8, int) {},
 	})
 
 	var afcAtLearnStart, afcBeforeHandoff float64
@@ -619,9 +622,10 @@ func TestReceiverHandoffDataImmuneAcrossUnbalancedLearning(t *testing.T) {
 		iq := demod.ModulateP25C4FM(dibits, sr, dev)
 		iq = demod.ApplyImpairments(iq, sr, demod.Impairments{FreqOffsetHz: offsetHz})
 		r := New(Options{
-			SampleRateHz: sr,
-			DeviationHz:  dev,
-			DibitSink:    func([]uint8, int) {},
+			SampleRateHz:              sr,
+			DeviationHz:               dev,
+			EnableDecisionDirectedAFC: true,
+			DibitSink:                 func([]uint8, int) {},
 		})
 		feedChunked(r, iq, 200, nil)
 		if !r.ddaActive {
@@ -655,7 +659,7 @@ func TestReceiverHandoffReadyBlocksBiasedEye(t *testing.T) {
 	slicerScale := 2.0 * math.Pi * dev / sr
 
 	newRx := func() *Receiver {
-		return New(Options{SampleRateHz: sr, DeviationHz: dev, DibitSink: func([]uint8, int) {}})
+		return New(Options{SampleRateHz: sr, DeviationHz: dev, EnableDecisionDirectedAFC: true, DibitSink: func([]uint8, int) {}})
 	}
 
 	// Drive the DDA directly with the same call shape Process uses, so
@@ -708,7 +712,7 @@ func TestReceiverWatchdogReArmsOnRunawayDrift(t *testing.T) {
 	cleanIQ := demod.ModulateP25C4FM(clean, sr, dev)
 	cleanIQ = demod.ApplyImpairments(cleanIQ, sr, demod.Impairments{FreqOffsetHz: offsetHz})
 
-	r := New(Options{SampleRateHz: sr, DeviationHz: dev, DibitSink: func([]uint8, int) {}})
+	r := New(Options{SampleRateHz: sr, DeviationHz: dev, EnableDecisionDirectedAFC: true, DibitSink: func([]uint8, int) {}})
 	feedChunked(r, cleanIQ, chunkSize, nil)
 	if !r.ddaActive {
 		t.Fatal("DDA never handed off on the clean stream")
@@ -727,5 +731,91 @@ func TestReceiverWatchdogReArmsOnRunawayDrift(t *testing.T) {
 
 	if r.ddaRearms <= rearmsBefore {
 		t.Errorf("watchdog never re-armed on a runaway-drift step (rearms=%d) — receiver can't fall back to CoarseAFC", r.ddaRearms)
+	}
+}
+
+// TestReceiverDDADisabledByDefault is the issue #402 regression guard:
+// without EnableDecisionDirectedAFC the C4FM path must run CoarseAFC-
+// alone (the pre-DDA behaviour) — no DDA allocated, no handoff, ever —
+// while still emitting dibits and tracking the carrier offset. The DDA
+// is opt-in because it can stably false-lock and broke CC lock on the
+// original capture; the default path must be the known-good one.
+func TestReceiverDDADisabledByDefault(t *testing.T) {
+	const (
+		sr       = 48_000.0
+		dev      = 1800.0
+		offsetHz = 1_500.0
+		nDibits  = 8_000
+	)
+	dibits := make([]uint8, nDibits)
+	for i := range dibits {
+		dibits[i] = uint8((i*7 + 3) & 3)
+	}
+	iq := demod.ModulateP25C4FM(dibits, sr, dev)
+	iq = demod.ApplyImpairments(iq, sr, demod.Impairments{FreqOffsetHz: offsetHz})
+
+	var totalDibits int
+	r := New(Options{
+		SampleRateHz: sr,
+		DeviationHz:  dev,
+		// EnableDecisionDirectedAFC left false — the default.
+		DibitSink: func(d []uint8, _ int) { totalDibits += len(d) },
+	})
+	if r.dda != nil {
+		t.Fatal("DDA was allocated with EnableDecisionDirectedAFC unset — default must be CoarseAFC-alone")
+	}
+	feedChunked(r, iq, 200, nil)
+
+	if totalDibits == 0 {
+		t.Fatal("CoarseAFC-only receiver emitted no dibits")
+	}
+	if r.ddaActive {
+		t.Error("ddaActive went true with the DDA disabled")
+	}
+	if r.ddaLearning {
+		t.Error("ddaLearning went true with the DDA disabled")
+	}
+	if r.ddaRearms != 0 {
+		t.Errorf("ddaRearms = %d with the DDA disabled, want 0", r.ddaRearms)
+	}
+	// CoarseAFC alone must still converge onto the offset.
+	if got := r.AFCBiasRadPerSample(); got <= 0 {
+		t.Errorf("AFCBiasRadPerSample = %.4f on a +%g Hz offset stream with CoarseAFC alone, want > 0", got, offsetHz)
+	}
+}
+
+// TestReceiverAFCOffsetHzUndoesMatchedFilterGain pins the issue #402
+// diagnostic correction: AFCOffsetHz must report the TRUE carrier
+// offset (~offsetHz), not the ≈sps×-inflated AFCBias·Fs/(2π) value the
+// state log used to print. That inflation sent three rounds of #402
+// chasing a phantom ~10 kHz error that was really ~1 kHz.
+func TestReceiverAFCOffsetHzUndoesMatchedFilterGain(t *testing.T) {
+	const (
+		sr       = 48_000.0
+		dev      = 1800.0
+		offsetHz = 1_500.0
+		nDibits  = 8_000
+	)
+	sps := sr / SymbolRate // 10
+	// Balanced stream so CoarseAFC converges cleanly onto the offset.
+	dibits := make([]uint8, nDibits)
+	for i := range dibits {
+		dibits[i] = uint8(i & 3)
+	}
+	iq := demod.ModulateP25C4FM(dibits, sr, dev)
+	iq = demod.ApplyImpairments(iq, sr, demod.Impairments{FreqOffsetHz: offsetHz})
+
+	r := New(Options{SampleRateHz: sr, DeviationHz: dev, DibitSink: func([]uint8, int) {}})
+	feedChunked(r, iq, 200, nil)
+
+	trueHz := r.AFCOffsetHz()
+	if math.Abs(trueHz-offsetHz)/offsetHz > 0.25 {
+		t.Errorf("AFCOffsetHz = %.1f Hz, want ≈ %g Hz (within 25%%) — true-offset conversion is wrong", trueHz, offsetHz)
+	}
+	// The old (wrong) Fs-form is ≈sps× larger; confirm AFCOffsetHz is
+	// NOT that value, i.e. the sps gain really was divided out.
+	oldForm := r.AFCBiasRadPerSample() * sr / (2 * math.Pi)
+	if ratio := oldForm / trueHz; math.Abs(ratio-sps) > 0.5 {
+		t.Errorf("old-form/AFCOffsetHz = %.2f, want ≈ sps = %.0f — AFCOffsetHz isn't dividing out the matched-filter gain", ratio, sps)
 	}
 }
