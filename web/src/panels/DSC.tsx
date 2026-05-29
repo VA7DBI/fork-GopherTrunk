@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fetchDSCMessages, type DSCMessage } from "../api/dsc";
+import { PositionMap, type MapPoint } from "../components/PositionMap";
 import { selectClientConfig, useShared } from "../store/shared";
 
 // DSC panel — list of recent decoded marine DSC sequences. The
@@ -40,6 +41,30 @@ export function DSC() {
     };
   }, [cfg]);
 
+  // DSC distress alerts are the only DSC sequence type that
+  // commonly carries a position; surface those alerts on the
+  // shared map with the high-visibility red marker so the
+  // operator's eye is drawn to them immediately.
+  const mapPoints = useMemo<MapPoint[]>(
+    () =>
+      messages
+        .filter(
+          (m) =>
+            m.has_position &&
+            typeof m.latitude === "number" &&
+            typeof m.longitude === "number",
+        )
+        .map((m) => ({
+          id: `dsc-${m.id}`,
+          latitude: m.latitude as number,
+          longitude: m.longitude as number,
+          kind: "dsc-distress" as const,
+          label: `MMSI ${String(m.self_mmsi).padStart(9, "0")}`,
+          detail: m.nature || m.format,
+        })),
+    [messages],
+  );
+
   return (
     <div className="space-y-3">
       <header className="flex items-center justify-between">
@@ -48,6 +73,8 @@ export function DSC() {
           {messages.length} sequence{messages.length === 1 ? "" : "s"}
         </span>
       </header>
+
+      {mapPoints.length > 0 && <PositionMap points={mapPoints} />}
 
       {error && (
         <div className="rounded border border-red-700/40 bg-red-900/20 text-red-200 text-xs px-3 py-2">

@@ -144,9 +144,13 @@ Spec references:
   joining identification + position + velocity rows over the
   last few minutes. Powers a "currently visible aircraft"
   panel distinct from the raw message log.
-- **Live map.** ADS-B positions naturally light up the same
-  Leaflet / MapLibre overlay APRS + AIS positions are planned
-  to share.
+## Live map
+
+Aircraft positions (once the per-ICAO CPR pairing lands) render
+as purple markers on the shared Leaflet map at the top of
+`/adsb` — callsign + altitude on hover, camera auto-fits to the
+current rowset. The same `<PositionMap>` component renders on
+`/aprs`, `/ais`, and `/dsc`.
 
 ## References
 

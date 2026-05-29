@@ -119,9 +119,15 @@ Spec references:
   multi-recipient calls). The single-frame parser covers the
   operational majority; the multi-frame path needs a per-MMSI
   buffer plus a sequence reassembler.
-- **Live map.** Distress alerts that include a position can
-  light up the same Leaflet / MapLibre overlay APRS + AIS
-  positions are planned to share.
+## Live map
+
+Distress alerts that included a position render as red,
+oversized markers on the shared Leaflet map at the top of
+`/dsc` — the larger radius + distress-red colour pull the
+operator's eye immediately. Nature of distress ("fire /
+explosion", "sinking", etc.) appears in the marker tooltip.
+The same `<PositionMap>` component renders on `/aprs`, `/ais`,
+and `/adsb`.
 
 ## References
 

@@ -9,6 +9,33 @@ for tagged releases.
 
 ### Added
 
+- **Live map across APRS / AIS / DSC / ADS-B.** Position-bearing
+  decoded rows now plot on a shared Leaflet map at the top of
+  each protocol panel. APRS station fixes (Mic-E + uncompressed
+  positions) render as blue markers; AIS Class A/B vessel
+  positions as cyan; DSC distress alerts that included a
+  position as red (oversized for high visibility); ADS-B
+  aircraft (once per-ICAO CPR pairing lands) as purple. Marker
+  tooltips render the per-protocol short label (callsign /
+  MMSI / ICAO+altitude / nature-of-distress); the camera
+  auto-fits to the active point set on every poll-refresh.
+  New `web/src/components/PositionMap.tsx` is a single
+  `<PositionMap points={...}>` component the four panels share —
+  one Leaflet `L.map` per panel, points → `L.circleMarker`
+  diff-update keyed by stable row IDs so a row-set update
+  patches markers in place instead of tearing them down. Adds
+  `leaflet@^1.9.4` + `@types/leaflet` as web deps; tiles served
+  from the standard OSM tile servers (compliant with the OSM
+  Tile Usage Policy for the single-user self-hosted operator
+  console; larger fleets configuring their own tile cache is
+  the obvious follow-up). XSS-safe tooltip rendering (HTML
+  escapes on all user-derived label / detail fields).
+  Tests: 5 new (`PositionMap.test.tsx` — container renders,
+  per-kind marker colours, distress radius / colour, HTML
+  escape on tooltips, camera auto-fit). All 115 web tests
+  passing (20 test files).
+
+
 - **ADS-B aviation — protocol layer + bus / storage / REST / panel
   scaffolding.** First slice of Phase 5 ADS-B: every commercial
   passenger flight, most general-aviation, and all military
