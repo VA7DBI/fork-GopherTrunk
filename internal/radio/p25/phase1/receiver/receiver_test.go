@@ -350,14 +350,16 @@ func TestC4FMSymbolAGCRescuesCollapsedSlicer(t *testing.T) {
 // an absolute per-bin threshold flaky.
 func TestAdaptiveSlicerNoRegressionOnCleanC4FMStream(t *testing.T) {
 	const (
-		// sps=200 (the regime TestC4FMSymbolAGC uses): ModulateP25C4FM
-		// only renders a clean, open four-level eye at high sps; at the
-		// production sps=10 its ISI closes the eye far more than real
-		// hardware does (the #402 capture is open at sps=10), so a low-sps
-		// synthetic eye is a degenerate baseline, not a no-regression bar.
-		sr  = 960_000.0
+		// sps=40 (sr=192000): ModulateP25C4FM only renders a clean, open
+		// four-level eye at high sps; at the production sps=10 its ISI
+		// closes the eye far more than real hardware does (the #402
+		// capture is open at sps=10), so a low-sps synthetic eye is a
+		// degenerate baseline, not a no-regression bar. sps=40 is the
+		// lowest that keeps the eye open here, chosen to bound the
+		// matched-filter cost (~sps²) so the test stays fast under -race.
+		sr  = 192_000.0
 		dev = 1800.0
-		n   = 8000
+		n   = 4000
 	)
 	dibits := make([]uint8, n)
 	for i := range dibits {
