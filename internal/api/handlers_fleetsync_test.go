@@ -241,7 +241,7 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 			DroppedLast60sBySource:          map[string]int{"utilities-west": 1},
 			DroppedPerMinuteLast60sBySource: map[string]float64{"utilities-west": 1.0},
 			Backends: []FleetSyncExportBackendStatsDTO{
-				{Name: "webhook-main", Sent: 8, Failed: 1, Attempts: 11, Retried: 3},
+				{Name: "webhook-main", Sent: 8, SentLast60s: 4, Failed: 1, FailedLast60s: 1, Attempts: 11, AttemptsLast60s: 5, Retried: 3, RetriedLast60s: 1},
 			},
 		},
 	}}
@@ -293,6 +293,9 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 	}
 	if got.Runtime.Export.DroppedLast60sTotal != 1 || got.Runtime.Export.DroppedPerMinuteLast60sTotal != 1.0 {
 		t.Fatalf("runtime.export.rolling_drop_totals = total=%d rate=%f", got.Runtime.Export.DroppedLast60sTotal, got.Runtime.Export.DroppedPerMinuteLast60sTotal)
+	}
+	if got.Runtime.Export.Backends[0].SentLast60s != 4 || got.Runtime.Export.Backends[0].FailedLast60s != 1 || got.Runtime.Export.Backends[0].AttemptsLast60s != 5 || got.Runtime.Export.Backends[0].RetriedLast60s != 1 {
+		t.Fatalf("runtime.export.backends rolling = %+v", got.Runtime.Export.Backends[0])
 	}
 }
 

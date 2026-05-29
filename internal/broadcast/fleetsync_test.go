@@ -245,6 +245,9 @@ func TestFleetSyncExporterRetriesTransientFailure(t *testing.T) {
 	if stats := exporter.Stats(); stats.Sent["hook"] != 1 || stats.Failed["hook"] != 0 || stats.Attempts["hook"] != 3 || stats.Retried["hook"] != 2 {
 		t.Fatalf("stats=%+v", stats)
 	}
+	if stats := exporter.Stats(); stats.SentLast60s["hook"] != 1 || stats.FailedLast60s["hook"] != 0 || stats.AttemptsLast60s["hook"] != 3 || stats.RetriedLast60s["hook"] != 2 {
+		t.Fatalf("rolling stats=%+v", stats)
+	}
 }
 
 func TestFleetSyncExporterRecordsPermanentFailure(t *testing.T) {
@@ -273,6 +276,9 @@ func TestFleetSyncExporterRecordsPermanentFailure(t *testing.T) {
 	}
 	if stats.Attempts["hook"] != 3 || stats.Retried["hook"] != 2 {
 		t.Fatalf("retry stats=%+v", stats)
+	}
+	if stats.AttemptsLast60s["hook"] != 3 || stats.RetriedLast60s["hook"] != 2 || stats.FailedLast60s["hook"] != 1 {
+		t.Fatalf("rolling retry stats=%+v", stats)
 	}
 }
 

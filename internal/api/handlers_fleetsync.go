@@ -92,11 +92,15 @@ type FleetSyncExportRuntimeStatsDTO struct {
 
 // FleetSyncExportBackendStatsDTO captures per-backend delivery counters.
 type FleetSyncExportBackendStatsDTO struct {
-	Name     string `json:"name"`
-	Sent     int    `json:"sent"`
-	Failed   int    `json:"failed"`
-	Attempts int    `json:"attempts"`
-	Retried  int    `json:"retried"`
+	Name            string `json:"name"`
+	Sent            int    `json:"sent"`
+	SentLast60s     int    `json:"sent_last_60s,omitempty"`
+	Failed          int    `json:"failed"`
+	FailedLast60s   int    `json:"failed_last_60s,omitempty"`
+	Attempts        int    `json:"attempts"`
+	AttemptsLast60s int    `json:"attempts_last_60s,omitempty"`
+	Retried         int    `json:"retried"`
+	RetriedLast60s  int    `json:"retried_last_60s,omitempty"`
 }
 
 func fleetSyncMessageToDTO(m storage.FleetSyncMessage) FleetSyncMessageDTO {

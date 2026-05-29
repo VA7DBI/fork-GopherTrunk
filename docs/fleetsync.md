@@ -118,9 +118,13 @@ Exporter health is included under `runtime.export`:
 - `backends[]` with per backend:
 - `name`
 - `sent`
+- `sent_last_60s`
 - `failed`
+- `failed_last_60s`
 - `attempts`
+- `attempts_last_60s`
 - `retried`
+- `retried_last_60s`
 
 ## Export
 

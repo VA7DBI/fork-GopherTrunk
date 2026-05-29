@@ -127,9 +127,13 @@ type FleetSyncStats struct {
 	DroppedLast60sBySource          map[string]int     `json:"dropped_last_60s_by_source,omitempty"`
 	DroppedPerMinuteLast60sBySource map[string]float64 `json:"dropped_per_minute_last_60s_by_source,omitempty"`
 	Sent                            map[string]int     `json:"sent"`
+	SentLast60s                     map[string]int     `json:"sent_last_60s,omitempty"`
 	Failed                          map[string]int     `json:"failed"`
+	FailedLast60s                   map[string]int     `json:"failed_last_60s,omitempty"`
 	Attempts                        map[string]int     `json:"attempts"`
+	AttemptsLast60s                 map[string]int     `json:"attempts_last_60s,omitempty"`
 	Retried                         map[string]int     `json:"retried"`
+	RetriedLast60s                  map[string]int     `json:"retried_last_60s,omitempty"`
 	Backends                        []string           `json:"backends"`
 }
 
@@ -155,9 +159,13 @@ type FleetSyncExporter struct {
 	droppedBySource     map[string]int
 	recentDropsBySource map[string][]time.Time
 	sent                map[string]int
+	recentSent          map[string][]time.Time
 	failed              map[string]int
+	recentFailed        map[string][]time.Time
 	attempts            map[string]int
+	recentAttempts      map[string][]time.Time
 	retried             map[string]int
+	recentRetried       map[string][]time.Time
 }
 
 func NewFleetSyncExporter(opts FleetSyncOptions) (*FleetSyncExporter, error) {
@@ -189,9 +197,13 @@ func NewFleetSyncExporter(opts FleetSyncOptions) (*FleetSyncExporter, error) {
 		droppedBySource:     make(map[string]int),
 		recentDropsBySource: make(map[string][]time.Time),
 		sent:                make(map[string]int),
+		recentSent:          make(map[string][]time.Time),
 		failed:              make(map[string]int),
+		recentFailed:        make(map[string][]time.Time),
 		attempts:            make(map[string]int),
+		recentAttempts:      make(map[string][]time.Time),
 		retried:             make(map[string]int),
+		recentRetried:       make(map[string][]time.Time),
 	}
 	for i := 0; i < opts.Workers; i++ {
 		f.wg.Add(1)
@@ -290,18 +302,25 @@ func (f *FleetSyncExporter) worker() {
 func (f *FleetSyncExporter) sendWithRetry(backend FleetSyncBackend, msg *FleetSyncEvent) {
 	backoff := f.retryBase
 	for attempt := 0; attempt <= f.maxRetries; attempt++ {
+		now := time.Now()
 		f.mu.Lock()
 		f.attempts[backend.Name()]++
+		f.recentAttempts[backend.Name()] = append(f.recentAttempts[backend.Name()], now)
 		if attempt > 0 {
 			f.retried[backend.Name()]++
+			f.recentRetried[backend.Name()] = append(f.recentRetried[backend.Name()], now)
 		}
+		f.pruneRecentBackendLocked(now.Add(-60 * time.Second))
 		f.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		err := backend.Send(ctx, msg)
 		cancel()
 		if err == nil {
+			now = time.Now()
 			f.mu.Lock()
 			f.sent[backend.Name()]++
+			f.recentSent[backend.Name()] = append(f.recentSent[backend.Name()], now)
+			f.pruneRecentBackendLocked(now.Add(-60 * time.Second))
 			f.mu.Unlock()
 			return
 		}
@@ -314,8 +333,11 @@ func (f *FleetSyncExporter) sendWithRetry(backend FleetSyncBackend, msg *FleetSy
 			backoff *= 2
 		}
 	}
+	now := time.Now()
 	f.mu.Lock()
 	f.failed[backend.Name()]++
+	f.recentFailed[backend.Name()] = append(f.recentFailed[backend.Name()], now)
+	f.pruneRecentBackendLocked(now.Add(-60 * time.Second))
 	f.mu.Unlock()
 }
 
@@ -332,9 +354,13 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 		DroppedLast60sBySource:          make(map[string]int, len(f.recentDropsBySource)),
 		DroppedPerMinuteLast60sBySource: make(map[string]float64, len(f.recentDropsBySource)),
 		Sent:                            make(map[string]int, len(f.sent)),
+		SentLast60s:                     make(map[string]int, len(f.recentSent)),
 		Failed:                          make(map[string]int, len(f.failed)),
+		FailedLast60s:                   make(map[string]int, len(f.recentFailed)),
 		Attempts:                        make(map[string]int, len(f.attempts)),
+		AttemptsLast60s:                 make(map[string]int, len(f.recentAttempts)),
 		Retried:                         make(map[string]int, len(f.retried)),
+		RetriedLast60s:                  make(map[string]int, len(f.recentRetried)),
 	}
 	mins := time.Since(f.startedAt).Minutes()
 	if mins <= 0 {
@@ -345,6 +371,7 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	}
 	now := time.Now()
 	f.pruneRecentDropsLocked(now.Add(-60 * time.Second))
+	f.pruneRecentBackendLocked(now.Add(-60 * time.Second))
 	for key, value := range f.droppedBySource {
 		out.DroppedBySource[key] = value
 		out.DroppedPerMinuteBySource[key] = float64(value) / mins
@@ -358,19 +385,54 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	for key, value := range f.sent {
 		out.Sent[key] = value
 	}
+	for key, recent := range f.recentSent {
+		out.SentLast60s[key] = len(recent)
+	}
 	for key, value := range f.failed {
 		out.Failed[key] = value
+	}
+	for key, recent := range f.recentFailed {
+		out.FailedLast60s[key] = len(recent)
 	}
 	for key, value := range f.attempts {
 		out.Attempts[key] = value
 	}
+	for key, recent := range f.recentAttempts {
+		out.AttemptsLast60s[key] = len(recent)
+	}
 	for key, value := range f.retried {
 		out.Retried[key] = value
+	}
+	for key, recent := range f.recentRetried {
+		out.RetriedLast60s[key] = len(recent)
 	}
 	for _, backend := range f.backends {
 		out.Backends = append(out.Backends, backend.Name())
 	}
 	return out
+}
+
+func (f *FleetSyncExporter) pruneRecentBackendLocked(cutoff time.Time) {
+	pruneTimestampMapLocked(f.recentSent, cutoff)
+	pruneTimestampMapLocked(f.recentFailed, cutoff)
+	pruneTimestampMapLocked(f.recentAttempts, cutoff)
+	pruneTimestampMapLocked(f.recentRetried, cutoff)
+}
+
+func pruneTimestampMapLocked(values map[string][]time.Time, cutoff time.Time) {
+	for key, stamps := range values {
+		idx := 0
+		for idx < len(stamps) && stamps[idx].Before(cutoff) {
+			idx++
+		}
+		if idx == len(stamps) {
+			delete(values, key)
+			continue
+		}
+		if idx > 0 {
+			values[key] = append([]time.Time(nil), stamps[idx:]...)
+		}
+	}
 }
 
 func (f *FleetSyncExporter) Close() error {
