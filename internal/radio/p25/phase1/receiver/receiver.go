@@ -226,6 +226,7 @@ type Receiver struct {
 	// Process for the bootstrap-then-refine choreography.
 	fm               *demod.FM
 	mf               *demod.C4FM
+	slicer           *demod.AdaptiveC4FMSlicer // adaptive 4-level slicer; nil on the legacy pre-scaled-fixture path
 	afc              *demod.CoarseAFC
 	dda              *demod.DecisionDirectedAFC
 	clock            *sync.MuellerMuller
@@ -315,6 +316,21 @@ func New(opts Options) *Receiver {
 		// with an inverse-sinc, so the matched filter is the spec C4FM
 		// receive filter (a sinc), not an RRC — issue #275.
 		r.mf = demod.NewC4FMP25(opts.SampleRateHz, slicerScale)
+		// Adaptive 4-level slicer (issue #402). Default-on for the
+		// real, DeviationHz-calibrated path: it tracks the observed
+		// per-symbol levels and slices at their midpoints, so an
+		// asymmetric / off-nominal eye that the fixed C4FM.Slice
+		// mis-decides (the MMR Site 9 +3-rail skew) decodes correctly.
+		// Skipped on the legacy pre-scaled-fixture path (slicerScale==1,
+		// DeviationHz unset), which keeps the fixed slicer so existing
+		// fixtures are byte-for-byte unchanged. The slicer warms up at,
+		// and is bounded + leak-regularized toward, the fixed nominal
+		// thresholds (see AdaptiveC4FMSlicer), so on a decodable (open)
+		// eye it matches or beats the fixed slicer and on a clean
+		// symmetric eye reproduces its decisions exactly.
+		if opts.DeviationHz > 0 {
+			r.slicer = demod.NewAdaptiveC4FMSlicer(slicerScale)
+		}
 		r.afc = demod.NewCoarseAFC(sps)
 		r.clock = sync.NewMuellerMuller(sps, gain)
 		// Symbol-AGC bridges the level mismatch between the spec-
@@ -452,7 +468,15 @@ func (r *Receiver) Process(iq []complex64) {
 		if r.softSink != nil {
 			r.softSink(r.symbols)
 		}
-		r.sliced = r.mf.SliceMany(r.sliced, r.symbols)
+		// Slice to the 4-level alphabet. The adaptive slicer (when
+		// allocated — the calibrated path) tracks the observed eye and
+		// slices at its midpoints; otherwise fall back to the matched
+		// filter's fixed-threshold slicer. Issue #402.
+		if r.slicer != nil {
+			r.sliced = r.slicer.SliceMany(r.sliced, r.symbols)
+		} else {
+			r.sliced = r.mf.SliceMany(r.sliced, r.symbols)
+		}
 		if cap(r.dibits) < len(r.sliced) {
 			r.dibits = make([]uint8, len(r.sliced))
 		} else {
@@ -624,6 +648,21 @@ func (r *Receiver) AGCLevel() float64 { return float64(r.agc.level) }
 // Returns 0 on the CQPSK path or when DeviationHz was unset.
 func (r *Receiver) AGCTarget() float64 { return float64(r.agc.target) }
 
+// SlicerLevels returns the adaptive 4-level slicer's current tracked
+// symbol levels in −3,−1,+1,+3 order (post-AGC soft units). On a clean
+// symmetric eye these sit near the nominal ±slicerScale / ±slicerScale/3;
+// an asymmetric site (issue #402) shows one rail stretched. The decision
+// thresholds the slicer uses are the midpoints between adjacent levels.
+// Returns the zero array on the CQPSK path or the legacy fixed-slicer
+// path (no adaptive slicer allocated). Issue #402 diagnostic.
+func (r *Receiver) SlicerLevels() [4]float64 {
+	if r.slicer == nil {
+		return [4]float64{}
+	}
+	lv := r.slicer.Levels()
+	return [4]float64{float64(lv[0]), float64(lv[1]), float64(lv[2]), float64(lv[3])}
+}
+
 // MMClockMu returns the Mueller-Müller symbol clock's current
 // sub-sample phase accumulator (in [-1, sps]). At steady state on a
 // noise-free input mu cycles deterministically through the symbol
@@ -665,6 +704,9 @@ func (r *Receiver) Reset() {
 	}
 	if r.dda != nil {
 		r.dda.Reset()
+	}
+	if r.slicer != nil {
+		r.slicer.Reset()
 	}
 	r.ddaLearning = false
 	r.ddaActive = false

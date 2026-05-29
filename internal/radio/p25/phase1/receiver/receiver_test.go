@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/demod"
+	"github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
 )
 
 // TestReceiverConstructsAndProcessesSilence is a smoke test: make
@@ -334,6 +335,83 @@ func TestC4FMSymbolAGCRescuesCollapsedSlicer(t *testing.T) {
 			t.Errorf("dibit value %d at %.1f%% (%d/%d) — slicer collapsed to outers (issue #275 Phase B regression)",
 				v, pct, hist[v], total)
 		}
+	}
+}
+
+// TestAdaptiveSlicerNoRegressionOnCleanC4FMStream is the receiver-level
+// no-regression guard for the issue #402 adaptive slicer. It captures the
+// receiver's post-AGC soft symbols from a clean, symmetric spec-P25 stream
+// (via SoftSink) and slices that identical stream both ways. The adaptive
+// slicer (default-on for the DeviationHz path) must decode at least as
+// faithfully as the fixed slicer it replaces — i.e. it adds no skew of its
+// own when there's no asymmetry to correct. Comparing the two slicers on
+// the same soft stream isolates the slicer from sps-dependent matched-
+// filter ISI, which neither slicer can fix and which would otherwise make
+// an absolute per-bin threshold flaky.
+func TestAdaptiveSlicerNoRegressionOnCleanC4FMStream(t *testing.T) {
+	const (
+		// sps=200 (the regime TestC4FMSymbolAGC uses): ModulateP25C4FM
+		// only renders a clean, open four-level eye at high sps; at the
+		// production sps=10 its ISI closes the eye far more than real
+		// hardware does (the #402 capture is open at sps=10), so a low-sps
+		// synthetic eye is a degenerate baseline, not a no-regression bar.
+		sr  = 960_000.0
+		dev = 1800.0
+		n   = 8000
+	)
+	dibits := make([]uint8, n)
+	for i := range dibits {
+		dibits[i] = uint8((i*7 + 3) & 3)
+	}
+	iq := demod.ModulateP25C4FM(dibits, sr, dev)
+
+	var soft []float32
+	r := New(Options{
+		SampleRateHz: sr,
+		DeviationHz:  dev,
+		SoftSink:     func(s []float32) { soft = append(soft, s...) },
+		DibitSink:    func([]uint8, int) {}, // required; the soft stream is what we score
+	})
+	r.Process(iq)
+	if len(soft) == 0 {
+		t.Fatalf("receiver produced no soft symbols")
+	}
+
+	slicerScale := r.AGCTarget() * 3.0 / 2.0 // target = slicerScale·2/3
+
+	fixed := demod.NewC4FMWithTaps([]float32{1}, slicerScale)
+	adapt := demod.NewAdaptiveC4FMSlicer(slicerScale)
+	fixedOut := fixed.SliceMany(nil, soft)
+	adaptOut := adapt.SliceMany(nil, soft)
+
+	var fixedHist, adaptHist [4]int
+	for _, s := range fixedOut {
+		fixedHist[phase1.SymbolToDibit(s)&3]++
+	}
+	for _, s := range adaptOut {
+		adaptHist[phase1.SymbolToDibit(s)&3]++
+	}
+	t.Logf("fixed dibit hist=%v  adaptive dibit hist=%v", fixedHist, adaptHist)
+
+	// Per bin, the adaptive slicer must not under-populate relative to the
+	// fixed slicer by more than a small margin (5 % of the bin) — it tracks
+	// a symmetric eye, so it should land within noise of the fixed result.
+	for v := 0; v < 4; v++ {
+		margin := fixedHist[v] / 20
+		if adaptHist[v] < fixedHist[v]-margin {
+			t.Errorf("dibit %d: adaptive %d < fixed %d − margin %d — slicer skewed a clean stream",
+				v, adaptHist[v], fixedHist[v], margin)
+		}
+	}
+
+	// On a symmetric eye the tracked levels must stay near nominal (no
+	// runaway): correct sign ordering and outer rails symmetric within 25 %.
+	lv := r.SlicerLevels()
+	if !(lv[0] < 0 && lv[1] < 0 && lv[2] > 0 && lv[3] > 0) {
+		t.Fatalf("slicer levels lost their sign ordering: %v", lv)
+	}
+	if asym := math.Abs(lv[3]+lv[0]) / lv[3]; asym > 0.25 {
+		t.Errorf("outer rails asymmetric by %.0f%% on a clean stream: %v", asym*100, lv)
 	}
 }
 
