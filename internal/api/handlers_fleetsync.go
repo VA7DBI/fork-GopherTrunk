@@ -83,6 +83,8 @@ type FleetSyncExportRuntimeStatsDTO struct {
 	QueueUtilization                float64                          `json:"queue_utilization"`
 	DroppedBySource                 map[string]int                   `json:"dropped_by_source,omitempty"`
 	DroppedPerMinuteBySource        map[string]float64               `json:"dropped_per_minute_by_source,omitempty"`
+	DroppedLast60sTotal             int                              `json:"dropped_last_60s_total,omitempty"`
+	DroppedPerMinuteLast60sTotal    float64                          `json:"dropped_per_minute_last_60s_total,omitempty"`
 	DroppedLast60sBySource          map[string]int                   `json:"dropped_last_60s_by_source,omitempty"`
 	DroppedPerMinuteLast60sBySource map[string]float64               `json:"dropped_per_minute_last_60s_by_source,omitempty"`
 	Backends                        []FleetSyncExportBackendStatsDTO `json:"backends,omitempty"`

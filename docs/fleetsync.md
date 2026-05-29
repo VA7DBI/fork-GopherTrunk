@@ -111,6 +111,8 @@ Exporter health is included under `runtime.export`:
 - `queue_utilization` (fraction of queue in use, from 0.0 to 1.0)
 - `dropped_by_source` (map of source label to dropped count)
 - `dropped_per_minute_by_source` (map of source label to average drops/minute since exporter start)
+- `dropped_last_60s_total` (total drops across all sources in the rolling last 60 seconds)
+- `dropped_per_minute_last_60s_total` (rolling last-60s total drops normalized to per-minute)
 - `dropped_last_60s_by_source` (map of source label to drops observed in the rolling last 60 seconds)
 - `dropped_per_minute_last_60s_by_source` (rolling last-60s drops normalized to per-minute)
 - `backends[]` with per backend:

@@ -122,6 +122,8 @@ type FleetSyncStats struct {
 	QueueUtilization                float64            `json:"queue_utilization"`
 	DroppedBySource                 map[string]int     `json:"dropped_by_source"`
 	DroppedPerMinuteBySource        map[string]float64 `json:"dropped_per_minute_by_source,omitempty"`
+	DroppedLast60sTotal             int                `json:"dropped_last_60s_total,omitempty"`
+	DroppedPerMinuteLast60sTotal    float64            `json:"dropped_per_minute_last_60s_total,omitempty"`
 	DroppedLast60sBySource          map[string]int     `json:"dropped_last_60s_by_source,omitempty"`
 	DroppedPerMinuteLast60sBySource map[string]float64 `json:"dropped_per_minute_last_60s_by_source,omitempty"`
 	Sent                            map[string]int     `json:"sent"`
@@ -348,9 +350,11 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 		out.DroppedPerMinuteBySource[key] = float64(value) / mins
 	}
 	for key, recent := range f.recentDropsBySource {
+		out.DroppedLast60sTotal += len(recent)
 		out.DroppedLast60sBySource[key] = len(recent)
 		out.DroppedPerMinuteLast60sBySource[key] = float64(len(recent))
 	}
+	out.DroppedPerMinuteLast60sTotal = float64(out.DroppedLast60sTotal)
 	for key, value := range f.sent {
 		out.Sent[key] = value
 	}

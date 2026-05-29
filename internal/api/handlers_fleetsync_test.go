@@ -236,6 +236,8 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 			QueueUtilization:                4.0 / 1024.0,
 			DroppedBySource:                 map[string]int{"utilities-west": 1},
 			DroppedPerMinuteBySource:        map[string]float64{"utilities-west": 2.5},
+			DroppedLast60sTotal:             1,
+			DroppedPerMinuteLast60sTotal:    1.0,
 			DroppedLast60sBySource:          map[string]int{"utilities-west": 1},
 			DroppedPerMinuteLast60sBySource: map[string]float64{"utilities-west": 1.0},
 			Backends: []FleetSyncExportBackendStatsDTO{
@@ -288,6 +290,9 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 	}
 	if got.Runtime.Export.QueueUtilization != 4.0/1024.0 {
 		t.Fatalf("runtime.export.queue_utilization = %f", got.Runtime.Export.QueueUtilization)
+	}
+	if got.Runtime.Export.DroppedLast60sTotal != 1 || got.Runtime.Export.DroppedPerMinuteLast60sTotal != 1.0 {
+		t.Fatalf("runtime.export.rolling_drop_totals = total=%d rate=%f", got.Runtime.Export.DroppedLast60sTotal, got.Runtime.Export.DroppedPerMinuteLast60sTotal)
 	}
 }
 

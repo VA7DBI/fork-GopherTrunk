@@ -328,6 +328,12 @@ func TestFleetSyncExporterTracksDroppedBySource(t *testing.T) {
 	if stats.DroppedPerMinuteLast60sBySource["utilities-east"] <= 0 || stats.DroppedPerMinuteLast60sBySource["utilities-west"] <= 0 {
 		t.Fatalf("dropped_per_minute_last_60s_by_source=%+v", stats.DroppedPerMinuteLast60sBySource)
 	}
+	if stats.DroppedLast60sTotal <= 0 {
+		t.Fatalf("dropped_last_60s_total=%d", stats.DroppedLast60sTotal)
+	}
+	if stats.DroppedPerMinuteLast60sTotal <= 0 {
+		t.Fatalf("dropped_per_minute_last_60s_total=%f", stats.DroppedPerMinuteLast60sTotal)
+	}
 }
 
 func TestNewFleetSyncExporterRequiresBus(t *testing.T) {
