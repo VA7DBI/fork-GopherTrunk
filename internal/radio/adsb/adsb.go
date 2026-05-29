@@ -167,8 +167,9 @@ type Identification struct {
 // position message. CPR (Compact Position Reporting) gives the
 // position in two halves — even and odd encodings; the caller
 // pairs them within ~10 s to recover the global position.
-// For the first slice the decoder surfaces the raw CPR encoded
-// values + the format flag and lets a higher layer pair them.
+// The bit-stream layer surfaces the raw CPR encoded values + the
+// format flag; the higher-level Tracker pairs even/odd halves
+// and populates Latitude / Longitude / HasGlobalPosition.
 type Position struct {
 	// Even-format CPR raw lat / lon (17 bits each) — populated
 	// when CPRFormat == 0.
@@ -180,6 +181,15 @@ type Position struct {
 
 	// CPRFormat: 0 = even-encoded message, 1 = odd-encoded.
 	CPRFormat int
+
+	// Latitude / Longitude in degrees, populated by the Tracker
+	// when the per-ICAO even+odd CPR pair completes inside the
+	// spec's 10 s window. HasGlobalPosition distinguishes
+	// "decoded" from "raw CPR halves preserved but not yet
+	// paired".
+	Latitude          float64
+	Longitude         float64
+	HasGlobalPosition bool
 
 	// Altitude in feet (or 0 if the message carried the "altitude
 	// not available" sentinel). HasAltitude distinguishes "0 ft"

@@ -119,25 +119,60 @@ Spec references:
   documentation, cross-checked against real on-the-air
   payloads.
 
+## BEAST upstream (`internal/radio/adsb/beast`)
+
+GopherTrunk consumes Mode-S frames from any BEAST-protocol
+upstream — the de-facto wire format dump1090, readsb,
+BeastSplitter, and every commercial ADS-B hub speak. Operators
+keep their existing 1090 MHz receive chain (RTL-SDR + filter +
+LNA + dump1090) and point GopherTrunk at it over TCP. No
+native 1 Msps PPM demod required.
+
+```yaml
+adsb:
+  beast_upstreams:
+    - addr: "127.0.0.1:30005"   # dump1090 default BEAST port
+      name: "local-dump1090"
+    - addr: "rooftop-pi:30005"  # pi-at-the-antenna setup
+      name: "rooftop"
+```
+
+Frame layout (`0x1A <type> <timestamp 6B> <signal 1B>
+<payload>`) — type codes:
+- `0x31` = Mode-AC (skipped)
+- `0x32` = Mode-S short (56 bits)
+- `0x33` = Mode-S long (112 bits)
+
+`0x1A` bytes inside the body are escaped as `0x1A 0x1A` for
+sync framing; the client un-escapes transparently. Reconnects
+with backoff on TCP drops (default 2 s); each disconnect
+resets the embedded CPR tracker so stale even/odd halves
+don't pair across a gap.
+
+## CPR pair tracker (`internal/radio/adsb.Tracker`)
+
+ADS-B aircraft alternate between even-encoded (`CPRFormat=0`)
+and odd-encoded (`CPRFormat=1`) position reports roughly every
+0.5 s; recovering the global lat/lon needs both halves.
+`Tracker.Update(msg, now)` buffers the most-recent half per
+ICAO and calls `CPRDecodeGlobal` when both arrive within the
+spec's 10 s window (DO-260B §2.2.3.2.3.7). Position rows show
+globally-decoded lat/lon on the `/adsb` panel + map as soon as
+the pair completes. `Prune()` evicts ICAOs that haven't
+transmitted in > 10 s so the state map doesn't grow with every
+aircraft ever seen.
+
 ## What's pending
 
-- **DSP receiver.** 1 Msps PPM demodulation at 1090 MHz with
-  Mode-S preamble correlation and 56 / 112-bit frame
+- **Native DSP receiver.** 1 Msps PPM demodulation at 1090 MHz
+  with Mode-S preamble correlation and 56 / 112-bit frame
   extraction. The plan calls for extending
   `internal/dsp/tuner/channelizerbank.go` to support
   higher-rate taps, then a Mode-S demod that walks the IQ
   stream, correlates against the 8 µs preamble pattern, and
-  hands extracted frames into `adsb.Decode`. Heaviest decoder
-  in Phase 5 — requires a dedicated SDR tuned to 1090 MHz
-  (typical RTL-SDR setup: PCB antenna + 1090 MHz filter +
-  LNA).
-- **Per-ICAO CPR pair-tracking.** The current parser emits
-  even / odd CPR fields raw; a state machine that buffers the
-  most-recent half per ICAO and calls `CPRDecodeGlobal` when
-  both arrive within ~10 s would let position rows show
-  globally-decoded lat/lon immediately. Same buffer location
-  for the locally-referenced decode (when a reference
-  position is configured).
+  hands extracted frames into `adsb.Decode`. Once shipped the
+  same panel + storage + tracker chain consumes its output
+  alongside BEAST upstreams.
 - **Aircraft tracker.** An `aircraft_current` SQL view (or a
   separate live-state table indexed by ICAO) showing the
   latest known position / altitude / callsign per aircraft,
