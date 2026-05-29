@@ -320,23 +320,19 @@ sdr:
 #                                     #  chatter and keep only distress
 #                                     #  + urgency alerts
 
-# ADS-B / aviation. The protocol parser + bus + storage + REST +
-# panel scaffolding is live; the DSP frontend (1 Msps PPM demod +
-# Mode-S preamble correlation + 56/112-bit frame extraction)
-# ships in a follow-up PR. Operators producing Mode-S frames from
-# an external source (dump1090 hex output, captured BEAST stream,
-# etc.) and feeding them to events.KindAircraftReport will see
-# decoded reports on the bus / panel today.
+# ADS-B / aviation. Most 1090 MHz receive chains already run
+# dump1090 / readsb / BeastSplitter against a dedicated RTL-SDR
+# (with a 1090 MHz filter + LNA); GopherTrunk consumes its BEAST
+# output over TCP. The native 1 Msps PPM DSP frontend is a
+# planned follow-up — once it ships, this same panel + storage
+# table accepts frames from either source.
 #
 # adsb:
-#   channels:
-#     - serial: "1090-antenna"        # SDR serial (must be in sdr.devices
-#                                     #  or sdr.rtl_tcp; dedicate one
-#                                     #  RTL-SDR + 1090 MHz filter + LNA
-#                                     #  to this — the bandwidth needs
-#                                     #  ~1 Msps which crowds out other
-#                                     #  decoders on the same dongle)
-#       frequency_hz: 1_090_000_000   # 1090 MHz centre
+#   beast_upstreams:
+#     - addr: "127.0.0.1:30005"       # dump1090 / readsb default BEAST port
+#       name: "local-dump1090"        # logged on every reconnect
+#     - addr: "antenna-pi.lan:30005"  # remote pi-at-the-antenna setup
+#       name: "rooftop"
 
 trunking:
   # call_timeout_ms: inactivity window after which the engine's
