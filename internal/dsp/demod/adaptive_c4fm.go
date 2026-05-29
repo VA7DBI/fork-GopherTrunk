@@ -1,5 +1,7 @@
 package demod
 
+import "math"
+
 // AdaptiveC4FMSlicer is a four-level C4FM slicer that tracks the
 // *observed* per-symbol levels and places its decision thresholds at the
 // midpoints between adjacent levels, so it follows an asymmetric or
@@ -36,6 +38,19 @@ package demod
 //     well-separated eye is tracked, an ambiguous one stays near fixed.
 //   - Per-level clamps and a strict-ordering invariant, so the thresholds
 //     can't run away on noise / loss-of-signal.
+//   - The outer decision thresholds are anchored to the well-estimated
+//     inner rail: they may move *inward* (toward zero) freely to follow a
+//     compressed or DC-shifted eye — the case the fixed slicer genuinely
+//     can't handle — but their *outward* travel is capped at a nominal
+//     inner→outer spacing above the tracked inner level. This closes the
+//     #402 regression where a lower-truncated outer-level EMA dragged the
+//     +1/+3 threshold ever outward (positive feedback), suppressing outer
+//     symbols and collapsing the outer-heavy frame-sync word.
+//   - The per-symbol level update is a soft-responsibility (Gaussian
+//     mixture) step rather than a hard decided-rail EMA, so a true outer
+//     symbol that landed below the threshold still contributes to the outer
+//     level — removing the one-sided truncation bias that made the raw
+//     outer estimate read high (~0.43 vs the true ~0.37 centroid on #402).
 //
 // On an open eye — symmetric or asymmetric, which is what a decodable
 // signal presents (the #402 capture is open at the production sps) — the
@@ -55,6 +70,7 @@ type AdaptiveC4FMSlicer struct {
 	loBound [4]float32 // per-level clamp (signed, ordered with nominal)
 	hiBound [4]float32
 	rate    float32 // single-pole EMA coefficient
+	sigma   float32 // Gaussian-responsibility width for the soft level update
 	warmup  int     // symbols to slice at nominal thresholds before adapting
 }
 
@@ -77,6 +93,15 @@ const adaptiveSlicerRate = 1.0 / 512.0
 // ambiguous or partly-closed eye — where decision-directed tracking would
 // otherwise run away and do *worse* than fixed — is held near nominal.
 const adaptiveSlicerLeak = adaptiveSlicerRate / 4
+
+// adaptiveSlicerSigmaFrac sets the Gaussian-responsibility width used by the
+// soft level update, as a fraction of the nominal outer level (slicerScale).
+// At 1/4 the width (≈0.059 for the nominal eye) is a fraction of the nominal
+// inner→outer gap (2·slicerScale/3 ≈ 0.157), so the four rails stay
+// resolvable while an outer symbol that fell below the decision threshold —
+// the lower tail that a hard decided-rail EMA never sees — still registers on
+// the outer level. That is what removes the one-sided truncation bias (#402).
+const adaptiveSlicerSigmaFrac = 1.0 / 4.0
 
 // adaptiveSlicerWarmup is the number of symbols the slicer decides at its
 // nominal (fixed-threshold) eye before it starts adapting. Upstream of the
@@ -101,6 +126,7 @@ func NewAdaptiveC4FMSlicer(slicerScale float64) *AdaptiveC4FMSlicer {
 		level:   nominal,
 		nominal: nominal,
 		rate:    adaptiveSlicerRate,
+		sigma:   s * adaptiveSlicerSigmaFrac,
 		warmup:  adaptiveSlicerWarmup,
 	}
 	// Per-rail clamp bands. Outer rails may stretch generously (the #402
@@ -130,12 +156,39 @@ func NewAdaptiveC4FMSlicer(slicerScale float64) *AdaptiveC4FMSlicer {
 }
 
 // thresholds returns the three live decision boundaries derived from the
-// tracked levels: the negative-outer (−3/−1), zero (−1/+1), and
-// positive-outer (+1/+3) midpoints.
+// tracked levels: the zero (−1/+1) crossing, and the two outer (−3/−1 and
+// +1/+3) boundaries.
+//
+// The zero crossing is the plain inner-rail midpoint, so it follows a
+// DC-shifted eye. The outer boundaries are *anchored*: each is the midpoint
+// between its inner and outer level, but capped so it can never sit farther
+// from zero than a full nominal inner→outer spacing (2·s/3) beyond the
+// tracked inner rail. This lets an outer boundary move inward to follow a
+// compressed eye (where the midpoint is below the cap, so the cap is
+// inactive and the boundary tracks fully) and outward to follow a genuinely
+// stretched eye (the #402 +3 rail at ~1.6× nominal, whose true midpoint is
+// ~0.22 — within the cap), while bounding the outward travel so a
+// truncation-biased outer level can't drag it past the true midpoint and
+// suppress outer symbols (the #402 runaway, which reached ~0.265). The cap
+// is referenced to the *tracked* inner level (not the nominal), so it
+// follows a shifted/scaled eye: it bounds the inner→outer *spacing*, not an
+// absolute threshold. The soft-responsibility update (Mechanism B) keeps the
+// outer level near its true centroid, so on a decodable eye the midpoint —
+// not the cap — sets the boundary; the cap is the safety net for the
+// closed/biased eye where decision-directed tracking would otherwise run.
 func (a *AdaptiveC4FMSlicer) thresholds() (tNegOuter, tZero, tPosOuter float32) {
-	return (a.level[0] + a.level[1]) / 2,
-		(a.level[1] + a.level[2]) / 2,
-		(a.level[2] + a.level[3]) / 2
+	gap := a.nominal[3] - a.nominal[2] // full nominal inner→outer spacing = 2·s/3
+
+	tPosOuter = (a.level[2] + a.level[3]) / 2
+	if capPos := a.level[2] + gap; tPosOuter > capPos {
+		tPosOuter = capPos
+	}
+	tNegOuter = (a.level[0] + a.level[1]) / 2
+	if capNeg := a.level[1] - gap; tNegOuter < capNeg {
+		tNegOuter = capNeg
+	}
+	tZero = (a.level[1] + a.level[2]) / 2
+	return tNegOuter, tZero, tPosOuter
 }
 
 // slice maps one soft sample to a symbol in {-3,-1,+1,+3} using the live
@@ -154,14 +207,43 @@ func (a *AdaptiveC4FMSlicer) slice(soft float32) int8 {
 	}
 }
 
-// update folds one decided sample into the tracked level for its rail,
-// then re-applies the clamp + ordering invariant.
+// update folds one soft sample into the tracked levels, then re-applies the
+// clamp + ordering invariant.
+//
+// Rather than a hard decided-rail EMA (which only ever updates the single
+// rail the sample was sliced into, so an outer level averages only the
+// samples *above* its threshold — a lower-truncated, biased-high estimate),
+// this is a soft-responsibility step: a four-component equal-variance,
+// equal-prior Gaussian mixture. Every level is pulled toward the sample
+// weighted by that rail's responsibility, so an outer symbol whose soft
+// value fell below the decision threshold still contributes most of its
+// weight to the outer level. That removes the one-sided truncation bias and
+// lets the outer estimate converge to the true cluster centroid (#402).
+//
+// The update is a pure function of (soft, level) with no cross-call state, so
+// SliceMany stays deterministic across chunk boundaries.
 func (a *AdaptiveC4FMSlicer) update(soft float32, sliced int8) {
-	idx := (sliced + 3) / 2 // -3,-1,+1,+3 → 0,1,2,3
-	// Data-directed pull toward the observed soft value, plus a leak back
-	// toward nominal that regularizes the estimate (see adaptiveSlicerLeak).
-	a.level[idx] += a.rate*(soft-a.level[idx]) + adaptiveSlicerLeak*(a.nominal[idx]-a.level[idx])
-	a.clampLevel(idx)
+	_ = sliced // the soft responsibilities, not the hard decision, drive the update
+
+	inv2s2 := 1.0 / (2 * a.sigma * a.sigma)
+	var w [4]float32
+	var sum float32
+	for k := 0; k < 4; k++ {
+		d := soft - a.level[k]
+		e := float32(math.Exp(float64(-d * d * inv2s2)))
+		w[k] = e
+		sum += e
+	}
+	if sum <= 0 { // numerical floor: sample absurdly far from every rail
+		return
+	}
+	for k := int8(0); k < 4; k++ {
+		rk := w[k] / sum
+		// Responsibility-weighted pull toward the sample, plus the same leak
+		// back toward nominal that regularizes the estimate (adaptiveSlicerLeak).
+		a.level[k] += a.rate*rk*(soft-a.level[k]) + adaptiveSlicerLeak*(a.nominal[k]-a.level[k])
+		a.clampLevel(k)
+	}
 	a.enforceOrder()
 }
 
