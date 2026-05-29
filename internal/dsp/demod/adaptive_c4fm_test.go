@@ -128,8 +128,8 @@ func TestAdaptiveSlicerRecoversAsymmetricEyeWhereFixedFails(t *testing.T) {
 	// Mechanism B: the soft-responsibility update must converge level[+3]
 	// toward the true centroid (~0.374), not the lower-truncated ~0.43 a hard
 	// decided-rail EMA produced (the value the #402 diag reported).
-	if lv[3] < 0.30 || lv[3] > 0.40 {
-		t.Errorf("tracked +3 level = %.4f, want in [0.30, 0.40] (debiased toward the true 0.374 centroid)", lv[3])
+	if lv[3] < 0.33 || lv[3] > 0.40 {
+		t.Errorf("tracked +3 level = %.4f, want in [0.33, 0.40] (≈0.8·0.374+0.2·nominal; under 0.33 means the rail is under-tracking)", lv[3])
 	}
 }
 
@@ -250,6 +250,47 @@ func TestAdaptiveSlicerNoOuterThresholdRunawayOnClosedEye(t *testing.T) {
 	// Mechanism B: tracked +3 level debiased toward the true centroid.
 	if lv[3] > 0.40 {
 		t.Errorf("tracked +3 level = %.4f, want ≤ 0.40 (pre-fix truncation bias read ~0.43)", lv[3])
+	}
+}
+
+// TestAdaptiveSlicerOuterRailTrackingGain pins the equilibrium tracking gain
+// of the soft-responsibility level update. The intended mix is
+// rate/(rate+leak) = 0.8 of the way from nominal to the observed centroid.
+// The first DDA cut (#439) scaled only the data pull by responsibility and
+// left the leak firing on every sample, which halved the mix to ~0.5 and made
+// the outer rail under-track (the #402 follow-up: +3 settled ~0.30 against a
+// ~0.40 centroid). This test fails on that code and passes once the leak is
+// also responsibility-weighted.
+func TestAdaptiveSlicerOuterRailTrackingGain(t *testing.T) {
+	const slicerScale = 0.2356
+	rng := rand.New(rand.NewSource(11))
+
+	// Balanced eye: negative rail + inner rails nominal, +3 outer stretched to
+	// a known centroid. Low noise + wide separation so the EMA converges to its
+	// equilibrium without eye-closure bias.
+	nom := nominalLevels(slicerScale)
+	const c3 = 0.40
+	levels := [4]float64{nom[0], nom[1], nom[2], c3}
+	const n = 80_000
+	soft, _ := buildEyeStream(rng, n, levels, 0.03)
+
+	a := NewAdaptiveC4FMSlicer(slicerScale)
+	a.SliceMany(nil, soft)
+	lv := a.Levels()
+
+	const mix = 0.8 // rate/(rate+leak) with leak = rate/4
+	want := mix*c3 + (1-mix)*nom[3]
+	got := float64(lv[3])
+	t.Logf("+3 rail: got=%.4f want≈%.4f (centroid=%.3f nominal=%.4f); #439 bug gave ≈%.4f",
+		got, want, c3, nom[3], 0.5*c3+0.5*nom[3])
+	if math.Abs(got-want) > 0.02 {
+		t.Errorf("+3 rail tracking gain off: got=%.4f want≈%.4f (mix should be ~0.8, not the ~0.5 of the #439 bug)", got, want)
+	}
+	// The negative outer rail's centroid is its nominal, so it must stay put —
+	// the leak is responsibility-weighted but a rail at its centroid sees a
+	// zero net pull either way.
+	if math.Abs(float64(lv[0])-nom[0]) > 0.02 {
+		t.Errorf("-3 rail drifted from nominal: got=%.4f want≈%.4f", lv[0], nom[0])
 	}
 }
 
