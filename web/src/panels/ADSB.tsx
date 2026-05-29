@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fetchAircraftReports, type AircraftReport } from "../api/adsb";
+import { PositionMap, type MapPoint } from "../components/PositionMap";
 import { selectClientConfig, useShared } from "../store/shared";
 
 // ADS-B panel — list of recent decoded Mode-S frames. Each row
@@ -43,6 +44,28 @@ export function ADSB() {
     };
   }, [cfg]);
 
+  const mapPoints = useMemo<MapPoint[]>(
+    () =>
+      reports
+        .filter(
+          (r) =>
+            r.has_position &&
+            typeof r.latitude === "number" &&
+            typeof r.longitude === "number",
+        )
+        .map((r) => ({
+          id: `adsb-${r.id}`,
+          latitude: r.latitude as number,
+          longitude: r.longitude as number,
+          kind: "adsb" as const,
+          label: r.callsign?.trim() || r.icao_hex,
+          detail: r.has_altitude
+            ? `${r.altitude_ft?.toLocaleString()} ft`
+            : undefined,
+        })),
+    [reports],
+  );
+
   return (
     <div className="space-y-3">
       <header className="flex items-center justify-between">
@@ -51,6 +74,8 @@ export function ADSB() {
           {reports.length} message{reports.length === 1 ? "" : "s"}
         </span>
       </header>
+
+      {mapPoints.length > 0 && <PositionMap points={mapPoints} />}
 
       {error && (
         <div className="rounded border border-red-700/40 bg-red-900/20 text-red-200 text-xs px-3 py-2">

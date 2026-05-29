@@ -177,10 +177,14 @@ skipped — same non-essential treatment as `paging.pocsag` and
   The current parser handles the single-slot variants; the
   multi-slot path needs a per-MMSI buffer plus the channel-A /
   channel-B re-orderer.
-- **Live map.** AIS-position messages all carry lat/lon — a
-  Leaflet / MapLibre overlay shared with `/aprs` showing the
-  most recent vessel fixes is the obvious next step once the
-  panel has real traffic.
+## Live map
+
+Position-bearing rows (Class A / B position reports, base
+station, SAR aircraft) light up the shared Leaflet map at the
+top of `/ais` — cyan markers plotted on the OpenStreetMap tile
+layer with vessel name (or MMSI) on hover, camera auto-fits
+to the current rowset. The same `<PositionMap>` component
+renders on `/aprs`, `/dsc`, and `/adsb`.
 
 ## References
 
