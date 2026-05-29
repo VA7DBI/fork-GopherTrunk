@@ -51,6 +51,10 @@ vi.mock("./api/ais", () => ({
   fetchAISVessels: vi.fn().mockResolvedValue([]),
 }));
 
+vi.mock("./api/dsc", () => ({
+  fetchDSCMessages: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("./api/bookmarks", () => ({
   bookmarks: {
     list: vi.fn().mockResolvedValue([]),

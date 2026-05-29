@@ -112,6 +112,7 @@ type Daemon struct {
 	pagerLog     *storage.PagerLog
 	aprsLog      *storage.APRSLog
 	vesselLog    *storage.VesselLog
+	dscLog       *storage.DSCLog
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -1065,6 +1066,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.vesselLog = vl
 
+		dl, err := storage.NewDSCLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: dsc log: %w", err)
+		}
+		d.dscLog = dl
+
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
 			if err != nil {
@@ -1130,6 +1138,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.vesselLog != nil {
 			opts.AIS = aisProvider{log: d.vesselLog}
+		}
+		if d.dscLog != nil {
+			opts.DSC = dscProvider{log: d.dscLog}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1306,6 +1317,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.vesselLog != nil {
 		d.spawn(runCtx, "vessellog", false, func(ctx context.Context) error {
 			return d.vesselLog.Run(ctx)
+		})
+	}
+	if d.dscLog != nil {
+		d.spawn(runCtx, "dsclog", false, func(ctx context.Context) error {
+			return d.dscLog.Run(ctx)
 		})
 	}
 	if d.messageLog != nil {
@@ -1599,6 +1615,9 @@ func (d *Daemon) Close() {
 		}
 		if d.vesselLog != nil {
 			_ = d.vesselLog.Close()
+		}
+		if d.dscLog != nil {
+			_ = d.dscLog.Close()
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
@@ -2364,6 +2383,15 @@ type aisProvider struct{ log *storage.VesselLog }
 
 func (a aisProvider) RecentAISMessages(limit int) ([]storage.AISMessage, error) {
 	return a.log.Recent(limit)
+}
+
+// dscProvider adapts storage.DSCLog into api.DSCProvider so the
+// api package stays free of the storage import dependency. Read-only
+// — the decoder writes via the events bus.
+type dscProvider struct{ log *storage.DSCLog }
+
+func (d dscProvider) RecentDSCMessages(limit int) ([]storage.DSCMessage, error) {
+	return d.log.Recent(limit)
 }
 
 // aprsSpec captures the broker-side wiring info for one configured
