@@ -273,6 +273,10 @@ type Server struct {
 	// routes (pager log). nil disables the routes. Implemented
 	// by the daemon over the SQLite-backed storage.PagerLog.
 	pager PagerProvider
+	// fleetsync is the optional provider backing /api/v1/fleetsync/...
+	// routes (FleetSync message log + runtime/export telemetry).
+	// nil disables the routes.
+	fleetsync FleetSyncProvider
 
 	// aprs is the optional provider backing /api/v1/aprs/...
 	// routes (APRS / AX.25 packet log). nil disables the routes.
@@ -503,6 +507,11 @@ type ServerOptions struct {
 	// POCSAG (and eventually FLEX) pager messages. Wired by the
 	// daemon over the SQLite-backed storage.PagerLog.
 	Pager PagerProvider
+	// FleetSync, when non-nil, enables the FleetSync log/stats routes:
+	// GET /api/v1/fleetsync/messages
+	// GET /api/v1/fleetsync/messages/{id}
+	// GET /api/v1/fleetsync/stats
+	FleetSync FleetSyncProvider
 	// APRS, when non-nil, enables the
 	// GET /api/v1/aprs/packets route serving recent decoded
 	// APRS / AX.25 packets. Wired by the daemon over the SQLite-
@@ -627,6 +636,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		bookmarks:      opts.Bookmarks,
 		diag:           opts.Diag,
 		pager:          opts.Pager,
+		fleetsync:      opts.FleetSync,
 		aprs:           opts.APRS,
 		ais:            opts.AIS,
 		dsc:            opts.DSC,
@@ -828,6 +838,9 @@ func (s *Server) routes() *http.ServeMux {
 	// Pager log — recent POCSAG (and eventually FLEX) messages.
 	// Read-only; the decoder writes via the events bus → PagerLog.
 	mux.HandleFunc("GET /api/v1/pager/messages", s.handlePagerMessages)
+	mux.HandleFunc("GET /api/v1/fleetsync/messages", s.handleFleetSyncMessages)
+	mux.HandleFunc("GET /api/v1/fleetsync/messages/{id}", s.handleFleetSyncMessage)
+	mux.HandleFunc("GET /api/v1/fleetsync/stats", s.handleFleetSyncStats)
 
 	// APRS / AX.25 packet log — recent decoded packets. Read-only;
 	// the decoder writes via the events bus → APRSLog.

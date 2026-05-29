@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/iqtap"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtltcp"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/wbvoice"
 	"github.com/MattCheramie/GopherTrunk/internal/storage"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 	"github.com/MattCheramie/GopherTrunk/internal/voice"
@@ -152,10 +154,13 @@ type Daemon struct {
 	// the broker wraps the recorder when baseband recording is on
 	// for the same dongle.
 	iqBrokers map[string]*iqtap.Broker
-	metrics   *metrics.Metrics
-	httpAPI   *api.Server
-	grpcAPI   *api.GRPCServer
-	rigctld   *rigctld.Server
+	// virtualVoiceTuners are per-wideband virtual voice devices
+	// synthesized from configured sdr.devices[].voice_taps.
+	virtualVoiceTuners []*wbvoice.VirtualTuner
+	metrics            *metrics.Metrics
+	httpAPI            *api.Server
+	grpcAPI            *api.GRPCServer
+	rigctld            *rigctld.Server
 
 	// startupWarnings collects non-fatal observations from
 	// NewDaemon / preflight (missing talkgroup CSV, SDR enumeration
@@ -217,6 +222,24 @@ func (d *Daemon) Ready() <-chan struct{} {
 // NewDaemon construction. Callers should treat the slice as read-only.
 func (d *Daemon) StartupWarnings() []string {
 	return append([]string(nil), d.startupWarnings...)
+}
+
+// IQBroker returns the iqtap broker for one SDR serial, if present.
+func (d *Daemon) IQBroker(serial string) *iqtap.Broker {
+	if serial == "" {
+		return nil
+	}
+	return d.iqBrokers[serial]
+}
+
+// IQBrokerSerials returns a sorted list of serials with active brokers.
+func (d *Daemon) IQBrokerSerials() []string {
+	out := make([]string, 0, len(d.iqBrokers))
+	for serial := range d.iqBrokers {
+		out = append(out, serial)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // addWarning records a non-fatal startup observation. Threaded into
@@ -451,6 +474,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 	}
 
 	// Voice device list from the pool; empty when no SDRs.
+	if err := d.buildVirtualVoiceTuners(cfg, log); err != nil {
+		return nil, fmt.Errorf("daemon: virtual voice tuners: %w", err)
+	}
 	d.voicePool = trunking.NewVoicePool(d.collectVoiceDevices())
 	// Wire the voice pool's reacquire hook so a USB disconnect
 	// that left a voice dongle's handle stale gets the device
@@ -617,7 +643,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		comp, err := composer.New(composer.Options{
 			Bus:           d.bus,
-			Devices:       &poolDevices{pool: d.pool},
+			Devices:       &poolDevices{pool: d.pool, sampleRateHz: cfg.SDR.SampleRate, virtual: d.virtualVoiceMap()},
 			Sink:          sink,
 			Engine:        d.engine,
 			Log:           log,
@@ -1664,17 +1690,31 @@ func (d *Daemon) spawn(ctx context.Context, name string, essential bool, fn func
 }
 
 func (d *Daemon) collectVoiceDevices() []*trunking.VoiceDevice {
-	if d.pool == nil {
-		return nil
-	}
 	var voices []*trunking.VoiceDevice
+	if d.pool == nil {
+		for _, vt := range d.virtualVoiceTuners {
+			voices = append(voices, &trunking.VoiceDevice{Tuner: vt, Serial: vt.Serial()})
+		}
+		return voices
+	}
 	for _, e := range d.pool.AllByRole(sdr.RoleVoice) {
 		voices = append(voices, &trunking.VoiceDevice{
 			Tuner:  e.Device,
 			Serial: e.Info.Serial,
 		})
 	}
+	for _, vt := range d.virtualVoiceTuners {
+		voices = append(voices, &trunking.VoiceDevice{Tuner: vt, Serial: vt.Serial()})
+	}
 	return voices
+}
+
+func (d *Daemon) virtualVoiceMap() map[string]composer.IQSource {
+	out := make(map[string]composer.IQSource, len(d.virtualVoiceTuners))
+	for _, vt := range d.virtualVoiceTuners {
+		out[vt.Serial()] = vt
+	}
+	return out
 }
 
 func retentionInterval(s string) (time.Duration, error) {
@@ -1725,6 +1765,20 @@ type fanoutSink []composer.PCMSink
 func (f fanoutSink) WritePCM(serial string, samples []int16) error {
 	for _, s := range f {
 		_ = s.WritePCM(serial, samples)
+	}
+	return nil
+}
+
+func (f fanoutSink) WriteRawFrame(serial string, frame []byte) error {
+	type rawFrameSink interface {
+		WriteRawFrame(deviceSerial string, frame []byte) error
+	}
+	for _, s := range f {
+		rs, ok := s.(rawFrameSink)
+		if !ok {
+			continue
+		}
+		_ = rs.WriteRawFrame(serial, frame)
 	}
 	return nil
 }
@@ -1967,9 +2021,27 @@ func (a audioCockpit) BackendEnabled() bool {
 
 // poolDevices adapts *sdr.Pool to composer.Devices. The composer only
 // needs StreamIQ; sdr.Device satisfies that subset directly.
-type poolDevices struct{ pool *sdr.Pool }
+type poolDevices struct {
+	pool         *sdr.Pool
+	sampleRateHz uint32
+	virtual      map[string]composer.IQSource
+}
+
+type poolIQSource struct {
+	dev          sdr.Device
+	sampleRateHz uint32
+}
+
+func (p poolIQSource) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
+	return p.dev.StreamIQ(ctx)
+}
+
+func (p poolIQSource) SampleRateHz() uint32 { return p.sampleRateHz }
 
 func (p *poolDevices) FindBySerial(serial string) composer.IQSource {
+	if src, ok := p.virtual[serial]; ok {
+		return src
+	}
 	if p.pool == nil {
 		return nil
 	}
@@ -1977,7 +2049,42 @@ func (p *poolDevices) FindBySerial(serial string) composer.IQSource {
 	if e == nil {
 		return nil
 	}
-	return e.Device
+	return poolIQSource{dev: e.Device, sampleRateHz: p.sampleRateHz}
+}
+
+func (d *Daemon) buildVirtualVoiceTuners(cfg config.Config, log *slog.Logger) error {
+	d.virtualVoiceTuners = nil
+	if d.pool == nil || len(d.iqBrokers) == 0 {
+		return nil
+	}
+	rate := cfg.SDR.SampleRate
+	if rate == 0 {
+		rate = sdr.DefaultSampleRateHz
+	}
+	for _, dev := range cfg.SDR.Devices {
+		if dev.Role != "wideband" || dev.VoiceTaps <= 0 {
+			continue
+		}
+		br := d.iqBrokers[dev.Serial]
+		if br == nil {
+			continue
+		}
+		for i := 0; i < dev.VoiceTaps; i++ {
+			serial := fmt.Sprintf("%s:tap-%d", dev.Serial, i+1)
+			vt, err := wbvoice.New(wbvoice.Options{
+				Serial:           serial,
+				Broker:           br,
+				WidebandCenterHz: dev.CenterFreqHz,
+				SDRSampleRateHz:  rate,
+				Log:              log,
+			})
+			if err != nil {
+				return err
+			}
+			d.virtualVoiceTuners = append(d.virtualVoiceTuners, vt)
+		}
+	}
+	return nil
 }
 
 // brokerRigController adapts an iqtap.Broker into the rigctld

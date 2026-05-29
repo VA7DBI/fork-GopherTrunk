@@ -417,6 +417,10 @@ type DeviceConfig struct {
 	// supports DMR Tier II conventional. Ignored for non-wideband
 	// roles.
 	Channels []DeviceChannelConfig `yaml:"channels"`
+	// VoiceTaps allocates per-grant virtual DDC taps on this wideband
+	// device so voice grants can be followed without a separate
+	// physical voice SDR. 0 disables; allowed range is 0..8.
+	VoiceTaps int `yaml:"voice_taps"`
 }
 
 // DeviceChannelConfig is one repeater carrier carried by a
@@ -449,6 +453,7 @@ type SystemConfig struct {
 	Protocol        string   `yaml:"protocol"`
 	ControlChannels []uint32 `yaml:"control_channels"`
 	TalkgroupFile   string   `yaml:"talkgroup_file"`
+	RIDAliasFile    string   `yaml:"rid_alias_file"`
 
 	// TETRAColourCode is the 30-bit extended colour code the TETRA
 	// scrambler uses to seed its LFSR (ETSI EN 300 392-2 §8.2.5).
@@ -1062,6 +1067,9 @@ const widebandGuardFrac = 0.05
 func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, systems []SystemConfig) error {
 	if d.Serial == "" {
 		return fmt.Errorf("sdr.devices[%d]: role: wideband requires serial (the daemon binds the channel list to the device by USB serial)", idx)
+	}
+	if d.VoiceTaps < 0 || d.VoiceTaps > 8 {
+		return fmt.Errorf("sdr.devices[%d]: voice_taps %d out of range; 0 disables, 1-8 allocate that many virtual voice DDC taps on the dongle", idx, d.VoiceTaps)
 	}
 	if d.CenterFreqHz == 0 {
 		return fmt.Errorf("sdr.devices[%d]: role: wideband requires center_freq_hz", idx)

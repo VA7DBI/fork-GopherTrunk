@@ -96,6 +96,11 @@ const (
 	// any protocol whose grant carries ALGID/KID at grant time does
 	// not need this event — the values are already on the Grant.
 	KindCallEncryption Kind = "call.encryption"
+	// KindCallSourceUpdate fires when in-call signalling reveals source
+	// radio ID and encryption state after call start (for protocols where
+	// grants may omit that information). Payload carries call identity +
+	// updated source/encryption fields so subscribers can patch active rows.
+	KindCallSourceUpdate Kind = "call.source"
 	// KindBookmarkCreated / KindBookmarkUpdated / KindBookmarkDeleted
 	// fire whenever the bookmarks store mutates. Payload is a
 	// storage.Bookmark (or {ID} for deletes). Surfaced over SSE / WS
@@ -110,7 +115,12 @@ const (
 	// is a storage.PagerMessage carrying RIC + function +
 	// decoded text + per-page bit-error count. Surfaced over SSE /
 	// WS for the live pager panel.
-	KindPagerMessage Kind = "pager.message"
+	KindPagerMessage   Kind = "pager.message"
+	KindAPRSPacket     Kind = "aprs.packet"
+	KindAISMessage     Kind = "ais.message"
+	KindDSCMessage     Kind = "dsc.message"
+	KindAircraftReport Kind = "adsb.aircraft"
+	KindMDC1200Message Kind = "mdc1200.message"
 	// KindFleetSyncMessage fires when the FleetSync decoder produces
 	// one valid message frame (FleetSync I/II). Payload is
 	// radio/fleetync.Message with command/subcommand, addressing,
