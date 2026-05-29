@@ -42,7 +42,24 @@ type Config struct {
 // RTL-SDR + 1090 MHz filter + LNA; pointing GopherTrunk at it
 // is a one-line config away.
 type ADSBConfig struct {
-	BeastUpstreams []ADSBBeastConfig `yaml:"beast_upstreams"`
+	BeastUpstreams []ADSBBeastConfig   `yaml:"beast_upstreams"`
+	Channels       []ADSBChannelConfig `yaml:"channels"`
+}
+
+// ADSBChannelConfig describes one SDR pinned to 1090 MHz for the
+// native PPM Mode-S receiver — the alternative to a BEAST upstream for
+// operators who want GopherTrunk to own the whole 1090 MHz chain
+// rather than running a separate dump1090 / readsb. Serial picks the
+// SDR; the daemon tunes it to FrequencyHz (default 1090 MHz) and runs
+// the PPM demodulator against its full IQ stream. A 1090 MHz SAW
+// filter + LNA ahead of the SDR is strongly recommended — Mode-S is a
+// weak, bursty signal. The SDR must sample at ≥ 2 Msps; the receiver
+// resamples to 2 Msps internally. Decoded frames merge into the same
+// events.KindAircraftReport stream the BEAST upstreams feed, so the
+// /aircraft panel and storage are shared.
+type ADSBChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"` // defaults to 1090 MHz when zero
 }
 
 // ADSBBeastConfig describes one BEAST upstream to consume. Addr is
