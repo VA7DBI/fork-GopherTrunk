@@ -347,12 +347,18 @@ sdr:
 #                                     #  with a BCH-failed character instead
 #                                     #  of publishing them flagged
 
-# ADS-B / aviation. Most 1090 MHz receive chains already run
-# dump1090 / readsb / BeastSplitter against a dedicated RTL-SDR
-# (with a 1090 MHz filter + LNA); GopherTrunk consumes its BEAST
-# output over TCP. The native 1 Msps PPM DSP frontend is a
-# planned follow-up — once it ships, this same panel + storage
-# table accepts frames from either source.
+# ADS-B / aviation. Two ways to feed the aircraft panel; mix freely,
+# their frames merge into one stream.
+#
+#  1. beast_upstreams — consume a separately-running dump1090 / readsb /
+#     BeastSplitter / commercial hub over the BEAST TCP protocol. Most
+#     existing 1090 MHz chains already run one against a dedicated
+#     RTL-SDR (with a 1090 MHz filter + LNA).
+#  2. channels — native PPM demod: pin one of GopherTrunk's own SDRs to
+#     1090 MHz and decode Mode-S straight off the air, no external
+#     decoder. A 1090 MHz SAW filter + LNA ahead of the SDR is strongly
+#     recommended, and the SDR must sample at >= 2 Msps (the receiver
+#     resamples to 2 Msps internally).
 #
 # adsb:
 #   beast_upstreams:
@@ -360,6 +366,10 @@ sdr:
 #       name: "local-dump1090"        # logged on every reconnect
 #     - addr: "antenna-pi.lan:30005"  # remote pi-at-the-antenna setup
 #       name: "rooftop"
+#   channels:
+#     - serial: "1090-antenna"        # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp), sampling >= 2 Msps
+#       frequency_hz: 1_090_000_000   # 1090 MHz (the default when omitted)
 
 trunking:
   # call_timeout_ms: inactivity window after which the engine's

@@ -24,6 +24,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
 
 	adsbbeast "github.com/MattCheramie/GopherTrunk/internal/radio/adsb/beast"
+	adsbppm "github.com/MattCheramie/GopherTrunk/internal/radio/adsb/ppm"
 	aisgmsk "github.com/MattCheramie/GopherTrunk/internal/radio/ais/gmsk"
 	aprsafsk "github.com/MattCheramie/GopherTrunk/internal/radio/aprs/afsk"
 	dscffsk "github.com/MattCheramie/GopherTrunk/internal/radio/dsc/ffsk"
@@ -217,10 +218,15 @@ type Daemon struct {
 	// adsbBeastClients consume ADS-B Mode-S frames from external
 	// dump1090 / readsb upstreams (BEAST binary protocol). Each
 	// client decodes frames, pairs CPR halves via an embedded
-	// per-ICAO tracker, and publishes KindAircraftReport. Native
-	// 1 Msps PPM DSP frontend is a planned follow-up.
+	// per-ICAO tracker, and publishes KindAircraftReport.
 	adsbBeastClients []*adsbbeast.Client
 	adsbBeastNames   []string // index-aligned with adsbBeastClients
+	// adsbPPMReceivers hold one native 1090 MHz Mode-S PPM receiver per
+	// configured adsb.channels entry. Each subscribes to its assigned
+	// SDR's iqtap broker and publishes the same KindAircraftReport the
+	// BEAST clients do.
+	adsbPPMReceivers []*adsbppm.Receiver
+	adsbPPMSpecs     []adsbPPMSpec // index-aligned with adsbPPMReceivers
 	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
 	// Primary consumers (CC decoder, conventional scanner) stream IQ
 	// through the broker so secondary observers (live spectrum,
@@ -1173,6 +1179,38 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		d.adsbBeastNames = append(d.adsbBeastNames, name)
 	}
 
+	// ADS-B native PPM receivers — one per configured adsb.channels
+	// entry. Each pins an SDR to 1090 MHz and demodulates Mode-S
+	// straight off the air, publishing the same KindAircraftReport the
+	// BEAST clients do. Same construction shape as the AIS receivers.
+	for _, ac := range cfg.ADSB.Channels {
+		freq := ac.FrequencyHz
+		if freq == 0 {
+			freq = 1_090_000_000 // 1090 MHz default
+		}
+		spec := adsbPPMSpec{serial: ac.Serial, freq: freq}
+		if ac.Serial == "" {
+			d.addWarning("adsb.channels: entry missing serial — skipped")
+			d.adsbPPMReceivers = append(d.adsbPPMReceivers, nil)
+			d.adsbPPMSpecs = append(d.adsbPPMSpecs, spec)
+			continue
+		}
+		rcv, err := adsbppm.New(adsbppm.Options{
+			InputRateHz: cfg.SDR.SampleRate,
+			SourceName:  ac.Serial,
+			Bus:         d.bus,
+			Log:         log,
+		})
+		if err != nil {
+			d.addWarning(fmt.Sprintf("adsb.channels[%s]: %v — skipped", ac.Serial, err))
+			d.adsbPPMReceivers = append(d.adsbPPMReceivers, nil)
+			d.adsbPPMSpecs = append(d.adsbPPMSpecs, spec)
+			continue
+		}
+		d.adsbPPMReceivers = append(d.adsbPPMReceivers, rcv)
+		d.adsbPPMSpecs = append(d.adsbPPMSpecs, spec)
+	}
+
 	// Storage / call log / retention — optional.
 	if cfg.Storage.Path != "" {
 		db, err := storage.Open(cfg.Storage.Path)
@@ -1742,6 +1780,35 @@ func (d *Daemon) Run(ctx context.Context) error {
 		name := fmt.Sprintf("adsb-beast-%s", d.adsbBeastNames[i])
 		d.spawn(runCtx, name, false, func(ctx context.Context) error {
 			return client.Run(ctx)
+		})
+	}
+	// ADS-B native PPM receivers — same shape as the AIS receivers.
+	// Each subscribes to its assigned SDR's iqtap broker (pinned to
+	// 1090 MHz) and demodulates Mode-S frames off the air, publishing
+	// KindAircraftReport. Non-essential: a missing SDR is logged but
+	// doesn't bring down the pipeline.
+	for i, rcv := range d.adsbPPMReceivers {
+		if rcv == nil {
+			continue // skipped at construction; warning already logged
+		}
+		rcv := rcv
+		spec := d.adsbPPMSpecs[i]
+		name := fmt.Sprintf("adsb-ppm-%s-%d", spec.serial, spec.freq)
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			br := d.iqBrokers[spec.serial]
+			if br == nil {
+				d.log.Warn("adsb/ppm: SDR not found, skipping receiver",
+					"serial", spec.serial, "freq_hz", spec.freq)
+				return nil
+			}
+			if err := br.SetCenterFreq(spec.freq); err != nil {
+				d.log.Warn("adsb/ppm: SetCenterFreq failed",
+					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
+				return nil
+			}
+			sub := br.Subscribe()
+			defer sub.Close()
+			return rcv.Process(ctx, sub.C)
 		})
 	}
 	if d.pool != nil {
@@ -2704,6 +2771,14 @@ type aisSpec struct {
 // spawn each receiver without re-walking the YAML. Mirrors aisSpec /
 // mdc1200Spec.
 type dscSpec struct {
+	serial string
+	freq   uint32
+}
+
+// adsbPPMSpec captures the broker-side wiring info for one configured
+// native ADS-B PPM channel. Index-aligned with Daemon.adsbPPMReceivers
+// so the Run loop can spawn each receiver without re-walking the YAML.
+type adsbPPMSpec struct {
 	serial string
 	freq   uint32
 }
