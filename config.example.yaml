@@ -326,13 +326,15 @@ sdr:
 #                                     #  bursts instead of publishing them
 #                                     #  with crc_ok=false
 
-# DSC marine distress / safety / routine calls. The DSP frontend
-# (1200 Bd FSK on channel 70 = 156.525 MHz, mark 1300 Hz / space
-# 2100 Hz) ships in a follow-up PR; the protocol parser + bus +
-# storage + REST + panel scaffolding is live now. Operators
-# subscribing to the events.KindDSCMessage bus topic (e.g. a
-# custom CL replay tool) get decoded messages as soon as they
-# feed symbols into dsc.Decode.
+# DSC marine distress / safety / routine calls. Each entry pins one
+# SDR to a DSC channel and decodes the calls. Pipeline: FM demod →
+# FFSK discriminator (DSC tones, mark 1300 Hz / space 2100 Hz,
+# 1200 baud) → symbol-timing recovery → direct-FSK slicer →
+# BCH(10,7) character sync → ITU-R M.493 sequence parser. Decoded
+# sequences publish on events.KindDSCMessage; storage.DSCLog
+# persists them to the dsc_log SQLite table, the REST endpoint at
+# /api/v1/dsc/messages returns the most recent N, and the /dsc web
+# panel renders them live (distress alerts, MMSIs, positions).
 #
 # dsc:
 #   channels:
@@ -341,9 +343,9 @@ sdr:
 #       frequency_hz: 156_525_000     # marine VHF channel 70 (or one of
 #                                     #  the HF DSC channels: 2_187_500,
 #                                     #  8_414_500, 12_577_000, 16_804_500)
-#       drop_non_distress: false      # true to drop routine / safety
-#                                     #  chatter and keep only distress
-#                                     #  + urgency alerts
+#       drop_bad_fcs: false           # true to silently drop sequences
+#                                     #  with a BCH-failed character instead
+#                                     #  of publishing them flagged
 
 # ADS-B / aviation. Most 1090 MHz receive chains already run
 # dump1090 / readsb / BeastSplitter against a dedicated RTL-SDR
