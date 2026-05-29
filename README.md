@@ -94,6 +94,17 @@ Silicon and Intel. Full per-OS recipes at
   "not-available" sentinels. Plus `events.KindAISMessage` bus
   event, SQLite `vessel_log`, `GET /api/v1/ais/vessels`, and
   `/ais` web panel. See [docs/ais.md](docs/ais.md).
+- **MDC1200 signaling** — end-to-end pipeline for Motorola's
+  analog FFSK data burst keyed at the head / tail of a
+  transmission on conventional VHF / UHF voice channels. 1200-baud
+  CCIR FFSK DSP frontend (FM demod → FFSK discriminator at
+  1200 / 1800 Hz → Mueller-Müller timing → NRZ slicer), 40-bit
+  sync framer with polarity tolerance, 16×7 de-interleave, op /
+  arg / unit-ID decode with CRC-16-CCITT check, and an op/arg
+  table (PTT ANI, emergency, status, radio check, call alert,
+  selective call). Plus `events.KindMDC1200Message` bus event,
+  SQLite `mdc1200_log`, `GET /api/v1/mdc1200/messages`, and
+  `/mdc1200` web panel. See [docs/mdc1200.md](docs/mdc1200.md).
 - **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25
   Phase 2 / DMR) vocoders in Go, no DVSI / mbelib dependency.
   Per-call WAV + raw-frame sidecars; live PCM playback via direct

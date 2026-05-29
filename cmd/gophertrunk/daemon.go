@@ -25,6 +25,7 @@ import (
 
 	aisgmsk "github.com/MattCheramie/GopherTrunk/internal/radio/ais/gmsk"
 	aprsafsk "github.com/MattCheramie/GopherTrunk/internal/radio/aprs/afsk"
+	mdc1200afsk "github.com/MattCheramie/GopherTrunk/internal/radio/mdc1200/afsk"
 	pocsagrx "github.com/MattCheramie/GopherTrunk/internal/radio/pager/pocsag/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/baseband"
@@ -114,6 +115,7 @@ type Daemon struct {
 	vesselLog    *storage.VesselLog
 	dscLog       *storage.DSCLog
 	aircraftLog  *storage.AircraftLog
+	mdc1200Log   *storage.MDC1200Log
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -163,6 +165,12 @@ type Daemon struct {
 	// publishes decoded vessel messages on KindAISMessage.
 	aisReceivers []*aisgmsk.Receiver
 	aisSpecs     []aisSpec // index-aligned with aisReceivers
+	// mdc1200Receivers holds one MDC1200 FFSK receiver per configured
+	// mdc1200.channels entry. Same shape as the APRS receivers above:
+	// each subscribes to its assigned SDR's iqtap broker and publishes
+	// decoded signaling bursts on KindMDC1200Message.
+	mdc1200Receivers []*mdc1200afsk.Receiver
+	mdc1200Specs     []mdc1200Spec // index-aligned with mdc1200Receivers
 	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
 	// Primary consumers (CC decoder, conventional scanner) stream IQ
 	// through the broker so secondary observers (live spectrum,
@@ -1018,6 +1026,38 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		d.aisSpecs = append(d.aisSpecs, spec)
 	}
 
+	// MDC1200 FFSK receivers — one per configured mdc1200.channels
+	// entry. Same construction shape as APRS / AIS above: per-entry
+	// validation in the receiver, failures surface as a startup
+	// warning and skip the entry (nil slot preserved for stable
+	// indexing).
+	for _, mc := range cfg.MDC1200.Channels {
+		spec := mdc1200Spec{serial: mc.Serial, freq: mc.FrequencyHz}
+		if mc.Serial == "" || mc.FrequencyHz == 0 {
+			d.addWarning(fmt.Sprintf(
+				"mdc1200.channels: entry missing serial or frequency_hz (serial=%q freq=%d) — skipped",
+				mc.Serial, mc.FrequencyHz))
+			d.mdc1200Receivers = append(d.mdc1200Receivers, nil)
+			d.mdc1200Specs = append(d.mdc1200Specs, spec)
+			continue
+		}
+		rcv, err := mdc1200afsk.New(mdc1200afsk.Options{
+			InputRateHz: cfg.SDR.SampleRate,
+			SourceName:  mc.Serial,
+			Bus:         d.bus,
+			DropBadCRC:  mc.DropBadCRC,
+			Log:         log,
+		})
+		if err != nil {
+			d.addWarning(fmt.Sprintf("mdc1200.channels[%s]: %v — skipped", mc.Serial, err))
+			d.mdc1200Receivers = append(d.mdc1200Receivers, nil)
+			d.mdc1200Specs = append(d.mdc1200Specs, spec)
+			continue
+		}
+		d.mdc1200Receivers = append(d.mdc1200Receivers, rcv)
+		d.mdc1200Specs = append(d.mdc1200Specs, spec)
+	}
+
 	// Storage / call log / retention — optional.
 	if cfg.Storage.Path != "" {
 		db, err := storage.Open(cfg.Storage.Path)
@@ -1080,6 +1120,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 			return nil, fmt.Errorf("daemon: aircraft log: %w", err)
 		}
 		d.aircraftLog = acl
+
+		mdl, err := storage.NewMDC1200Log(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: mdc1200 log: %w", err)
+		}
+		d.mdc1200Log = mdl
 
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
@@ -1152,6 +1199,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.aircraftLog != nil {
 			opts.ADSB = adsbProvider{log: d.aircraftLog}
+		}
+		if d.mdc1200Log != nil {
+			opts.MDC1200 = mdc1200Provider{log: d.mdc1200Log}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1340,6 +1390,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return d.aircraftLog.Run(ctx)
 		})
 	}
+	if d.mdc1200Log != nil {
+		d.spawn(runCtx, "mdc1200log", false, func(ctx context.Context) error {
+			return d.mdc1200Log.Run(ctx)
+		})
+	}
 	if d.messageLog != nil {
 		d.spawn(runCtx, "messagelog", false, func(ctx context.Context) error {
 			return d.messageLog.Run(ctx)
@@ -1497,6 +1552,38 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return rcv.Process(ctx, sub.C)
 		})
 	}
+	// MDC1200 receivers — same shape as APRS / AIS above. Each
+	// subscribes to its assigned SDR's iqtap broker and runs the FFSK
+	// pipeline (FM demod → FFSK discriminator → symbol-timing recovery
+	// → NRZ slicer → sync framer → op/arg/unit-ID parser), publishing
+	// bursts onto the events bus where the MDC1200Log subscriber
+	// persists them and the /mdc1200 panel renders them. Non-essential:
+	// a missing SDR or misconfigured frequency is logged but doesn't
+	// bring down the trunking pipeline.
+	for i, rcv := range d.mdc1200Receivers {
+		if rcv == nil {
+			continue // skipped at construction; warning already logged
+		}
+		rcv := rcv
+		spec := d.mdc1200Specs[i]
+		name := fmt.Sprintf("mdc1200-%s-%d", spec.serial, spec.freq)
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			br := d.iqBrokers[spec.serial]
+			if br == nil {
+				d.log.Warn("mdc1200: SDR not found, skipping receiver",
+					"serial", spec.serial, "freq_hz", spec.freq)
+				return nil
+			}
+			if err := br.SetCenterFreq(spec.freq); err != nil {
+				d.log.Warn("mdc1200: SetCenterFreq failed",
+					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
+				return nil
+			}
+			sub := br.Subscribe()
+			defer sub.Close()
+			return rcv.Process(ctx, sub.C)
+		})
+	}
 	if d.pool != nil {
 		// Periodic USB-disconnect watchdog. Catches dongles that
 		// vanish while idle (between calls / hunts) and re-acquires
@@ -1637,6 +1724,9 @@ func (d *Daemon) Close() {
 		}
 		if d.aircraftLog != nil {
 			_ = d.aircraftLog.Close()
+		}
+		if d.mdc1200Log != nil {
+			_ = d.mdc1200Log.Close()
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
@@ -2422,6 +2512,15 @@ func (a adsbProvider) RecentAircraftReports(limit int) ([]storage.AircraftReport
 	return a.log.Recent(limit)
 }
 
+// mdc1200Provider adapts storage.MDC1200Log into api.MDC1200Provider
+// so the api package stays free of the storage import dependency.
+// Read-only — the decoder writes via the events bus.
+type mdc1200Provider struct{ log *storage.MDC1200Log }
+
+func (m mdc1200Provider) RecentMDC1200Messages(limit int) ([]storage.MDC1200Message, error) {
+	return m.log.Recent(limit)
+}
+
 // aprsSpec captures the broker-side wiring info for one configured
 // APRS channel. Index-aligned with Daemon.aprsReceivers so the Run
 // loop can spawn each receiver without re-walking the YAML. Mirrors
@@ -2436,6 +2535,15 @@ type aprsSpec struct {
 // loop can spawn each receiver without re-walking the YAML. Mirrors
 // aprsSpec / pocsagSpec.
 type aisSpec struct {
+	serial string
+	freq   uint32
+}
+
+// mdc1200Spec captures the broker-side wiring info for one configured
+// MDC1200 channel. Index-aligned with Daemon.mdc1200Receivers so the
+// Run loop can spawn each receiver without re-walking the YAML.
+// Mirrors aprsSpec / aisSpec.
+type mdc1200Spec struct {
 	serial string
 	freq   uint32
 }

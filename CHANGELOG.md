@@ -7,6 +7,22 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Added
+
+- **MDC1200 Motorola signaling decode** (#438) — end-to-end pipeline
+  for the analog FFSK data burst Motorola radios key at the head /
+  tail of a transmission on conventional VHF / UHF voice channels.
+  1200-baud CCIR FFSK DSP frontend (FM demod → FFSK discriminator at
+  1200 / 1800 Hz → Mueller-Müller timing → NRZ slicer, reusing the
+  existing `demod.FFSK`), a 40-bit sync framer with inverted-polarity
+  tolerance, 16×7 de-interleave, op / arg / unit-ID decode with a
+  CRC-16-CCITT check, and an op/arg label table (PTT ANI, emergency,
+  status, radio check, call alert, selective call, radio inhibit /
+  enable, remote monitor). Plus `events.KindMDC1200Message`, SQLite
+  `mdc1200_log`, `GET /api/v1/mdc1200/messages`, the `/mdc1200` web
+  panel, and an `mdc1200.channels` config block. Clean-room
+  implementation under Apache-2.0. See [docs/mdc1200.md](docs/mdc1200.md).
+
 ## [v0.2.6] — 2026-05-29
 
 Phase 5 expands across marine + aviation and the panels gain a shared
