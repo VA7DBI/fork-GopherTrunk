@@ -108,12 +108,24 @@ func (g Grant) String() string {
 type EndReason uint8
 
 const (
-	EndReasonUnknown    EndReason = iota
-	EndReasonNormal               // CC announced channel release / talk-off
-	EndReasonTimeout              // engine watchdog fired (no recent activity)
-	EndReasonPreempted            // higher-priority grant kicked us off
-	EndReasonLockout              // talkgroup is locked out by policy
-	EndReasonNoVoiceSDR           // every Voice-role SDR was busy
+	EndReasonUnknown EndReason = iota
+	// EndReasonNormal is the carrier-drop natural end: either the CC
+	// announced a channel release / talk-off, or — far more common
+	// on P25 where no such announcement is ever sent — the watchdog
+	// reaped a call whose Touch advanced past StartedAt (frames were
+	// decoded and then the transmitter stopped). Operator-visible
+	// meaning: the call ended cleanly, no decode problem.
+	EndReasonNormal
+	// EndReasonTimeout is the silent-from-start decode failure: the
+	// watchdog reaped a call whose LastHeardAt never moved past
+	// StartedAt — not a single LDU / voice subframe was delivered.
+	// This is the real failure mode (wrong demod mode, gain too low,
+	// LSM site decoded as C4FM, etc.) — distinct from EndReasonNormal
+	// above, which fires when the radio simply stopped transmitting.
+	EndReasonTimeout
+	EndReasonPreempted  // higher-priority grant kicked us off
+	EndReasonLockout    // talkgroup is locked out by policy
+	EndReasonNoVoiceSDR // every Voice-role SDR was busy
 	EndReasonError
 	EndReasonManual // operator ended the call via API / TUI
 )

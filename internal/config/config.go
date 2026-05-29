@@ -28,6 +28,30 @@ type Config struct {
 	Baseband   BasebandConfig   `yaml:"baseband"`
 	Paging     PagingConfig     `yaml:"paging"`
 	APRS       APRSConfig       `yaml:"aprs"`
+	AIS        AISConfig        `yaml:"ais"`
+	MDC1200    MDC1200Config    `yaml:"mdc1200"`
+	ADSB       ADSBConfig       `yaml:"adsb"`
+}
+
+// ADSBConfig configures the ADS-B aircraft-tracking input. The
+// native 1 Msps PPM DSP frontend is planned; for now the BEAST
+// upstream lets operators consume Mode-S frames from a separately-
+// running dump1090 / readsb / BeastSplitter / commercial hub. Most
+// 1090 MHz receiver chains already run dump1090 on a dedicated
+// RTL-SDR + 1090 MHz filter + LNA; pointing GopherTrunk at it
+// is a one-line config away.
+type ADSBConfig struct {
+	BeastUpstreams []ADSBBeastConfig `yaml:"beast_upstreams"`
+}
+
+// ADSBBeastConfig describes one BEAST upstream to consume. Addr is
+// typically "host:30005" — the standard dump1090 / readsb BEAST
+// output port. Multiple upstreams can run side-by-side (e.g. a
+// local antenna + a remote hub at the airport) and their frames
+// merge into the same `events.KindAircraftReport` stream.
+type ADSBBeastConfig struct {
+	Addr string `yaml:"addr"`
+	Name string `yaml:"name"` // log + metrics label
 }
 
 // APRSConfig configures the APRS / AX.25 Bell-202 AFSK receiver.
@@ -56,6 +80,59 @@ type APRSChannelConfig struct {
 	FrequencyHz uint32 `yaml:"frequency_hz"`
 	DropBadFCS  bool   `yaml:"drop_bad_fcs"`
 	DropNonUI   bool   `yaml:"drop_non_ui"`
+}
+
+// AISConfig configures the marine-AIS GMSK receiver. Each entry
+// pins an SDR to one of the AIS channels (87B = 161.975 MHz,
+// 88B = 162.025 MHz — class A vessels alternate between them
+// every second) and runs the DSP frontend (FM demod → GFSK
+// matched filter → symbol-timing recovery → NRZI decode → HDLC
+// framer → ITU-R M.1371-5 message parser) against its full IQ
+// stream. Decoded messages publish on events.KindAISMessage;
+// storage.VesselLog persists them, the REST endpoint at
+// /api/v1/ais/vessels and the /ais web panel render them.
+type AISConfig struct {
+	Channels []AISChannelConfig `yaml:"channels"`
+}
+
+// AISChannelConfig describes one AIS channel to decode. Serial
+// picks the SDR; the daemon tunes it to FrequencyHz and runs the
+// GMSK receiver against its full IQ stream. Most operators pin
+// one SDR to 161.975 (channel 87B) and another to 162.025 (88B)
+// to catch both halves of the class-A alternation; one channel
+// is enough for class-B-only or quiet-area monitoring. The
+// DropBadFCS and DropNonPosition toggles match the receiver's
+// options.
+type AISChannelConfig struct {
+	Serial          string `yaml:"serial"`
+	FrequencyHz     uint32 `yaml:"frequency_hz"`
+	DropBadFCS      bool   `yaml:"drop_bad_fcs"`
+	DropNonPosition bool   `yaml:"drop_non_position"`
+}
+
+// MDC1200Config configures the Motorola MDC1200 FFSK signaling
+// receiver. Each entry pins an SDR to a conventional analog VHF / UHF
+// voice channel and runs the DSP frontend (FM demod → FFSK
+// discriminator at 1200/1800 Hz → symbol-timing recovery → NRZ
+// slicer → sync framer → op/arg/unit-ID parser) against its full IQ
+// stream. Decoded bursts publish on events.KindMDC1200Message;
+// storage.MDC1200Log persists them, the REST endpoint at
+// /api/v1/mdc1200/messages and the /mdc1200 web panel render them.
+type MDC1200Config struct {
+	Channels []MDC1200ChannelConfig `yaml:"channels"`
+}
+
+// MDC1200ChannelConfig describes one MDC1200 channel to decode. Serial
+// picks the SDR; the daemon tunes it to FrequencyHz and runs the FFSK
+// receiver against its full IQ stream. Target the conventional analog
+// voice channels of the systems you monitor — MDC1200 bursts ride at
+// the head (and optionally tail) of each transmission. DropBadCRC
+// matches the receiver's option — leave it false to see CRC-failed
+// bursts on the panel (flagged), flip it on for noisy channels.
+type MDC1200ChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadCRC  bool   `yaml:"drop_bad_crc"`
 }
 
 // PagingConfig configures pager decoders (POCSAG today, FLEX

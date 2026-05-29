@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fetchAPRSPackets, type APRSPacket } from "../api/aprs";
+import { PositionMap, type MapPoint } from "../components/PositionMap";
 import { selectClientConfig, useShared } from "../store/shared";
 
 // APRS panel — list of recent decoded APRS / AX.25 packets. Each
@@ -40,6 +41,26 @@ export function APRS() {
     };
   }, [cfg]);
 
+  const mapPoints = useMemo<MapPoint[]>(
+    () =>
+      packets
+        .filter(
+          (p) =>
+            typeof p.latitude === "number" &&
+            typeof p.longitude === "number" &&
+            !(p.latitude === 0 && p.longitude === 0),
+        )
+        .map((p) => ({
+          id: `aprs-${p.id}`,
+          latitude: p.latitude as number,
+          longitude: p.longitude as number,
+          kind: "aprs" as const,
+          label: p.src,
+          detail: `${p.type} · ${p.body ?? ""}`.trim(),
+        })),
+    [packets],
+  );
+
   return (
     <div className="space-y-3">
       <header className="flex items-center justify-between">
@@ -48,6 +69,8 @@ export function APRS() {
           {packets.length} packet{packets.length === 1 ? "" : "s"}
         </span>
       </header>
+
+      {mapPoints.length > 0 && <PositionMap points={mapPoints} />}
 
       {error && (
         <div className="rounded border border-red-700/40 bg-red-900/20 text-red-200 text-xs px-3 py-2">
@@ -70,13 +93,13 @@ export function APRS() {
             {packets.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-3 py-4 text-center text-muted">
-                  No APRS packets yet. Tune an SDR to your local APRS
-                  channel (NA: 144.39 MHz · EU: 144.800 MHz · JP:
-                  144.64 MHz) and decoded packets will land here as
-                  they arrive. DSP wiring (1200 Bd Bell-202 AFSK →
-                  HDLC de-stuff → AX.25 frame) is the planned
-                  follow-up; once that ships, packets will flow
-                  end-to-end into this panel.
+                  No APRS packets yet. Add an{" "}
+                  <code className="text-accent">aprs.channels</code>{" "}
+                  entry to your config (NA primary: 144.39 MHz · EU R1:
+                  144.800 MHz · JP: 144.64 MHz · ISS: 145.825 MHz) and
+                  decoded packets — position beacons, messages,
+                  bulletins, status, Mic-E — will land here as they
+                  arrive.
                 </td>
               </tr>
             ) : (

@@ -111,6 +111,7 @@ type Packet struct {
 	Message  *Message
 	Status   *Status
 	Bulletin *Bulletin
+	MicE     *MicE
 	Raw      string
 }
 
@@ -333,7 +334,21 @@ func (p Packet) String() string {
 		}
 		return fmt.Sprintf("BULLETIN %s: %q", p.Bulletin.ID, p.Bulletin.Body)
 	case TypeMicE:
-		return "MIC-E (compressed; decoder pending)"
+		if p.MicE == nil {
+			return "MIC-E (destination unavailable)"
+		}
+		s := fmt.Sprintf("MIC-E %.4f,%.4f %s",
+			p.MicE.Latitude, p.MicE.Longitude, p.MicE.MessageCode)
+		if p.MicE.Speed != 0 || p.MicE.Course != 0 {
+			s += fmt.Sprintf(" %dkn @ %d°", p.MicE.Speed, p.MicE.Course)
+		}
+		if p.MicE.HasAltitude {
+			s += fmt.Sprintf(" alt=%dm", p.MicE.Altitude)
+		}
+		if p.MicE.Comment != "" {
+			s += fmt.Sprintf(" %q", p.MicE.Comment)
+		}
+		return s
 	case TypeWeather:
 		return "WEATHER " + p.Raw
 	case TypeTelemetry:

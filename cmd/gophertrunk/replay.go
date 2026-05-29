@@ -61,6 +61,12 @@ func runReplay(args []string) {
 	// landscape across the whole capture. Off by default since it
 	// allocates an O(numDibits) buffer.
 	diag := fs.Bool("diag", false, "print a demod-quality diagnostic report (dibit histogram + per-rotation FSW correlation landscape) at EOF")
+	// Issue #402: the decision-directed AFC is off by default (it can
+	// stably false-lock and broke CC lock on the original capture), so
+	// the daemon and replay run CoarseAFC-alone. This knob re-enables it
+	// for A/B experimentation on a capture without turning it on in
+	// production. C4FM only.
+	enableDDA := fs.Bool("dda", false, "enable the experimental decision-directed AFC on the C4FM path (off by default; see issue #402)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `gophertrunk replay — decode a raw IQ capture file offline.
 
@@ -175,9 +181,10 @@ FLAGS:`)
 		diagAcc = &iqDiag{}
 	}
 	rxOpts := p25phase1rx.Options{
-		SampleRateHz: receiverRate,
-		DeviationHz:  1800.0,
-		DemodMode:    demodMode,
+		SampleRateHz:              receiverRate,
+		DeviationHz:               1800.0,
+		DemodMode:                 demodMode,
+		EnableDecisionDirectedAFC: *enableDDA,
 		DibitSink: func(dibits []uint8, baseIdx int) {
 			dibitCount += int64(len(dibits))
 			if diagAcc != nil {
@@ -214,16 +221,31 @@ FLAGS:`)
 	const stateLogIntervalSec = 1.0
 	var nextStateLogAt float64 = stateLogIntervalSec
 	logReceiverState := func(at float64) {
+		// afc_hz_est is the TRUE carrier offset (rx.AFCOffsetHz), which
+		// divides out the matched filter's sps DC-gain. The earlier
+		// AFCBias·Fs/(2π) form over-reported by ≈sps (≈10× at 48 kHz /
+		// 4800 baud) and sent issue #402 chasing a phantom ~10 kHz
+		// offset that was really ~1 kHz. afc_bias_rad_per_sample is the
+		// raw matched-output-unit value behind it.
+		//
+		// slicer_levels are the adaptive slicer's tracked −3/−1/+1/+3
+		// levels (issue #402). On a clean symmetric eye they sit near
+		// ±agc_target·{3/2, 1/2}; an asymmetric site shows one rail
+		// stretched, and the slicer's midpoint thresholds follow it.
+		lv := rx.SlicerLevels()
 		fmt.Fprintf(os.Stderr,
-			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f\n",
+			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f  dda_active=%t  dda_rearms=%d  slicer_levels=[%.4f %.4f %.4f %.4f]\n",
 			at,
 			rx.AFCBiasRadPerSample(),
-			rx.AFCBiasRadPerSample()*receiverRate/(2*math.Pi),
+			rx.AFCOffsetHz(),
 			rx.AGCLevel(),
 			rx.AGCTarget(),
 			ratioOrZero(rx.AGCTarget(), rx.AGCLevel()),
 			rx.MMClockMu(),
-			rx.MMClockSPS())
+			rx.MMClockSPS(),
+			rx.DDAActive(),
+			rx.DDARearms(),
+			lv[0], lv[1], lv[2], lv[3])
 	}
 
 	const chunkSamples = 8192

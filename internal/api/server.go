@@ -280,6 +280,30 @@ type Server struct {
 	// storage.APRSLog.
 	aprs APRSProvider
 
+	// ais is the optional provider backing /api/v1/ais/...
+	// routes (AIS / vessel-tracking log). nil disables the routes.
+	// Implemented by the daemon over the SQLite-backed
+	// storage.VesselLog.
+	ais AISProvider
+
+	// dsc is the optional provider backing /api/v1/dsc/...
+	// routes (marine DSC sequence log). nil disables the routes.
+	// Implemented by the daemon over the SQLite-backed
+	// storage.DSCLog.
+	dsc DSCProvider
+
+	// adsb is the optional provider backing /api/v1/adsb/...
+	// routes (ADS-B aircraft report log). nil disables the
+	// routes. Implemented by the daemon over the SQLite-backed
+	// storage.AircraftLog.
+	adsb ADSBProvider
+
+	// mdc1200 is the optional provider backing /api/v1/mdc1200/...
+	// routes (MDC1200 signaling-burst log). nil disables the routes.
+	// Implemented by the daemon over the SQLite-backed
+	// storage.MDC1200Log.
+	mdc1200 MDC1200Provider
+
 	mu     sync.Mutex
 	srv    *http.Server
 	closed bool
@@ -484,6 +508,26 @@ type ServerOptions struct {
 	// APRS / AX.25 packets. Wired by the daemon over the SQLite-
 	// backed storage.APRSLog.
 	APRS APRSProvider
+	// AIS, when non-nil, enables the
+	// GET /api/v1/ais/vessels route serving recent decoded
+	// AIS messages. Wired by the daemon over the SQLite-backed
+	// storage.VesselLog.
+	AIS AISProvider
+	// DSC, when non-nil, enables the
+	// GET /api/v1/dsc/messages route serving recent decoded
+	// marine DSC sequences. Wired by the daemon over the
+	// SQLite-backed storage.DSCLog.
+	DSC DSCProvider
+	// ADSB, when non-nil, enables the
+	// GET /api/v1/adsb/aircraft route serving recent decoded
+	// Mode-S frames. Wired by the daemon over the SQLite-backed
+	// storage.AircraftLog.
+	ADSB ADSBProvider
+	// MDC1200, when non-nil, enables the
+	// GET /api/v1/mdc1200/messages route serving recent decoded
+	// MDC1200 signaling bursts. Wired by the daemon over the
+	// SQLite-backed storage.MDC1200Log.
+	MDC1200 MDC1200Provider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -584,6 +628,10 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		diag:           opts.Diag,
 		pager:          opts.Pager,
 		aprs:           opts.APRS,
+		ais:            opts.AIS,
+		dsc:            opts.DSC,
+		adsb:           opts.ADSB,
+		mdc1200:        opts.MDC1200,
 	}, nil
 }
 
@@ -784,6 +832,10 @@ func (s *Server) routes() *http.ServeMux {
 	// APRS / AX.25 packet log — recent decoded packets. Read-only;
 	// the decoder writes via the events bus → APRSLog.
 	mux.HandleFunc("GET /api/v1/aprs/packets", s.handleAPRSPackets)
+	mux.HandleFunc("GET /api/v1/ais/vessels", s.handleAISMessages)
+	mux.HandleFunc("GET /api/v1/dsc/messages", s.handleDSCMessages)
+	mux.HandleFunc("GET /api/v1/adsb/aircraft", s.handleADSBAircraft)
+	mux.HandleFunc("GET /api/v1/mdc1200/messages", s.handleMDC1200Messages)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes

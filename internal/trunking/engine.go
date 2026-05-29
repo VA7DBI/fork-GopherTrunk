@@ -34,6 +34,11 @@ type Engine struct {
 	// Subsequent grants on an empty pool drop at DEBUG. Reset when
 	// the engine is reconstructed (daemon reload / restart).
 	noVoiceSDROnce sync.Once
+	// noVoiceCoverageOnce gates the analogous warning for a pool that
+	// has voice devices but none whose tuning window covers the grant
+	// frequency — e.g. a wideband-only rig whose IQ window excludes the
+	// repeater. Logged once, then DEBUG per grant.
+	noVoiceCoverageOnce sync.Once
 
 	// scanMode is read under modeMu so the API cockpit can flip it at
 	// runtime without a daemon restart. HandleGrant takes a snapshot
@@ -52,8 +57,13 @@ type EngineOptions struct {
 	Log        *slog.Logger
 	VoicePool  *VoicePool
 	Talkgroups *TalkgroupDB
-	// CallTimeout is how long a call can run without a Touch before the
-	// watchdog ends it as EndReasonTimeout. Default 30 s.
+	// CallTimeout is how long a call can run without a Touch before
+	// the watchdog reaps it. Default 30 s. The end reason depends on
+	// whether the call ever decoded frames: EndReasonNormal when
+	// frames arrived and the carrier later dropped (P25's natural
+	// end-of-call mechanism, since the CC has no explicit channel
+	// release); EndReasonTimeout when no frames ever arrived (silent
+	// decode failure).
 	CallTimeout time.Duration
 	// Now is injectable for tests; defaults to time.Now.
 	Now func() time.Time
@@ -83,6 +93,13 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	// Surface the resolved watchdog timeout once at startup so an operator
+	// can confirm from logs that the configured trunking.call_timeout_ms
+	// is the value the engine is actually using — issue #356 follow-up
+	// where a field log showed calls dying well under the configured
+	// 5 s, and there was no log line to verify what the engine had
+	// applied.
+	opts.Log.Info("engine: configured", "call_timeout", opts.CallTimeout)
 	e := &Engine{
 		bus:        opts.Bus,
 		log:        opts.Log,
@@ -192,6 +209,27 @@ func (e *Engine) HandleGrant(g Grant) {
 		}
 	}
 
+	// Suppress duplicate grants. The Phase 1 CC repeats voice-grant
+	// TSBKs while a call is active (the user's issue #356 log shows
+	// two grants for tg=32181 freq=773431250 arriving 20 ms apart),
+	// and without this guard the engine binds a second voice SDR to
+	// the same call — wasting a tuner, producing a duplicate WAV, and
+	// confusing the operator's view of which device is serving the
+	// call. Treat a repeat grant as the CC re-asserting "this call is
+	// still going" and refresh the existing bind's LastHeardAt. Skip
+	// when GroupID is zero (grants without a TG can legitimately
+	// share a frequency).
+	if g.GroupID != 0 {
+		for _, ac := range e.pool.Active() {
+			if ac.Grant.GroupID == g.GroupID && ac.Grant.FrequencyHz == g.FrequencyHz {
+				e.pool.Touch(ac.Device.Serial, e.now())
+				e.log.Debug("grant already active; refreshed",
+					"grant", g.String(), "device", ac.Device.Serial)
+				return
+			}
+		}
+	}
+
 	// 1) Free device available? Allocate. FindFreeForFrequency skips
 	// virtual voice tuners whose wideband window doesn't cover the
 	// grant — so a P25 voice grant outside the wideband band falls
@@ -201,25 +239,42 @@ func (e *Engine) HandleGrant(g Grant) {
 		e.startCall(free, g, tg)
 		return
 	}
-	// 2) All busy. Look at the lowest-priority active call.
-	victim := e.pool.LowestPriorityActive()
+	// 2) No free device can serve this frequency. Look at the lowest-
+	// priority active call *on a device that can tune the grant* —
+	// preempting a device whose window excludes the frequency would
+	// end an existing call to free a tuner that then can't bind the
+	// incoming grant.
+	victim := e.pool.LowestPriorityActiveForFrequency(g.FrequencyHz)
 	if victim == nil {
-		// FindFree() and LowestPriorityActive() both nil means the
-		// pool has zero devices — trunking is configured but no
-		// `role: voice` SDR is attached, so every grant is dropped.
-		// Log loudly once with the fix, then DEBUG for the rest of
-		// the daemon's life so we don't spam one WARN per grant.
+		// No capable device is busy with a preemptable call. Work out
+		// which of three situations we're in so the operator gets an
+		// actionable message instead of a misleading one.
 		if len(e.pool.Devices()) == 0 {
+			// Pool has zero devices — trunking is configured but no
+			// `role: voice` SDR (or wideband voice tap) is attached, so
+			// every grant is dropped. Log loudly once, then DEBUG for
+			// the rest of the daemon's life so we don't spam per grant.
 			e.noVoiceSDROnce.Do(func() {
-				e.log.Warn("no voice SDR available; voice grants will be dropped — add a role: voice device (see docs/hardware.md)",
+				e.log.Warn("no voice SDR available; voice grants will be dropped — add a role: voice device, or a role: wideband device with voice_taps (see docs/hardware.md)",
 					"grant", g.String())
 			})
 			e.log.Debug("dropping grant: no voice SDR", "grant", g.String())
 			return
 		}
-		// Devices > 0 but no actives recorded — should be
-		// unreachable: a busy device always contributes an active.
-		// Surface as Error so the bug is visible in logs.
+		if !e.pool.HasCapableDevice(g.FrequencyHz) {
+			// Devices exist but none can tune this frequency — e.g.
+			// every voice device is a wideband tap and the grant falls
+			// outside its IQ window. A coverage gap, not an engine bug.
+			e.noVoiceCoverageOnce.Do(func() {
+				e.log.Warn("voice grant frequency outside every voice device's tuning window; widen sdr.sample_rate / adjust center_freq_hz, or add a role: voice SDR (see docs/hardware.md)",
+					"grant", g.String())
+			})
+			e.log.Debug("dropping grant: no voice device covers frequency", "grant", g.String())
+			return
+		}
+		// A capable device exists, none is free (step 1 failed) and
+		// none is active — unreachable unless the active-tracking
+		// invariant broke. Surface as Error so the bug is visible.
 		e.log.Error("voice pool full but no actives (engine bug)", "grant", g.String())
 		return
 	}
@@ -450,7 +505,35 @@ func (e *Engine) runWatchdog() {
 	cutoff := now.Add(-e.timeout)
 	for _, ac := range e.pool.Active() {
 		if ac.LastHeardAt.Before(cutoff) {
-			e.endCall(ac, EndReasonTimeout)
+			// Distinguish carrier-drop natural end from silent-from-
+			// start decode failure. P25 trunking has no explicit
+			// channel-release message on the CC for most calls, so
+			// the only natural end-of-call signal IS the grace
+			// timeout after the last LDU. A call whose LastHeardAt
+			// advanced past StartedAt received frames at least once
+			// — its end is "carrier dropped, watchdog reaped after
+			// the grace window" → EndReasonNormal. A call whose
+			// LastHeardAt is still equal to StartedAt never decoded
+			// a single frame → EndReasonTimeout (the real failure
+			// mode issue #356 wants to surface). Issue #356
+			// follow-up: a field log showed three healthy calls all
+			// reported as reason=timeout, leading the operator to
+			// believe the decode was still broken when it was
+			// actually a terminology problem.
+			reason := EndReasonTimeout
+			if ac.LastHeardAt.After(ac.StartedAt) {
+				reason = EndReasonNormal
+			}
+			e.log.Debug("watchdog: reaping call",
+				"device", ac.Device.Serial,
+				"grant", ac.Grant.String(),
+				"last_heard_at", ac.LastHeardAt,
+				"started_at", ac.StartedAt,
+				"now", now,
+				"elapsed", now.Sub(ac.LastHeardAt),
+				"timeout", e.timeout,
+				"reason", reason)
+			e.endCall(ac, reason)
 		}
 	}
 }

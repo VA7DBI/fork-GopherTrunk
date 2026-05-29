@@ -81,8 +81,18 @@ payload the bus / log / REST / UI scaffolding above expects.
     `{seqno}`, `ack` / `rej` short-form) or bulletin
     (`BLN`-prefixed addressee → `Bulletin` struct)
   - `>` — status (free-text)
-  - `;` / `_` / `T#` / Mic-E — type-tagged with payloads
-    stashed for follow-up decoders
+  - `;` / `_` / `T#` — type-tagged with payloads stashed for
+    follow-up decoders
+  - **Mic-E** (0x1C / 0x1D / "`" / "'") — full decode of the
+    compressed mobile-tracker format that packs lat/lon, speed,
+    course, symbol code and table, message code (M0 Off Duty
+    through M7 Priority, plus Emergency and custom codes) into
+    the 7-byte AX.25 destination address + 9 bytes of info
+    field. Optional altitude trailer (`XXX}` base-91, meters
+    above sea level) decoded into the same `MicE` payload.
+    Surfaces lat/lon through the standard `Position` field so
+    the storage / REST / web-panel layers pick it up without
+    special-casing. Spec: APRS 1.0.1 §10.
   - anything else — `TypeUnknown`, raw bytes preserved
 - Position parsing covers both hemispheres (N/S, E/W), the
   spec's "ambiguity space" convention (low-precision digits as
@@ -155,13 +165,20 @@ skipped — same non-essential treatment as `paging.pocsag`.
   captured `.wav` / `.cfile` from a real APRS channel under
   `samples/aprs/` would let the test suite replay through
   `internal/sdr/baseband` and assert the full chain.
-- **Mic-E decoder.** Compressed lat/lon format common on mobile
-  trackers (Kenwood TH-D74, Yaesu FT-3D). ~200 LOC for base-91
-  unpacking + speed / course / altitude decode.
-- **Live map.** Position-bearing types have lat/lon — a
-  Leaflet / MapLibre overlay on top of `/aprs` showing the most
-  recent station fixes is an obvious next step once the panel
-  has real traffic.
+- **Mic-E rich fields on the panel.** Speed, course, altitude,
+  and the human-readable message code (`M3 Returning`, etc.)
+  decode into the `MicE` struct but the storage row only carries
+  the standard `latitude` / `longitude` columns. Surfacing the
+  rich fields needs an `aprs_log` schema bump + REST DTO + a
+  new column on `/aprs`.
+## Live map
+
+Position-bearing rows (uncompressed positions, Mic-E) light up
+the shared Leaflet map at the top of `/aprs` — blue markers
+plotted on the OpenStreetMap tile layer with the station
+callsign on hover, camera auto-fits to the current rowset. The
+same `<PositionMap>` component renders on `/ais`, `/dsc` (for
+distress alerts that included a position), and `/adsb`.
 
 ## References
 

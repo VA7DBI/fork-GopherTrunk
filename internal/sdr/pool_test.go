@@ -26,6 +26,8 @@ type fakeDevice struct {
 	biasTeeSets int
 	sampleRate  uint32
 	rateErr     error
+	ppm         int
+	ppmSets     int
 }
 
 func (d *fakeDevice) Info() Info                 { return d.info }
@@ -38,7 +40,7 @@ func (d *fakeDevice) SetSampleRate(hz uint32) error {
 	return nil
 }
 func (d *fakeDevice) SetGain(int) error                                    { return nil }
-func (d *fakeDevice) SetPPM(int) error                                     { return nil }
+func (d *fakeDevice) SetPPM(ppm int) error                                 { d.ppm = ppm; d.ppmSets++; return nil }
 func (d *fakeDevice) SetBiasTee(on bool) error                             { d.biasTeeOn = on; d.biasTeeSets++; return nil }
 func (d *fakeDevice) StreamIQ(context.Context) (<-chan []complex64, error) { return nil, io.EOF }
 func (d *fakeDevice) Close() error {
@@ -396,6 +398,167 @@ func TestPoolReacquireErrorsWhenSerialMissingAfterReenumerate(t *testing.T) {
 	}
 	if !entry.Device.(*fakeDevice).closed {
 		t.Error("stale device handle should be Closed even on failed reacquire")
+	}
+}
+
+// TestPoolStrictOpensOnlyHintedSerial guards the fix for issue #264:
+// when the operator names devices in config.yaml, the pool must treat
+// that list as an allowlist. Previously every enumerated device was
+// opened, which on a multi-stick host meant unrelated dongles got
+// taken over (and worse — a non-hinted dongle could win RoleControl,
+// so the cchunt path bound to a device that hadn't received the
+// operator's PPM correction).
+func TestPoolStrictOpensOnlyHintedSerial(t *testing.T) {
+	drv := &fakeDriver{name: "fake-strict", infos: []Info{
+		{Driver: "fake-strict", Index: 0, Serial: "NOOELEC-1"},
+		{Driver: "fake-strict", Index: 1, Serial: "V4"},
+		{Driver: "fake-strict", Index: 2, Serial: "NOOELEC-2"},
+	}}
+	registerDriver(t, drv.name, drv)
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	p := NewPool(log)
+	err := p.OpenWith(PoolOpenOptions{
+		SampleRateHz: 2_400_000,
+		Hints:        []Hint{{Serial: "V4", PPM: -4}},
+		Strict:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	entries := p.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("strict mode opened %d devices, want 1; log was: %q", len(entries), buf.String())
+	}
+	if entries[0].Info.Serial != "V4" {
+		t.Errorf("opened serial = %q, want V4", entries[0].Info.Serial)
+	}
+	// The lone opened device should claim RoleControl via the
+	// unclaimed-control rule, so FirstByRole(RoleControl) hands the
+	// PPM-corrected V4 to cchunt / ccdecoder.
+	if entries[0].Role != RoleControl {
+		t.Errorf("role = %v, want control", entries[0].Role)
+	}
+	dev := entries[0].Device.(*fakeDevice)
+	if dev.ppmSets != 1 || dev.ppm != -4 {
+		t.Errorf("SetPPM not applied: sets=%d ppm=%d, want sets=1 ppm=-4", dev.ppmSets, dev.ppm)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "NOOELEC-1") || !strings.Contains(out, "NOOELEC-2") {
+		t.Errorf("expected skip log for both NooElecs; log was: %q", out)
+	}
+	if !strings.Contains(out, "skipping non-configured SDR") {
+		t.Errorf("expected skip-reason log; log was: %q", out)
+	}
+	if !strings.Contains(out, "ppm=-4") {
+		t.Errorf("device-opened log should surface ppm; log was: %q", out)
+	}
+}
+
+// TestPoolStrictWarnsOnMissingHintSerial covers the operator-error
+// path: a serial in config.yaml that no connected dongle reports.
+// The pool should warn about the missing hint and leave the other
+// physically-present devices closed (strict mode is an allowlist, not
+// a "use these or fall back" preference).
+func TestPoolStrictWarnsOnMissingHintSerial(t *testing.T) {
+	drv := &fakeDriver{name: "fake-strict-missing", infos: []Info{
+		{Driver: "fake-strict-missing", Index: 0, Serial: "PRESENT-1"},
+		{Driver: "fake-strict-missing", Index: 1, Serial: "PRESENT-2"},
+	}}
+	registerDriver(t, drv.name, drv)
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	p := NewPool(log)
+	err := p.OpenWith(PoolOpenOptions{
+		Hints:  []Hint{{Serial: "MISSING-ZZZ", Role: RoleControl}},
+		Strict: true,
+	})
+	// All discovered devices are non-hinted, so strict mode skips them
+	// and OpenWith returns "no SDR devices opened".
+	if err == nil {
+		t.Fatal("expected error when no hinted device is present, got nil")
+	}
+	if !strings.Contains(err.Error(), "no SDR devices opened") {
+		t.Errorf("err = %v, want 'no SDR devices opened'", err)
+	}
+	if entries := p.Entries(); len(entries) != 0 {
+		t.Errorf("pool has %d entries, want 0 (the present-but-non-hinted devices must not be opened)", len(entries))
+	}
+	out := buf.String()
+	if !strings.Contains(out, "configured SDR not present") || !strings.Contains(out, "MISSING-ZZZ") {
+		t.Errorf("expected missing-serial warn; log was: %q", out)
+	}
+}
+
+// TestPoolStrictIgnoresEmptySerialHint covers the ambiguous case: an
+// allowlist entry that doesn't name a device. The hint is dropped at
+// ingest with a warn — left in, it would silently match nothing and
+// trigger the missing-serial warn with an empty value, which is the
+// less actionable failure mode.
+func TestPoolStrictIgnoresEmptySerialHint(t *testing.T) {
+	drv := &fakeDriver{name: "fake-strict-empty", infos: []Info{
+		{Driver: "fake-strict-empty", Index: 0, Serial: "S1"},
+	}}
+	registerDriver(t, drv.name, drv)
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	p := NewPool(log)
+	err := p.OpenWith(PoolOpenOptions{
+		Hints: []Hint{
+			{Serial: "", Role: RoleControl, PPM: -4},
+			{Serial: "S1"},
+		},
+		Strict: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	entries := p.Entries()
+	if len(entries) != 1 || entries[0].Info.Serial != "S1" {
+		t.Fatalf("entries = %+v, want exactly S1", entries)
+	}
+	// PPM from the empty-serial hint must NOT have leaked onto S1.
+	if dev := entries[0].Device.(*fakeDevice); dev.ppmSets != 0 {
+		t.Errorf("empty-serial hint leaked SetPPM onto S1: sets=%d ppm=%d", dev.ppmSets, dev.ppm)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "ignoring hint with empty serial in strict mode") {
+		t.Errorf("expected empty-serial warn; log was: %q", out)
+	}
+}
+
+// TestPoolOpenWithNonStrictPreservesLegacyBehavior exercises the new
+// OpenWith entry point with Strict: false to confirm the shim path
+// matches the historical Open(rate, hints) behaviour: every
+// enumerated device opens and non-hinted devices get auto-assigned
+// roles.
+func TestPoolOpenWithNonStrictPreservesLegacyBehavior(t *testing.T) {
+	drv := &fakeDriver{name: "fake-nonstrict", infos: []Info{
+		{Driver: "fake-nonstrict", Index: 0, Serial: "AAA"},
+		{Driver: "fake-nonstrict", Index: 1, Serial: "BBB"},
+		{Driver: "fake-nonstrict", Index: 2, Serial: "CCC"},
+	}}
+	registerDriver(t, drv.name, drv)
+
+	p := NewPool(nil)
+	err := p.OpenWith(PoolOpenOptions{
+		Hints:  []Hint{{Serial: "BBB", Role: RoleControl}},
+		Strict: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	if entries := p.Entries(); len(entries) != 3 {
+		t.Fatalf("non-strict OpenWith opened %d, want 3", len(entries))
 	}
 }
 

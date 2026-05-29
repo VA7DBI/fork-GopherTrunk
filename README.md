@@ -40,7 +40,7 @@ this exist? Read **[The Story of GopherTrunk](https://gophertrunk.org/story.html
 
 ```sh
 # Linux x86_64 — see https://gophertrunk.org/downloads.html for macOS, Windows, ARM64.
-VERSION=v0.2.4
+VERSION=v0.2.6
 curl -L -o gophertrunk.tar.gz \
   https://github.com/MattCheramie/GopherTrunk/releases/download/${VERSION}/gophertrunk-${VERSION}-linux-amd64.tar.gz
 tar xzf gophertrunk.tar.gz && cd gophertrunk-${VERSION}-linux-amd64
@@ -73,12 +73,68 @@ Silicon and Intel. Full per-OS recipes at
   See [docs/pocsag.md](docs/pocsag.md).
 - **APRS / AX.25 packet** — end-to-end pipeline for the
   amateur-radio APRS metadata bus (position beacons, messages,
-  bulletins, status). Bell-202 AFSK DSP frontend (FM demod →
-  FFSK tone discriminator → symbol-time recovery → NRZI →
-  HDLC framer), AX.25 frame parser with CRC-16-CCITT, APRS
-  info-field decoders, plus `events.KindAPRSPacket` bus event,
-  SQLite `aprs_log`, `GET /api/v1/aprs/packets`, and `/aprs`
-  web panel. See [docs/aprs.md](docs/aprs.md).
+  bulletins, status, Mic-E mobile-tracker compressed format).
+  Bell-202 AFSK DSP frontend (FM demod → FFSK tone discriminator
+  → symbol-time recovery → NRZI → HDLC framer), AX.25 frame
+  parser with CRC-16-CCITT, APRS info-field decoders including
+  full Mic-E (lat/lon, speed, course, altitude, message code),
+  plus `events.KindAPRSPacket` bus event, SQLite `aprs_log`,
+  `GET /api/v1/aprs/packets`, and `/aprs` web panel.
+  See [docs/aprs.md](docs/aprs.md).
+- **AIS marine** — end-to-end pipeline for the Automatic
+  Identification System every commercial vessel broadcasts on
+  marine VHF 87B / 88B (161.975 / 162.025 MHz). 9600 Bd GMSK DSP
+  frontend (FM demod → GFSK matched filter at BT = 0.4 →
+  symbol-time recovery → NRZI → HDLC framer → CRC-CCITT
+  validation), ITU-R M.1371-5 message-type dispatch (Class A
+  position reports 1/2/3, Class B 18 + 19 extended, base-station
+  4, static + voyage 5, Class B static 24 A + B), signed-integer
+  lat/lon decoder (1/600000 minute resolution), 6-bit ASCII text
+  fields (vessel name, call-sign, destination), spec
+  "not-available" sentinels. Plus `events.KindAISMessage` bus
+  event, SQLite `vessel_log`, `GET /api/v1/ais/vessels`, and
+  `/ais` web panel. See [docs/ais.md](docs/ais.md).
+- **MDC1200 signaling** — end-to-end pipeline for Motorola's
+  analog FFSK data burst keyed at the head / tail of a
+  transmission on conventional VHF / UHF voice channels. 1200-baud
+  CCIR FFSK DSP frontend (FM demod → FFSK discriminator at
+  1200 / 1800 Hz → Mueller-Müller timing → NRZ slicer), 40-bit
+  sync framer with polarity tolerance, 16×7 de-interleave, op /
+  arg / unit-ID decode with CRC-16-CCITT check, and an op/arg
+  table (PTT ANI, emergency, status, radio check, call alert,
+  selective call). Plus `events.KindMDC1200Message` bus event,
+  SQLite `mdc1200_log`, `GET /api/v1/mdc1200/messages`, and
+  `/mdc1200` web panel. See [docs/mdc1200.md](docs/mdc1200.md).
+- **DSC marine distress** — protocol layer for the GMDSS Digital
+  Selective Calling system that fires every marine VHF channel-
+  70 distress alert. ITU-R M.493-15 format dispatch (Distress,
+  All-Ships, Individual, Group, Geographic, Auto-Individual),
+  BCH(10,7) syndrome check, position decoder with quadrant
+  hemisphere flip, nature-of-distress table. Plus
+  `events.KindDSCMessage` bus event, SQLite `dsc_log`,
+  `GET /api/v1/dsc/messages`, and `/dsc` web panel (rows tint
+  by category — distress=red, urgency=orange, safety=blue).
+  DSP frontend (1200 Bd FSK at 1300/2100 Hz tones) follows.
+  See [docs/dsc.md](docs/dsc.md).
+- **ADS-B aviation** — end-to-end pipeline for the 1090 MHz
+  Mode-S transponder broadcasts every commercial flight emits.
+  ICAO Annex 10 Vol IV / DO-260B parser (CRC-24 + DF dispatch +
+  type-code dispatch for identification, airborne / surface
+  position with 12-bit Q-bit altitude, airborne velocity);
+  globally-unambiguous CPR position decoder + per-ICAO
+  even+odd pair tracker. **BEAST upstream** consumes Mode-S
+  frames from any dump1090 / readsb / BeastSplitter via TCP —
+  most 1090 MHz receive chains already run one, GopherTrunk
+  decodes its output. Plus `events.KindAircraftReport` bus
+  event, SQLite `aircraft_log`, `GET /api/v1/adsb/aircraft`,
+  and `/adsb` web panel. Native 1 Msps PPM DSP frontend
+  follows. See [docs/adsb.md](docs/adsb.md).
+- **Live map** — Shared Leaflet map at the top of each
+  position-bearing panel (APRS / AIS / DSC / ADS-B) renders
+  decoded positions over OpenStreetMap tiles, colour-coded per
+  protocol (blue / cyan / red-distress / purple), with marker
+  tooltips and camera auto-fit. Same `<PositionMap>` component
+  drives all four panels.
 - **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25
   Phase 2 / DMR) vocoders in Go, no DVSI / mbelib dependency.
   Per-call WAV + raw-frame sidecars; live PCM playback via direct

@@ -277,6 +277,86 @@ sdr:
 #       drop_non_ui: false            # true to silently drop non-UI
 #                                     #  AX.25 frames
 
+# AIS / marine-vessel GMSK receiver. Each entry pins one SDR to
+# an AIS channel (87B = 161.975 MHz or 88B = 162.025 MHz; Class A
+# vessels alternate between them every second, so pinning one SDR
+# to each captures both halves). Pipeline: FM demod → GFSK matched
+# filter (BT = 0.4) → symbol-timing recovery → NRZI decode →
+# HDLC framer → CRC validation → ITU-R M.1371-5 message parser.
+# Decoded messages publish on events.KindAISMessage;
+# storage.VesselLog persists them to the vessel_log SQLite table,
+# the REST endpoint at /api/v1/ais/vessels returns the most
+# recent N, and the /ais web panel renders them live.
+#
+# ais:
+#   channels:
+#     - serial: "marine-antenna"      # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 161_975_000     # AIS channel 87B (or 162_025_000 = 88B)
+#       drop_bad_fcs: false           # true to silently drop CRC-failed
+#                                     #  messages instead of publishing
+#                                     #  them with FCSOK=false
+#       drop_non_position: false      # true to drop static-data / base-
+#                                     #  station / channel-management
+#                                     #  messages and keep only vessel
+#                                     #  position reports
+
+# MDC1200 Motorola FFSK signaling. Each entry pins one SDR to a
+# conventional analog VHF / UHF voice channel and decodes the
+# in-band data bursts Motorola radios key at the head (and tail) of
+# a transmission. Pipeline: FM demod → FFSK discriminator (CCIR
+# tones, mark 1200 Hz / space 1800 Hz, 1200 baud) → symbol-timing
+# recovery → NRZ slicer → 40-bit sync framer → op/arg/unit-ID
+# parser with CRC check. Decoded bursts publish on
+# events.KindMDC1200Message; storage.MDC1200Log persists them to the
+# mdc1200_log SQLite table, the REST endpoint at
+# /api/v1/mdc1200/messages returns the most recent N, and the
+# /mdc1200 web panel renders them live (unit IDs, PTT ANI, emergency
+# / status / radio-check signaling).
+#
+# mdc1200:
+#   channels:
+#     - serial: "vhf-antenna"         # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 154_000_000     # conventional analog voice channel
+#                                     #  carrying Motorola signaling
+#       drop_bad_crc: false           # true to silently drop CRC-failed
+#                                     #  bursts instead of publishing them
+#                                     #  with crc_ok=false
+
+# DSC marine distress / safety / routine calls. The DSP frontend
+# (1200 Bd FSK on channel 70 = 156.525 MHz, mark 1300 Hz / space
+# 2100 Hz) ships in a follow-up PR; the protocol parser + bus +
+# storage + REST + panel scaffolding is live now. Operators
+# subscribing to the events.KindDSCMessage bus topic (e.g. a
+# custom CL replay tool) get decoded messages as soon as they
+# feed symbols into dsc.Decode.
+#
+# dsc:
+#   channels:
+#     - serial: "marine-antenna"      # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 156_525_000     # marine VHF channel 70 (or one of
+#                                     #  the HF DSC channels: 2_187_500,
+#                                     #  8_414_500, 12_577_000, 16_804_500)
+#       drop_non_distress: false      # true to drop routine / safety
+#                                     #  chatter and keep only distress
+#                                     #  + urgency alerts
+
+# ADS-B / aviation. Most 1090 MHz receive chains already run
+# dump1090 / readsb / BeastSplitter against a dedicated RTL-SDR
+# (with a 1090 MHz filter + LNA); GopherTrunk consumes its BEAST
+# output over TCP. The native 1 Msps PPM DSP frontend is a
+# planned follow-up — once it ships, this same panel + storage
+# table accepts frames from either source.
+#
+# adsb:
+#   beast_upstreams:
+#     - addr: "127.0.0.1:30005"       # dump1090 / readsb default BEAST port
+#       name: "local-dump1090"        # logged on every reconnect
+#     - addr: "antenna-pi.lan:30005"  # remote pi-at-the-antenna setup
+#       name: "rooftop"
+
 trunking:
   # call_timeout_ms: inactivity window after which the engine's
   # watchdog ends a call (publishes CallEnd with EndReasonTimeout

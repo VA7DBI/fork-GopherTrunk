@@ -107,7 +107,7 @@ func (r *Receiver) Push(bit byte) {
 		return
 	}
 
-	pkt := aprs.Decode(frame.Info)
+	pkt := aprs.DecodeWithDst(frame.Info, []byte(frame.Dst.Callsign))
 	msg := storage.APRSPacket{
 		Src:     frame.Src.String(),
 		Dst:     frame.Dst.String(),

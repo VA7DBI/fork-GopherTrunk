@@ -166,6 +166,109 @@ CREATE TABLE IF NOT EXISTS aprs_log (
 
 CREATE INDEX IF NOT EXISTS idx_aprs_log_time ON aprs_log(received_at);
 CREATE INDEX IF NOT EXISTS idx_aprs_log_src  ON aprs_log(src, received_at);
+
+-- AIS / vessel messages persisted from the decoder pipeline. One
+-- row per decoded message: MMSI + type tag + position (lat/lon/COG/
+-- SOG/heading) for position-bearing types + static data (vessel
+-- name, callsign, destination, ship type, IMO) for static types.
+-- Wire-bit payload preserved as hex on raw_hex for round-tripping
+-- into offline decoders.
+CREATE TABLE IF NOT EXISTS vessel_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at  INTEGER NOT NULL,             -- unix nanoseconds
+    mmsi         INTEGER NOT NULL DEFAULT 0,   -- 9-digit Maritime Mobile Service Identity
+    type         TEXT    NOT NULL DEFAULT '',  -- "position-a" | "position-b" | "static-voyage" | ...
+    body         TEXT    NOT NULL DEFAULT '',  -- type-specific summary
+    latitude     REAL    NOT NULL DEFAULT 0,
+    longitude    REAL    NOT NULL DEFAULT 0,
+    sog          REAL    NOT NULL DEFAULT 0,   -- speed over ground (knots)
+    cog          REAL    NOT NULL DEFAULT 0,   -- course over ground (degrees)
+    heading      INTEGER NOT NULL DEFAULT 511, -- true heading (511 = not available)
+    has_position INTEGER NOT NULL DEFAULT 0,
+    vessel_name  TEXT    NOT NULL DEFAULT '',
+    callsign     TEXT    NOT NULL DEFAULT '',
+    destination  TEXT    NOT NULL DEFAULT '',
+    ship_type    INTEGER NOT NULL DEFAULT 0,
+    imo          INTEGER NOT NULL DEFAULT 0,
+    raw_hex      TEXT    NOT NULL DEFAULT '',
+    fcs_ok       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_vessel_log_time ON vessel_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_vessel_log_mmsi ON vessel_log(mmsi, received_at);
+
+-- DSC (Digital Selective Calling) sequences persisted from the
+-- decoder pipeline. One row per decoded sequence: format
+-- (distress / all-ships / individual / ...), category, source +
+-- target MMSI, plus distress-specific fields (nature, time,
+-- position) when applicable.
+CREATE TABLE IF NOT EXISTS dsc_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at  INTEGER NOT NULL,             -- unix nanoseconds
+    format       TEXT    NOT NULL DEFAULT '',  -- "distress" | "all-ships" | "individual" | ...
+    category     TEXT    NOT NULL DEFAULT '',  -- "distress" | "urgency" | "safety" | "routine"
+    self_mmsi    INTEGER NOT NULL DEFAULT 0,   -- sender's 9-digit MMSI
+    target_mmsi  INTEGER NOT NULL DEFAULT 0,   -- recipient's MMSI (0 for all-ships)
+    nature       TEXT    NOT NULL DEFAULT '',  -- distress nature ("fire", "sinking", ...)
+    time_utc     TEXT    NOT NULL DEFAULT '',  -- HH:MM, distress only
+    latitude     REAL    NOT NULL DEFAULT 0,
+    longitude    REAL    NOT NULL DEFAULT 0,
+    has_position INTEGER NOT NULL DEFAULT 0,
+    body         TEXT    NOT NULL DEFAULT '',  -- type-specific summary
+    raw_hex      TEXT    NOT NULL DEFAULT ''   -- hex-encoded 7-bit symbol stream
+);
+
+CREATE INDEX IF NOT EXISTS idx_dsc_log_time      ON dsc_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_dsc_log_self_mmsi ON dsc_log(self_mmsi, received_at);
+
+-- ADS-B / Mode-S frames persisted from the decoder pipeline. One
+-- row per decoded extended-squitter message: ICAO 24-bit address +
+-- kind (identification / airborne-pos / velocity / ...) + kind-
+-- specific fields (callsign + category for identification; lat/lon
+-- + altitude for position; ground speed + track + vertical rate
+-- for velocity).
+CREATE TABLE IF NOT EXISTS aircraft_log (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at       INTEGER NOT NULL,             -- unix nanoseconds
+    icao              INTEGER NOT NULL DEFAULT 0,   -- 24-bit ICAO aircraft address
+    icao_hex          TEXT    NOT NULL DEFAULT '',  -- "4840D6" form for display
+    kind              TEXT    NOT NULL DEFAULT '',  -- "ident" | "airborne-pos" | "velocity" | ...
+    body              TEXT    NOT NULL DEFAULT '',  -- kind-specific summary
+    crc_valid         INTEGER NOT NULL DEFAULT 0,
+    callsign          TEXT    NOT NULL DEFAULT '',
+    category          INTEGER NOT NULL DEFAULT 0,
+    latitude          REAL    NOT NULL DEFAULT 0,
+    longitude         REAL    NOT NULL DEFAULT 0,
+    altitude_ft       INTEGER NOT NULL DEFAULT 0,
+    has_position      INTEGER NOT NULL DEFAULT 0,
+    has_altitude      INTEGER NOT NULL DEFAULT 0,
+    ground_speed_kn   INTEGER NOT NULL DEFAULT 0,
+    track_deg         REAL    NOT NULL DEFAULT 0,
+    vertical_rate_fpm INTEGER NOT NULL DEFAULT 0,
+    raw_hex           TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_aircraft_log_time ON aircraft_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_aircraft_log_icao ON aircraft_log(icao, received_at);
+
+-- MDC1200 signaling bursts persisted from the decoder pipeline. One
+-- row per decoded burst: the transmitting radio's unit ID + the
+-- operation (PTT ID / emergency / status / radio check / ...) decoded
+-- from the op/arg pair, plus whether the CRC validated.
+CREATE TABLE IF NOT EXISTS mdc1200_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at INTEGER NOT NULL,             -- unix nanoseconds
+    op          INTEGER NOT NULL DEFAULT 0,   -- operation code (data[0])
+    arg         INTEGER NOT NULL DEFAULT 0,   -- operation argument (data[1])
+    unit_id     INTEGER NOT NULL DEFAULT 0,   -- transmitting radio's unit ID
+    operation   TEXT    NOT NULL DEFAULT '',  -- "PTT ID" | "Emergency" | ... ("" if unknown)
+    body        TEXT    NOT NULL DEFAULT '',  -- one-line summary
+    raw_hex     TEXT    NOT NULL DEFAULT '',  -- hex of the decoded header bytes
+    crc_ok      INTEGER NOT NULL DEFAULT 0    -- 1 when the CRC validated
+);
+
+CREATE INDEX IF NOT EXISTS idx_mdc1200_log_time    ON mdc1200_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_mdc1200_log_unit_id ON mdc1200_log(unit_id, received_at);
 `
 
 func (d *DB) migrate() error {

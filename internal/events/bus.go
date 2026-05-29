@@ -131,6 +131,38 @@ const (
 	// decoded sub-payload. Surfaced over SSE / WS for the live
 	// APRS panel.
 	KindAPRSPacket Kind = "aprs.packet"
+	// KindAISMessage fires when the AIS decoder finishes one
+	// message off the marine VHF channels (161.975 / 162.025 MHz).
+	// One bus event per parsed AIS message (positions, static +
+	// voyage data, base-station reports). Payload is a
+	// storage.AISMessage carrying MMSI + message type + decoded
+	// position + speed + course + vessel name (where available).
+	// Surfaced over SSE / WS for the live AIS panel.
+	KindAISMessage Kind = "ais.message"
+	// KindDSCMessage fires when the DSC decoder finishes one
+	// sequence off the marine VHF channel-70 (156.525 MHz) DSC
+	// channel or one of the HF DSC channels. Payload is a
+	// storage.DSCMessage carrying source / target MMSI + format
+	// + category + (for distress alerts) position + nature.
+	// Surfaced over SSE / WS for the live DSC panel.
+	KindDSCMessage Kind = "dsc.message"
+	// KindAircraftReport fires when the ADS-B decoder finishes
+	// one Mode-S frame off the 1090 MHz aviation transponder
+	// channel. Payload is a storage.AircraftReport carrying the
+	// 24-bit ICAO address plus the message-kind-specific fields
+	// (identification → callsign + category, airborne position
+	// → CPR-decoded lat/lon + altitude, velocity → ground speed
+	// + track + vertical rate). Surfaced over SSE / WS for the
+	// live ADS-B panel.
+	KindAircraftReport Kind = "adsb.aircraft"
+
+	// KindMDC1200Message fires when the MDC1200 decoder completes one
+	// signaling burst off a conventional analog FM voice channel.
+	// Payload is a storage.MDC1200Message carrying the transmitting
+	// radio's unit ID plus the operation (PTT ID, emergency, status,
+	// radio check, ...) and the CRC-valid flag. Surfaced over SSE / WS
+	// for the live MDC1200 panel.
+	KindMDC1200Message Kind = "mdc1200.message"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol

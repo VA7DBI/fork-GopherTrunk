@@ -134,6 +134,47 @@ func (p *VoicePool) LowestPriorityActive() *ActiveCall {
 	return lowest
 }
 
+// HasCapableDevice reports whether any device in the pool — busy or
+// free — can tune hz. A device with no FrequencyChecker (physical SDR)
+// counts as universally capable. The engine uses this to tell a
+// coverage gap (e.g. every voice device is a wideband tap whose IQ
+// window excludes hz) apart from a genuine all-busy or empty-pool
+// condition, so an out-of-window grant isn't mislogged as an engine bug.
+func (p *VoicePool) HasCapableDevice(hz uint32) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, d := range p.devices {
+		if fc, ok := d.Tuner.(FrequencyChecker); ok && !fc.CanTune(hz) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// LowestPriorityActiveForFrequency returns the lowest-priority active
+// call among devices that can tune hz, or nil when no such device has
+// an active call. It mirrors LowestPriorityActive but skips devices
+// whose Tuner rejects hz — preempting one of those would end a call to
+// free a device that then can't bind the incoming grant. Physical SDRs
+// (no FrequencyChecker) are always eligible, so for a pool with no
+// frequency-constrained tuners this matches LowestPriorityActive.
+func (p *VoicePool) LowestPriorityActiveForFrequency(hz uint32) *ActiveCall {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var lowest *ActiveCall
+	for _, ac := range p.active {
+		if fc, ok := ac.Device.Tuner.(FrequencyChecker); ok && !fc.CanTune(hz) {
+			continue
+		}
+		if lowest == nil ||
+			EffectivePriority(ac.Grant, ac.Talkgroup) > EffectivePriority(lowest.Grant, lowest.Talkgroup) {
+			lowest = ac
+		}
+	}
+	return lowest
+}
+
 // Bind retunes the device to grant.FrequencyHz and records an active call.
 // Returns an error if the device is already busy or the tune fails. When
 // SetReacquire is wired, a SetCenterFreq failure triggers one reacquire

@@ -189,6 +189,17 @@ func (w *winEnumerator) Open(d Descriptor) (Transport, error) {
 	}
 	debugLogf("winusb", "Open WinUsb_Initialize ok iface=0x%x", ifaceHandle)
 	t := &winTransport{
+	// Match libusb's WinUSB backend: explicitly disable the per-pipe
+	// transfer timeout on the control endpoint at open time
+	// (winusbx_configure_endpoints in libusb/os/windows_winusb.c sets
+	// PIPE_TRANSFER_TIMEOUT=0 on pipe 0 as part of claim_interface).
+	// WinUSB's documented default is 5000 ms — without this call the
+	// brief window between open and the first ControlOut would inherit
+	// that default. The lazy applyControlTimeout still overrides this
+	// to CtrlTimeoutMs on the first user-level transfer; this call is
+	// pure parity / hardening, not the issue #395 fix.
+	setControlPipeTimeout(ifaceHandle, 0)
+	return &winTransport{
 		fileHandle:  handle,
 		ifaceHandle: ifaceHandle,
 		desc:        d,
@@ -242,6 +253,23 @@ func guidToString(g windows.GUID) string {
 	return fmt.Sprintf("{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
 		g.Data1, g.Data2, g.Data3,
 		g.Data4[0], g.Data4[1], g.Data4[2], g.Data4[3], g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7],
+	)
+}
+
+// setControlPipeTimeout pushes a PIPE_TRANSFER_TIMEOUT policy on the
+// default control endpoint (pipe ID 0). Splitting this out lets both
+// Open (libusb-parity seed) and applyControlTimeout (mid-stream
+// override) share the same syscall shape without either reaching
+// into the other's locking. Errors are ignored — this is best-effort
+// hardening, and the next ControlOut would fail loudly anyway if the
+// handle were already invalid.
+func setControlPipeTimeout(ifaceHandle uintptr, timeoutMs uint32) {
+	procWinUsbSetPipePolicy.Call(
+		ifaceHandle,
+		0,
+		policyPipeTransferTimeout,
+		uintptr(unsafe.Sizeof(timeoutMs)),
+		uintptr(unsafe.Pointer(&timeoutMs)),
 	)
 }
 
@@ -302,14 +330,7 @@ func (t *winTransport) applyControlTimeout(timeoutMs int) {
 	}
 	t.lastCtlTimeout = v
 	t.timeoutMu.Unlock()
-	// Pipe ID 0 = the default control endpoint.
-	procWinUsbSetPipePolicy.Call(
-		t.ifaceHandle,
-		0,
-		policyPipeTransferTimeout,
-		uintptr(unsafe.Sizeof(v)),
-		uintptr(unsafe.Pointer(&v)),
-	)
+	setControlPipeTimeout(t.ifaceHandle, v)
 }
 
 func (t *winTransport) ControlIn(bRequest uint8, wValue, wIndex uint16, n int, timeoutMs int) ([]byte, error) {
@@ -602,8 +623,10 @@ func (t *winTransport) Reset() error {
 	}
 	t.fileHandle = handle
 	t.ifaceHandle = ifaceHandle
-	// The new ifaceHandle starts with WinUSB defaults — force the
-	// next applyControlTimeout to re-push our timeout policy.
+	// The new ifaceHandle starts with WinUSB defaults — re-seed the
+	// libusb-parity zero timeout on the control endpoint, then force
+	// the next applyControlTimeout to re-push our real timeout.
+	setControlPipeTimeout(ifaceHandle, 0)
 	t.timeoutMu.Lock()
 	t.lastCtlTimeout = 0
 	t.timeoutMu.Unlock()
