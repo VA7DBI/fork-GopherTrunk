@@ -227,8 +227,14 @@ FLAGS:`)
 		// 4800 baud) and sent issue #402 chasing a phantom ~10 kHz
 		// offset that was really ~1 kHz. afc_bias_rad_per_sample is the
 		// raw matched-output-unit value behind it.
+		//
+		// slicer_levels are the adaptive slicer's tracked −3/−1/+1/+3
+		// levels (issue #402). On a clean symmetric eye they sit near
+		// ±agc_target·{3/2, 1/2}; an asymmetric site shows one rail
+		// stretched, and the slicer's midpoint thresholds follow it.
+		lv := rx.SlicerLevels()
 		fmt.Fprintf(os.Stderr,
-			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f  dda_active=%t  dda_rearms=%d\n",
+			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f  dda_active=%t  dda_rearms=%d  slicer_levels=[%.4f %.4f %.4f %.4f]\n",
 			at,
 			rx.AFCBiasRadPerSample(),
 			rx.AFCOffsetHz(),
@@ -238,7 +244,8 @@ FLAGS:`)
 			rx.MMClockMu(),
 			rx.MMClockSPS(),
 			rx.DDAActive(),
-			rx.DDARearms())
+			rx.DDARearms(),
+			lv[0], lv[1], lv[2], lv[3])
 	}
 
 	const chunkSamples = 8192
