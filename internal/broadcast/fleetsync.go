@@ -150,6 +150,7 @@ type FleetSyncStats struct {
 	SaturationSeverityLast60s        float64            `json:"saturation_severity_last_60s,omitempty"`
 	SaturationStateLast60s           string             `json:"saturation_state_last_60s,omitempty"`
 	SaturationTransitionCountLast60s int                `json:"saturation_transition_count_last_60s,omitempty"`
+	SaturationStateDwellLast60s      map[string]float64 `json:"saturation_state_dwell_last_60s,omitempty"`
 	Backends                         []string           `json:"backends"`
 }
 
@@ -480,9 +481,36 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 		out.SaturationSeverityLast60s = score
 	}
 	out.SaturationStateLast60s = saturationStateForSeverity(out.SaturationSeverityLast60s)
+	out.SaturationStateDwellLast60s = make(map[string]float64)
 	for i := 1; i < len(f.recentSaturationStates); i++ {
 		if f.recentSaturationStates[i].state != f.recentSaturationStates[i-1].state {
 			out.SaturationTransitionCountLast60s++
+		}
+	}
+	if len(f.recentSaturationStates) > 0 {
+		dwellSeconds := make(map[string]float64)
+		totalSeconds := 0.0
+		for i := 0; i < len(f.recentSaturationStates)-1; i++ {
+			start := f.recentSaturationStates[i]
+			end := f.recentSaturationStates[i+1]
+			if end.at.After(start.at) {
+				duration := end.at.Sub(start.at).Seconds()
+				dwellSeconds[start.state] += duration
+				totalSeconds += duration
+			}
+		}
+		last := f.recentSaturationStates[len(f.recentSaturationStates)-1]
+		if now.After(last.at) {
+			duration := now.Sub(last.at).Seconds()
+			dwellSeconds[last.state] += duration
+			totalSeconds += duration
+		}
+		if totalSeconds <= 0 {
+			dwellSeconds[last.state] = 1
+			totalSeconds = 1
+		}
+		for state, duration := range dwellSeconds {
+			out.SaturationStateDwellLast60s[state] = duration / totalSeconds
 		}
 	}
 	if len(f.recentQueueSamples) > 0 {

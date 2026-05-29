@@ -2135,6 +2135,10 @@ func (p fleetsyncProvider) FleetSyncRuntimeStats() api.FleetSyncRuntimeStatsDTO 
 		out.Export.SaturationSeverityLast60s = es.SaturationSeverityLast60s
 		out.Export.SaturationStateLast60s = es.SaturationStateLast60s
 		out.Export.SaturationTransitionCountLast60s = es.SaturationTransitionCountLast60s
+		out.Export.SaturationStateDwellLast60s = make(map[string]float64, len(es.SaturationStateDwellLast60s))
+		for state, dwell := range es.SaturationStateDwellLast60s {
+			out.Export.SaturationStateDwellLast60s[state] = dwell
+		}
 		out.Export.DroppedLast60sTotal = es.DroppedLast60sTotal
 		out.Export.DroppedPerMinuteLast60sTotal = es.DroppedPerMinuteLast60sTotal
 		out.Export.DroppedBySource = make(map[string]int, len(es.DroppedBySource))

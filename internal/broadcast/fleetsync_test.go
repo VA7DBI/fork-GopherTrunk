@@ -376,6 +376,22 @@ func TestFleetSyncExporterTracksDroppedBySource(t *testing.T) {
 	if stats.SaturationTransitionCountLast60s < 0 {
 		t.Fatalf("saturation_transition_count_last_60s=%d", stats.SaturationTransitionCountLast60s)
 	}
+	if len(stats.SaturationStateDwellLast60s) == 0 {
+		t.Fatalf("saturation_state_dwell_last_60s=%+v", stats.SaturationStateDwellLast60s)
+	}
+	totalDwell := 0.0
+	for state, dwell := range stats.SaturationStateDwellLast60s {
+		if state != "healthy" && state != "warning" && state != "critical" {
+			t.Fatalf("unexpected dwell state=%q", state)
+		}
+		if dwell < 0 || dwell > 1 {
+			t.Fatalf("invalid dwell=%f for state=%q", dwell, state)
+		}
+		totalDwell += dwell
+	}
+	if totalDwell <= 0 {
+		t.Fatalf("invalid dwell sum=%f map=%+v", totalDwell, stats.SaturationStateDwellLast60s)
+	}
 }
 
 func TestNewFleetSyncExporterRequiresBus(t *testing.T) {

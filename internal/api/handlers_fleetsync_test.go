@@ -250,6 +250,7 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 			SaturationSeverityLast60s:        0.23,
 			SaturationStateLast60s:           "healthy",
 			SaturationTransitionCountLast60s: 2,
+			SaturationStateDwellLast60s:      map[string]float64{"healthy": 0.7, "warning": 0.3},
 			DroppedBySource:                  map[string]int{"utilities-west": 1},
 			DroppedPerMinuteBySource:         map[string]float64{"utilities-west": 2.5},
 			DroppedLast60sTotal:              1,
@@ -333,6 +334,9 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 	}
 	if got.Runtime.Export.SaturationTransitionCountLast60s != 2 {
 		t.Fatalf("runtime.export.saturation_transition_count_last_60s = %d", got.Runtime.Export.SaturationTransitionCountLast60s)
+	}
+	if got.Runtime.Export.SaturationStateDwellLast60s["healthy"] != 0.7 || got.Runtime.Export.SaturationStateDwellLast60s["warning"] != 0.3 {
+		t.Fatalf("runtime.export.saturation_state_dwell_last_60s = %+v", got.Runtime.Export.SaturationStateDwellLast60s)
 	}
 	if got.Runtime.Export.DroppedLast60sTotal != 1 || got.Runtime.Export.DroppedPerMinuteLast60sTotal != 1.0 {
 		t.Fatalf("runtime.export.rolling_drop_totals = total=%d rate=%f", got.Runtime.Export.DroppedLast60sTotal, got.Runtime.Export.DroppedPerMinuteLast60sTotal)
