@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"math"
 	"sort"
 
 	"github.com/MattCheramie/GopherTrunk/internal/radio/framing"
@@ -145,6 +146,67 @@ func (d *iqDiag) printReport(w io.Writer) {
 			fmt.Fprintf(w, "diag:   [%.3f,%.3f): %7d  (%5.2f%%)\n",
 				float64(b)/bins*maxAbs, float64(b+1)/bins*maxAbs,
 				mhist[b], 100*float64(mhist[b])/float64(len(d.soft)))
+		}
+
+		// Signed-eye summary (issue #402). The magnitude histogram above
+		// folds sign away, so it cannot see the eye-skew the reporter is
+		// hitting — a heavily negative dibit distribution can sit under a
+		// "sane-looking" |x| spread. These two views keep the sign:
+		//
+		//   - Overall signed mean (DC): the AFC should have driven this to
+		//     ~0. A non-zero value is residual carrier DC shifting the
+		//     whole eye off the slicer's symmetric thresholds — outer-
+		//     positive symbols then fall short of the +threshold while
+		//     outer-negative overshoot, exactly the inner/negative-heavy
+		//     skew #402 shows.
+		//
+		//   - Per-decided-symbol centroids: the mean soft value of the
+		//     samples the slicer assigned to each of +3/+1/-1/-3 (decided
+		//     dibit 1/0/2/3 — see phase1.SymbolToDibit). On a clean eye
+		//     these are symmetric (|+3|≈|-3|, |+1|≈|-1|) and the outer/
+		//     inner ratio is ~3. Asymmetry localises the fault: a uniform
+		//     offset = DC shift, compressed outer centroids = scale error
+		//     (outer symbols not reaching the eye corners), one-sided =
+		//     gain/deviation-calibration asymmetry.
+		var signedSum float64
+		for _, s := range d.soft {
+			signedSum += float64(s)
+		}
+		signedMean := signedSum / float64(len(d.soft))
+		var sqdev float64
+		for _, s := range d.soft {
+			dv := float64(s) - signedMean
+			sqdev += dv * dv
+		}
+		std := math.Sqrt(sqdev / float64(len(d.soft)))
+		fmt.Fprintf(w, "diag: signed soft samples: mean=%+.6f (DC; want ~0)  stddev=%.6f\n", signedMean, std)
+
+		// Group soft samples by the slicer's decision. d.dibits and
+		// d.soft are appended in lockstep (one dibit and one soft sample
+		// per recovered symbol, same order), so they align index-for-
+		// index when their lengths match. Skip if they don't (e.g. a
+		// future caller wires only one sink).
+		if len(d.dibits) == len(d.soft) {
+			// dibit → label and slice index. Mapping per
+			// phase1.SymbolToDibit: 0:+1, 1:+3, 2:-1, 3:-3.
+			labels := [4]string{"+1", "+3", "-1", "-3"}
+			var csum [4]float64
+			var cnt [4]int
+			for i, s := range d.soft {
+				db := d.dibits[i] & 3
+				csum[db] += float64(s)
+				cnt[db]++
+			}
+			fmt.Fprintln(w, "diag: per-decided-symbol soft centroids (clean eye: ±outer ≈ 3×±inner, symmetric):")
+			// Print in eye order -3,-1,+1,+3 for readability.
+			for _, db := range [4]uint8{3, 2, 0, 1} {
+				mean := 0.0
+				if cnt[db] > 0 {
+					mean = csum[db] / float64(cnt[db])
+				}
+				fmt.Fprintf(w, "diag:   %s (dibit %d): n=%7d (%5.2f%%)  centroid=%+.6f\n",
+					labels[db], db, cnt[db], 100*float64(cnt[db])/float64(len(d.soft)), mean)
+			}
 		}
 	}
 
