@@ -234,7 +234,7 @@ func runDaemon(args []string) {
 	case <-d.Ready():
 	case err := <-runErr:
 		if err != nil && !errors.Is(err, context.Canceled) {
-			fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
+			fmt.Fprintf(os.Stderr, "daemon startup failed before ready: %v\n", err)
 			os.Exit(1)
 		}
 		return

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -29,9 +30,10 @@ func acquireInstanceLock(cfgPath string) (releaseFn func(), err error) {
 	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
+			info := readWindowsLockInfo(lockPath)
 			return nil, fmt.Errorf(
-				"another gophertrunk is running against %s (lock file %s exists; if no other instance is running, delete it)",
-				cfgPath, lockPath)
+				"another gophertrunk is running against %s%s (lock file %s exists; stop the other instance, or if this looks stale, delete the lock file and retry)",
+				cfgPath, info, lockPath)
 		}
 		return nil, fmt.Errorf("instance lock: open %s: %w", lockPath, err)
 	}
@@ -44,4 +46,38 @@ func acquireInstanceLock(cfgPath string) (releaseFn func(), err error) {
 		_ = os.Remove(lockPath)
 	}
 	return release, nil
+}
+
+func readWindowsLockInfo(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var pid, started string
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(k) {
+		case "pid":
+			pid = strings.TrimSpace(v)
+		case "started":
+			started = strings.TrimSpace(v)
+		}
+	}
+	parts := []string{}
+	if pid != "" {
+		parts = append(parts, "pid="+pid)
+	}
+	if started != "" {
+		parts = append(parts, "started="+started)
+		if ts, perr := time.Parse(time.RFC3339, started); perr == nil {
+			parts = append(parts, fmt.Sprintf("age=%s", time.Since(ts).Round(time.Second)))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }
