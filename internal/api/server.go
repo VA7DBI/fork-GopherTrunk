@@ -226,6 +226,7 @@ type Server struct {
 	imports      *importStaging
 	webAssets    fs.FS
 	talkgroups   *trunking.TalkgroupDB
+	rids         *trunking.RIDDB
 	systems      []trunking.System
 	history      HistoryQuery
 	locations    LocationQuery
@@ -272,11 +273,36 @@ type Server struct {
 	// routes (pager log). nil disables the routes. Implemented
 	// by the daemon over the SQLite-backed storage.PagerLog.
 	pager PagerProvider
-	// fleetsync is the optional provider backing /api/v1/fleetsync/...
-	// routes (FleetSync message log). nil disables the routes.
+
+	// aprs is the optional provider backing /api/v1/aprs/...
+	// routes (APRS / AX.25 packet log). nil disables the routes.
 	// Implemented by the daemon over the SQLite-backed
-	// storage.FleetSyncLog.
-	fleetsync FleetSyncProvider
+	// storage.APRSLog.
+	aprs APRSProvider
+
+	// ais is the optional provider backing /api/v1/ais/...
+	// routes (AIS / vessel-tracking log). nil disables the routes.
+	// Implemented by the daemon over the SQLite-backed
+	// storage.VesselLog.
+	ais AISProvider
+
+	// dsc is the optional provider backing /api/v1/dsc/...
+	// routes (marine DSC sequence log). nil disables the routes.
+	// Implemented by the daemon over the SQLite-backed
+	// storage.DSCLog.
+	dsc DSCProvider
+
+	// adsb is the optional provider backing /api/v1/adsb/...
+	// routes (ADS-B aircraft report log). nil disables the
+	// routes. Implemented by the daemon over the SQLite-backed
+	// storage.AircraftLog.
+	adsb ADSBProvider
+
+	// mdc1200 is the optional provider backing /api/v1/mdc1200/...
+	// routes (MDC1200 signaling-burst log). nil disables the routes.
+	// Implemented by the daemon over the SQLite-backed
+	// storage.MDC1200Log.
+	mdc1200 MDC1200Provider
 
 	mu     sync.Mutex
 	srv    *http.Server
@@ -321,6 +347,7 @@ type AffiliationProvider interface {
 type HistoryFilter struct {
 	System    string
 	GroupID   uint32
+	SourceID  uint32
 	Since     time.Time
 	Until     time.Time
 	Limit     int
@@ -354,7 +381,12 @@ type ServerOptions struct {
 	Bus        *events.Bus
 	Engine     EngineSnapshot
 	Talkgroups *trunking.TalkgroupDB
-	Systems    []trunking.System
+	// RIDs is the operator-configured radio-ID alias table. When nil
+	// the server allocates an empty one so the routes serve a stable
+	// shape; the daemon passes a populated DB loaded from each
+	// system's rid_alias_file.
+	RIDs    *trunking.RIDDB
+	Systems []trunking.System
 	// History is optional. When non-nil the server exposes
 	// GET /api/v1/calls/history.
 	History HistoryQuery
@@ -471,10 +503,31 @@ type ServerOptions struct {
 	// POCSAG (and eventually FLEX) pager messages. Wired by the
 	// daemon over the SQLite-backed storage.PagerLog.
 	Pager PagerProvider
-	// FleetSync, when non-nil, enables the read-only FleetSync log
-	// endpoints under /api/v1/fleetsync/messages. Wired by the daemon
-	// over the SQLite-backed storage.FleetSyncLog.
-	FleetSync FleetSyncProvider
+	// APRS, when non-nil, enables the
+	// GET /api/v1/aprs/packets route serving recent decoded
+	// APRS / AX.25 packets. Wired by the daemon over the SQLite-
+	// backed storage.APRSLog.
+	APRS APRSProvider
+	// AIS, when non-nil, enables the
+	// GET /api/v1/ais/vessels route serving recent decoded
+	// AIS messages. Wired by the daemon over the SQLite-backed
+	// storage.VesselLog.
+	AIS AISProvider
+	// DSC, when non-nil, enables the
+	// GET /api/v1/dsc/messages route serving recent decoded
+	// marine DSC sequences. Wired by the daemon over the
+	// SQLite-backed storage.DSCLog.
+	DSC DSCProvider
+	// ADSB, when non-nil, enables the
+	// GET /api/v1/adsb/aircraft route serving recent decoded
+	// Mode-S frames. Wired by the daemon over the SQLite-backed
+	// storage.AircraftLog.
+	ADSB ADSBProvider
+	// MDC1200, when non-nil, enables the
+	// GET /api/v1/mdc1200/messages route serving recent decoded
+	// MDC1200 signaling bursts. Wired by the daemon over the
+	// SQLite-backed storage.MDC1200Log.
+	MDC1200 MDC1200Provider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -506,6 +559,9 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	}
 	if opts.Talkgroups == nil {
 		opts.Talkgroups = trunking.NewTalkgroupDB()
+	}
+	if opts.RIDs == nil {
+		opts.RIDs = trunking.NewRIDDB()
 	}
 	authCfg := opts.Auth
 	// Legacy migration: AllowMutations: true with no explicit Auth
@@ -553,6 +609,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		imports:        newImportStaging(5 * time.Minute),
 		webAssets:      opts.WebAssets,
 		talkgroups:     opts.Talkgroups,
+		rids:           opts.RIDs,
 		systems:        append([]trunking.System(nil), opts.Systems...),
 		history:        opts.History,
 		locations:      opts.Locations,
@@ -570,7 +627,11 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		bookmarks:      opts.Bookmarks,
 		diag:           opts.Diag,
 		pager:          opts.Pager,
-		fleetsync:      opts.FleetSync,
+		aprs:           opts.APRS,
+		ais:            opts.AIS,
+		dsc:            opts.DSC,
+		adsb:           opts.ADSB,
+		mdc1200:        opts.MDC1200,
 	}, nil
 }
 
@@ -681,6 +742,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/calls/history", s.handleCallHistory)
 	mux.HandleFunc("GET /api/v1/locations", s.handleLocations)
 	mux.HandleFunc("GET /api/v1/affiliations", s.handleAffiliations)
+	mux.HandleFunc("GET /api/v1/rids", s.handleListRIDs)
+	mux.HandleFunc("GET /api/v1/rids/{id}", s.handleGetRID)
+	mux.HandleFunc("GET /api/v1/rids/{id}/history", s.handleRIDHistory)
 	mux.HandleFunc("GET /api/v1/devices", s.handleListDevices)
 	mux.HandleFunc("GET /api/v1/events", s.handleSSE)
 	mux.HandleFunc("GET /api/v1/events/ws", s.handleWS)
@@ -695,6 +759,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/mutations", s.handleMutationStatus)
 	mux.HandleFunc("POST /api/v1/calls/{deviceSerial}/end", s.gate(s.handleEndCall))
 	mux.HandleFunc("PATCH /api/v1/talkgroups/{id}", s.gate(s.handleUpdateTalkgroup))
+	mux.HandleFunc("PATCH /api/v1/rids/{id}", s.gate(s.handleUpdateRID))
 	mux.HandleFunc("POST /api/v1/retention/sweep", s.gate(s.handleRetentionSweep))
 	mux.HandleFunc("POST /api/v1/devices/{serial}/tone-reset", s.gate(s.handleToneReset))
 
@@ -764,11 +829,13 @@ func (s *Server) routes() *http.ServeMux {
 	// Read-only; the decoder writes via the events bus → PagerLog.
 	mux.HandleFunc("GET /api/v1/pager/messages", s.handlePagerMessages)
 
-	// FleetSync log — recent decoded FleetSync I/II messages.
-	// Read-only; the decoder writes via the events bus -> FleetSyncLog.
-	mux.HandleFunc("GET /api/v1/fleetsync/messages", s.handleFleetSyncMessages)
-	mux.HandleFunc("GET /api/v1/fleetsync/messages/{id}", s.handleFleetSyncMessage)
-	mux.HandleFunc("GET /api/v1/fleetsync/stats", s.handleFleetSyncStats)
+	// APRS / AX.25 packet log — recent decoded packets. Read-only;
+	// the decoder writes via the events bus → APRSLog.
+	mux.HandleFunc("GET /api/v1/aprs/packets", s.handleAPRSPackets)
+	mux.HandleFunc("GET /api/v1/ais/vessels", s.handleAISMessages)
+	mux.HandleFunc("GET /api/v1/dsc/messages", s.handleDSCMessages)
+	mux.HandleFunc("GET /api/v1/adsb/aircraft", s.handleADSBAircraft)
+	mux.HandleFunc("GET /api/v1/mdc1200/messages", s.handleMDC1200Messages)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes

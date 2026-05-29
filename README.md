@@ -40,7 +40,7 @@ this exist? Read **[The Story of GopherTrunk](https://gophertrunk.org/story.html
 
 ```sh
 # Linux x86_64 — see https://gophertrunk.org/downloads.html for macOS, Windows, ARM64.
-VERSION=v0.2.2
+VERSION=v0.2.6
 curl -L -o gophertrunk.tar.gz \
   https://github.com/MattCheramie/GopherTrunk/releases/download/${VERSION}/gophertrunk-${VERSION}-linux-amd64.tar.gz
 tar xzf gophertrunk.tar.gz && cd gophertrunk-${VERSION}-linux-amd64
@@ -71,6 +71,70 @@ Silicon and Intel. Full per-OS recipes at
   decoders. Foundation for fire / EMS dispatch text alongside
   the trunked-voice pipeline; DSP wiring follows in the next PR.
   See [docs/pocsag.md](docs/pocsag.md).
+- **APRS / AX.25 packet** — end-to-end pipeline for the
+  amateur-radio APRS metadata bus (position beacons, messages,
+  bulletins, status, Mic-E mobile-tracker compressed format).
+  Bell-202 AFSK DSP frontend (FM demod → FFSK tone discriminator
+  → symbol-time recovery → NRZI → HDLC framer), AX.25 frame
+  parser with CRC-16-CCITT, APRS info-field decoders including
+  full Mic-E (lat/lon, speed, course, altitude, message code),
+  plus `events.KindAPRSPacket` bus event, SQLite `aprs_log`,
+  `GET /api/v1/aprs/packets`, and `/aprs` web panel.
+  See [docs/aprs.md](docs/aprs.md).
+- **AIS marine** — end-to-end pipeline for the Automatic
+  Identification System every commercial vessel broadcasts on
+  marine VHF 87B / 88B (161.975 / 162.025 MHz). 9600 Bd GMSK DSP
+  frontend (FM demod → GFSK matched filter at BT = 0.4 →
+  symbol-time recovery → NRZI → HDLC framer → CRC-CCITT
+  validation), ITU-R M.1371-5 message-type dispatch (Class A
+  position reports 1/2/3, Class B 18 + 19 extended, base-station
+  4, static + voyage 5, Class B static 24 A + B), signed-integer
+  lat/lon decoder (1/600000 minute resolution), 6-bit ASCII text
+  fields (vessel name, call-sign, destination), spec
+  "not-available" sentinels. Plus `events.KindAISMessage` bus
+  event, SQLite `vessel_log`, `GET /api/v1/ais/vessels`, and
+  `/ais` web panel. See [docs/ais.md](docs/ais.md).
+- **MDC1200 signaling** — end-to-end pipeline for Motorola's
+  analog FFSK data burst keyed at the head / tail of a
+  transmission on conventional VHF / UHF voice channels. 1200-baud
+  CCIR FFSK DSP frontend (FM demod → FFSK discriminator at
+  1200 / 1800 Hz → Mueller-Müller timing → NRZ slicer), 40-bit
+  sync framer with polarity tolerance, 16×7 de-interleave, op /
+  arg / unit-ID decode with CRC-16-CCITT check, and an op/arg
+  table (PTT ANI, emergency, status, radio check, call alert,
+  selective call). Plus `events.KindMDC1200Message` bus event,
+  SQLite `mdc1200_log`, `GET /api/v1/mdc1200/messages`, and
+  `/mdc1200` web panel. See [docs/mdc1200.md](docs/mdc1200.md).
+- **DSC marine distress** — protocol layer for the GMDSS Digital
+  Selective Calling system that fires every marine VHF channel-
+  70 distress alert. ITU-R M.493-15 format dispatch (Distress,
+  All-Ships, Individual, Group, Geographic, Auto-Individual),
+  BCH(10,7) syndrome check, position decoder with quadrant
+  hemisphere flip, nature-of-distress table. Plus
+  `events.KindDSCMessage` bus event, SQLite `dsc_log`,
+  `GET /api/v1/dsc/messages`, and `/dsc` web panel (rows tint
+  by category — distress=red, urgency=orange, safety=blue).
+  DSP frontend (1200 Bd FSK at 1300/2100 Hz tones) follows.
+  See [docs/dsc.md](docs/dsc.md).
+- **ADS-B aviation** — end-to-end pipeline for the 1090 MHz
+  Mode-S transponder broadcasts every commercial flight emits.
+  ICAO Annex 10 Vol IV / DO-260B parser (CRC-24 + DF dispatch +
+  type-code dispatch for identification, airborne / surface
+  position with 12-bit Q-bit altitude, airborne velocity);
+  globally-unambiguous CPR position decoder + per-ICAO
+  even+odd pair tracker. **BEAST upstream** consumes Mode-S
+  frames from any dump1090 / readsb / BeastSplitter via TCP —
+  most 1090 MHz receive chains already run one, GopherTrunk
+  decodes its output. Plus `events.KindAircraftReport` bus
+  event, SQLite `aircraft_log`, `GET /api/v1/adsb/aircraft`,
+  and `/adsb` web panel. Native 1 Msps PPM DSP frontend
+  follows. See [docs/adsb.md](docs/adsb.md).
+- **Live map** — Shared Leaflet map at the top of each
+  position-bearing panel (APRS / AIS / DSC / ADS-B) renders
+  decoded positions over OpenStreetMap tiles, colour-coded per
+  protocol (blue / cyan / red-distress / purple), with marker
+  tooltips and camera auto-fit. Same `<PositionMap>` component
+  drives all four panels.
 - **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25
   Phase 2 / DMR) vocoders in Go, no DVSI / mbelib dependency.
   Per-call WAV + raw-frame sidecars; live PCM playback via direct
@@ -94,7 +158,21 @@ Silicon and Intel. Full per-OS recipes at
 - **CC Activity panel** — focused web view of the trunked control-
   channel chatter (grants, affiliations, registrations, patches,
   talker aliases, CC lock / loss). Pure filter over the events
-  stream with per-row payload rendering; web panel at `/cc`.
+  stream with per-row payload rendering; web panel at `/cc`. RIDs
+  in the feed are clickable chips that pivot into the per-radio
+  detail view.
+- **Radio IDs panel** — per-radio (subscriber-unit) entity browser
+  with the same shape as Talkgroups. Merges the operator-configured
+  alias catalogue (per-system `rid_alias_file` CSV or JSON: alias,
+  owner, tag, group, priority, lockout, watch) with the live
+  affiliation tracker (last talkgroup, last seen, call count,
+  decoded talker alias). Detail modal pulls the last 50 calls for
+  the RID from the persisted call log. Web panel at `/rids`; REST
+  at `/api/v1/rids`; gRPC `RIDService`. Talker-alias decoders
+  cover the Motorola vendor TSBK form (control channel) and the
+  Motorola voice-channel LCs (P25 Phase 1 LDU1 LCO 0x15 header
+  + N × LCO 0x17 data blocks, run through Motorola's
+  reverse-engineered alias cipher).
 - **Constellation viewer** — live IQ scatter visualization that
   taps the same broker the trunking decoder reads. Useful for
   identifying signal shape (PSK / QPSK / FSK / C4FM / AM /
@@ -106,13 +184,21 @@ Silicon and Intel. Full per-OS recipes at
   outputs, public-safety fall-back channels) stored in the
   daemon's SQLite database. Edit / create / delete from the web
   panel under `/bookmarks`; REST at `/api/v1/bookmarks`.
-- **One dongle, many repeaters** — `role: wideband` pins a single
+- **One dongle, many carriers** — `role: wideband` pins a single
   SDR to a centre frequency and runs an internal channelizer so
-  one dongle decodes every DMR Tier II conventional repeater AND
-  a DMR Tier III control channel that fit inside its IQ bandwidth
-  (e.g. several 12.5 kHz carriers inside a 2.4 MHz IQ window).
-  Mix T2 and T3 channels on the same dongle. See
-  [docs/hardware.md](docs/hardware.md) and
+  one dongle decodes every DMR Tier II conventional repeater, DMR
+  Tier III control channel, P25 Phase 1 control channel, AND P25
+  Phase 2 control channel that fit inside its IQ bandwidth (e.g.
+  several 12.5 kHz carriers inside a 2.4 MHz IQ window). Mix
+  protocols on the same dongle.
+- **One dongle, control + voice** — with `voice_taps: N` on a
+  wideband entry, the daemon allocates per-grant DDC tuners from
+  the dongle's IQ stream so trunked voice grants (DMR T3, P25
+  Phase 1, P25 Phase 2) decode inline on the same SDR that's
+  already hosting the control channel — no separate `role: voice`
+  dongle needed for grants inside the wideband window. Out-of-
+  window grants spill over to a physical voice SDR when present.
+  See [docs/hardware.md](docs/hardware.md) and
   [samples/dmr-tier2-multichannel/](samples/dmr-tier2-multichannel/).
 - **DSP** — Polyphase channelizer, Kaiser / RRC / Gaussian FIRs,
   FM / C4FM / GFSK / FFSK / DQPSK / π/4-DQPSK / π/8-H-DQPSK

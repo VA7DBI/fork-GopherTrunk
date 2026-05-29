@@ -1,0 +1,22 @@
+# Ordered list of blog categories. Used by docs/blog/index.html to
+# render category sections in this order, and by per-category archive
+# pages under docs/blog/category/ for the display label.
+#
+# Adding a category: append an entry here, then create
+# docs/blog/category/<slug>.md (copy any existing one) and add a
+# matching item under the "Blog" group in docs/_data/nav.yml.
+#
+# Renaming a slug breaks the URL of every post in that category. Treat
+# the slug as append-only.
+- slug: announcements
+  label: Announcements
+  description: Project news, milestones, and community updates.
+- slug: releases
+  label: Releases
+  description: Release notes and what's-new write-ups for each GopherTrunk version.
+- slug: deep-dives
+  label: Deep dives
+  description: Technical articles on protocols, DSP, and architecture.
+- slug: tutorials
+  label: Tutorials
+  description: Step-by-step user-facing guides.

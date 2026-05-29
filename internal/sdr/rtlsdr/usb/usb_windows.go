@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -171,11 +172,38 @@ func (w *winEnumerator) Open(d Descriptor) (Transport, error) {
 			"winusb: WinUsb_Initialize failed for VID_%04X&PID_%04X (current driver: %s%s — expected WinUSB; run Zadig and rebind Interface 0, see `gophertrunk sdr doctor`): %w",
 			d.VID, d.PID, fallbackString(svc, "unknown"), parens(descr), winErr(errno))
 	}
+	// Match libusb's WinUSB backend: explicitly disable the per-pipe
+	// transfer timeout on the control endpoint at open time
+	// (winusbx_configure_endpoints in libusb/os/windows_winusb.c sets
+	// PIPE_TRANSFER_TIMEOUT=0 on pipe 0 as part of claim_interface).
+	// WinUSB's documented default is 5000 ms — without this call the
+	// brief window between open and the first ControlOut would inherit
+	// that default. The lazy applyControlTimeout still overrides this
+	// to CtrlTimeoutMs on the first user-level transfer; this call is
+	// pure parity / hardening, not the issue #395 fix.
+	setControlPipeTimeout(ifaceHandle, 0)
 	return &winTransport{
 		fileHandle:  handle,
 		ifaceHandle: ifaceHandle,
 		desc:        d,
 	}, nil
+}
+
+// setControlPipeTimeout pushes a PIPE_TRANSFER_TIMEOUT policy on the
+// default control endpoint (pipe ID 0). Splitting this out lets both
+// Open (libusb-parity seed) and applyControlTimeout (mid-stream
+// override) share the same syscall shape without either reaching
+// into the other's locking. Errors are ignored — this is best-effort
+// hardening, and the next ControlOut would fail loudly anyway if the
+// handle were already invalid.
+func setControlPipeTimeout(ifaceHandle uintptr, timeoutMs uint32) {
+	procWinUsbSetPipePolicy.Call(
+		ifaceHandle,
+		0,
+		policyPipeTransferTimeout,
+		uintptr(unsafe.Sizeof(timeoutMs)),
+		uintptr(unsafe.Pointer(&timeoutMs)),
+	)
 }
 
 // winTransport is the WinUSB-backed [Transport].
@@ -225,14 +253,7 @@ func (t *winTransport) applyControlTimeout(timeoutMs int) {
 	}
 	t.lastCtlTimeout = v
 	t.timeoutMu.Unlock()
-	// Pipe ID 0 = the default control endpoint.
-	procWinUsbSetPipePolicy.Call(
-		t.ifaceHandle,
-		0,
-		policyPipeTransferTimeout,
-		uintptr(unsafe.Sizeof(v)),
-		uintptr(unsafe.Pointer(&v)),
-	)
+	setControlPipeTimeout(t.ifaceHandle, v)
 }
 
 func (t *winTransport) ControlIn(bRequest uint8, wValue, wIndex uint16, n int, timeoutMs int) ([]byte, error) {
@@ -322,23 +343,88 @@ func (t *winTransport) ClaimInterface(num int) error {
 
 func (t *winTransport) ReleaseInterface(int) error { return nil }
 
+// Reset mirrors what libusb_reset_device does on Windows: clear-halt
+// the control endpoint, then drop the WinUSB handles and re-bind via
+// CreateFile + WinUsb_Initialize. The plain clear-halt that earlier
+// shipped here (WinUsb_ResetPipe(0)) is enough for a stale endpoint
+// halt but does nothing for a wedged firmware state left by a prior
+// crashed process — for that you need a fresh device-object handle.
+//
+// Invariants:
+//   - The bring-up retry envelope in purego/driver.go is the only
+//     caller, and it runs Reset before any bulk-in stream starts.
+//     The bulkMu acquire below is defensive in case a future caller
+//     reuses Reset() after streaming begins.
+//   - On failure mid-sequence the transport is left in a coherent
+//     "closed" state so subsequent ControlOut/ControlIn calls return
+//     ErrClosed rather than dereferencing a freed handle.
 func (t *winTransport) Reset() error {
-	// WinUSB has no equivalent of libusb_reset_device — a full USB
-	// port-reset would require IOCTL_USB_CYCLE_PORT on the parent hub,
-	// which is brittle and almost never the right hammer. What the
-	// bring-up retry envelope actually needs is a clear-halt on the
-	// default control endpoint: that's exactly what WinUsb_ResetPipe
-	// emits (USB CLEAR_FEATURE(ENDPOINT_HALT)). Pipe ID 0 is the
-	// default control endpoint. Recovers the clone-dongle cold-boot
-	// stall surfaced as ERROR_GEN_FAILURE on the second USB_SYSCTL=0x09
-	// write, without disturbing the bulk-IN pipe.
 	if t.closed.Load() {
 		return ErrClosed
 	}
-	ret, _, errno := procWinUsbResetPipe.Call(t.ifaceHandle, 0)
-	if ret == 0 {
-		return fmt.Errorf("winusb: WinUsb_ResetPipe(control): %w", winErr(errno))
+	// Best-effort clear-halt before we drop the handle: clears any
+	// stalled control transfer so the device firmware sees the
+	// CLEAR_FEATURE before the bus re-enumerates us. Errors are
+	// ignored — we're about to throw the handle away anyway.
+	procWinUsbResetPipe.Call(t.ifaceHandle, 0)
+
+	t.bulkMu.Lock()
+	defer t.bulkMu.Unlock()
+	oldIface := t.ifaceHandle
+	oldFile := t.fileHandle
+	t.ifaceHandle = 0
+	t.fileHandle = 0
+	if oldIface != 0 {
+		procWinUsbFree.Call(oldIface)
 	}
+	if oldFile != 0 {
+		windows.CloseHandle(oldFile)
+	}
+
+	// Let the WinUSB stack release the file-object and the device
+	// firmware finish internal recovery before we re-open. libusb-1.0
+	// uses 50ms here for clean closes, but the bring-up envelope only
+	// calls Reset() after a wedged-firmware failure (ERROR_GEN_FAILURE
+	// / pipe stall) — issue #395 surfaced a Windows clone dongle whose
+	// firmware needed longer than 50ms to recover, so we settle for
+	// 150ms here. Healthy opens never run this path; the cost only
+	// applies to dongles that actually need recovery.
+	time.Sleep(150 * time.Millisecond)
+
+	wpath, err := windows.UTF16PtrFromString(t.desc.Path)
+	if err != nil {
+		t.closed.Store(true)
+		return fmt.Errorf("winusb: reset bad path %q: %w", t.desc.Path, err)
+	}
+	handle, err := windows.CreateFile(
+		wpath,
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OVERLAPPED,
+		0,
+	)
+	if err != nil {
+		t.closed.Store(true)
+		return fmt.Errorf("winusb: reset CreateFile %q: %w", t.desc.Path, err)
+	}
+	var ifaceHandle uintptr
+	ret, _, errno := procWinUsbInitialize.Call(uintptr(handle), uintptr(unsafe.Pointer(&ifaceHandle)))
+	if ret == 0 {
+		windows.CloseHandle(handle)
+		t.closed.Store(true)
+		return fmt.Errorf("winusb: reset WinUsb_Initialize: %w", winErr(errno))
+	}
+	t.fileHandle = handle
+	t.ifaceHandle = ifaceHandle
+	// The new ifaceHandle starts with WinUSB defaults — re-seed the
+	// libusb-parity zero timeout on the control endpoint, then force
+	// the next applyControlTimeout to re-push our real timeout.
+	setControlPipeTimeout(ifaceHandle, 0)
+	t.timeoutMu.Lock()
+	t.lastCtlTimeout = 0
+	t.timeoutMu.Unlock()
 	return nil
 }
 

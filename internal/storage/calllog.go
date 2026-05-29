@@ -133,7 +133,8 @@ UPDATE call_log
 // HistoryFilter narrows a History query.
 type HistoryFilter struct {
 	System    string
-	GroupID   uint32 // 0 = no filter
+	GroupID   uint32 // 0 = no filter (filters call_log.group_id)
+	SourceID  uint32 // 0 = no filter (filters call_log.source_id — RID)
 	Since     time.Time
 	Until     time.Time
 	Limit     int
@@ -176,6 +177,10 @@ func (d *DB) History(ctx context.Context, f HistoryFilter) ([]CallRow, error) {
 	if f.GroupID != 0 {
 		q += " AND group_id = ?"
 		args = append(args, f.GroupID)
+	}
+	if f.SourceID != 0 {
+		q += " AND source_id = ?"
+		args = append(args, f.SourceID)
 	}
 	if !f.Since.IsZero() {
 		q += " AND started_at >= ?"

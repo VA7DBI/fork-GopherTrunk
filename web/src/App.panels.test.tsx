@@ -43,6 +43,26 @@ vi.mock("./api/pagers", () => ({
     n >= 0 && n <= 3 ? String.fromCharCode(65 + n) : "?",
 }));
 
+vi.mock("./api/aprs", () => ({
+  fetchAPRSPackets: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("./api/ais", () => ({
+  fetchAISVessels: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("./api/dsc", () => ({
+  fetchDSCMessages: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("./api/adsb", () => ({
+  fetchAircraftReports: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("./api/mdc1200", () => ({
+  fetchMDC1200Messages: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("./api/bookmarks", () => ({
   bookmarks: {
     list: vi.fn().mockResolvedValue([]),
@@ -164,6 +184,8 @@ const ROUTES = [
   "/cc",
   "/tones",
   "/pagers",
+  "/aprs",
+  "/mdc1200",
   "/metrics",
   "/devices",
   "/settings",

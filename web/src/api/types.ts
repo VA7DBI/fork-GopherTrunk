@@ -41,6 +41,34 @@ export interface TalkgroupDTO {
   scan?: boolean;
 }
 
+// RIDDTO mirrors api.RIDDTO. `configured` distinguishes a row backed
+// by the operator's rid_alias_file (where alias / tag / owner are
+// authoritative) from a row that only exists because the affiliation
+// tracker observed it over the air. Live fields (last_seen,
+// last_talkgroup, talker_alias, call_count) are zero/empty when the
+// radio has not been seen since the daemon started.
+export interface RIDDTO {
+  id: number;
+  alias?: string;
+  description?: string;
+  tag?: string;
+  group?: string;
+  owner?: string;
+  priority?: number;
+  lockout?: boolean;
+  watch?: boolean;
+  icon?: string;
+  configured?: boolean;
+  system?: string;
+  protocol?: string;
+  last_talkgroup?: number;
+  talker_alias?: string;
+  talker_alias_at?: string;
+  call_count?: number;
+  first_seen?: string;
+  last_seen?: string;
+}
+
 export interface GrantDTO {
   system: string;
   protocol: string;

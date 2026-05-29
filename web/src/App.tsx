@@ -15,8 +15,14 @@ import { Devices } from "./panels/Devices";
 import { Events } from "./panels/Events";
 import { History } from "./panels/History";
 import { Import } from "./panels/Import";
+import { APRS } from "./panels/APRS";
+import { AIS } from "./panels/AIS";
+import { DSC } from "./panels/DSC";
+import { ADSB } from "./panels/ADSB";
+import { MDC1200 } from "./panels/MDC1200";
 import { Metrics } from "./panels/Metrics";
 import { Pagers } from "./panels/Pagers";
+import { RadioIDs } from "./panels/RadioIDs";
 import { Scanner } from "./panels/Scanner";
 import { Settings } from "./panels/Settings";
 import { Spectrum } from "./panels/Spectrum";
@@ -34,11 +40,17 @@ const TABS: Tab[] = [
 const EXTRA_TABS: Tab[] = [
   { to: "/systems", label: "Systems", icon: "❖" },
   { to: "/talkgroups", label: "Talkgroups", icon: "☷" },
+  { to: "/rids", label: "Radio IDs", icon: "⌖" },
   { to: "/history", label: "History", icon: "↺" },
   { to: "/events", label: "Events", icon: "≣" },
   { to: "/cc", label: "CC Activity", icon: "⌁" },
   { to: "/tones", label: "Tones", icon: "♪" },
   { to: "/pagers", label: "Pagers", icon: "✉" },
+  { to: "/aprs", label: "APRS", icon: "⛯" },
+  { to: "/ais", label: "AIS", icon: "⚓" },
+  { to: "/dsc", label: "DSC", icon: "📡" },
+  { to: "/adsb", label: "ADS-B", icon: "✈" },
+  { to: "/mdc1200", label: "MDC1200", icon: "📻" },
   { to: "/spectrum", label: "Spectrum", icon: "≈" },
   { to: "/constellation", label: "Constellation", icon: "✦" },
   { to: "/bookmarks", label: "Bookmarks", icon: "★" },
@@ -144,11 +156,17 @@ export function App() {
           <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/systems" element={<Systems />} />
           <Route path="/talkgroups" element={<Talkgroups />} />
+          <Route path="/rids" element={<RadioIDs />} />
           <Route path="/history" element={<History />} />
           <Route path="/events" element={<Events />} />
           <Route path="/cc" element={<CCActivity />} />
           <Route path="/tones" element={<Tones />} />
           <Route path="/pagers" element={<Pagers />} />
+          <Route path="/aprs" element={<APRS />} />
+          <Route path="/ais" element={<AIS />} />
+          <Route path="/dsc" element={<DSC />} />
+          <Route path="/adsb" element={<ADSB />} />
+          <Route path="/mdc1200" element={<MDC1200 />} />
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/devices" element={<Devices />} />
           <Route path="/settings" element={<Settings />} />

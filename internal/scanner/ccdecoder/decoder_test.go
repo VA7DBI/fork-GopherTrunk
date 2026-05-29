@@ -986,8 +986,10 @@ func TestMPT1327FactoryAppliesBCHFromSystem(t *testing.T) {
 // tests can assert the decoder's pump-side observation pipeline
 // without depending on the real Prometheus collector.
 type recordingPower struct {
-	sets    []powerSample
-	cleared []string
+	sets      []powerSample
+	cleared   []string
+	dcSets    []dcSample
+	dcCleared []string
 }
 
 type powerSample struct {
@@ -995,11 +997,22 @@ type powerSample struct {
 	dbfs   float64
 }
 
+type dcSample struct {
+	system  string
+	ratioDb float64
+}
+
 func (r *recordingPower) RecordIQPowerDbFS(system string, dbfs float64) {
 	r.sets = append(r.sets, powerSample{system, dbfs})
 }
 func (r *recordingPower) ClearIQPowerDbFS(system string) {
 	r.cleared = append(r.cleared, system)
+}
+func (r *recordingPower) RecordIQDCRatioDb(system string, ratioDb float64) {
+	r.dcSets = append(r.dcSets, dcSample{system, ratioDb})
+}
+func (r *recordingPower) ClearIQDCRatioDb(system string) {
+	r.dcCleared = append(r.dcCleared, system)
 }
 
 // TestPumpRecordsIQPowerOnceWindowElapses feeds a known signal level
@@ -1047,6 +1060,116 @@ func TestPumpRecordsIQPowerOnceWindowElapses(t *testing.T) {
 	// |0.5+0.5i|^2 = 0.5 → 10*log10(0.5) = -3.01 dBFS
 	if got.dbfs < -3.5 || got.dbfs > -2.5 {
 		t.Errorf("dbfs = %v, want roughly -3", got.dbfs)
+	}
+}
+
+// TestPumpRecordsIQDCRatioPureDC drives observeIQPowerLocked with a
+// constant-IQ chunk (all energy in the DC bin) and asserts the new
+// DC-ratio gauge reports ~0 dB — the smoking-gun shape of the RTL-SDR
+// R820T2 DC-spike-on-channel failure mode behind issue #402.
+func TestPumpRecordsIQDCRatioPureDC(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	pwr := &recordingPower{}
+	d, err := New(Options{
+		Bus: bus, IQ: &fakeIQSource{}, SampleRateHz: 48000, Metrics: pwr,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d.activeAt = "TestSys"
+
+	chunk := make([]complex64, 128)
+	for i := range chunk {
+		chunk[i] = complex(0.3, 0.4) // constant ⇒ mean(IQ) = sample, |mean|² = |sample|²
+	}
+
+	d.pump(chunk)
+	d.pwWindowAt = d.pwWindowAt.Add(-2 * iqPowerWindow)
+	d.pump(chunk)
+
+	if len(pwr.dcSets) != 1 {
+		t.Fatalf("dcSets = %d, want 1", len(pwr.dcSets))
+	}
+	got := pwr.dcSets[0]
+	if got.system != "TestSys" {
+		t.Errorf("system = %q, want TestSys", got.system)
+	}
+	// All sample energy is in the mean → DC power == total power → 0 dB.
+	if got.ratioDb < -0.5 || got.ratioDb > 0.5 {
+		t.Errorf("dc_ratio_db = %v, want ~0 (DC-dominated)", got.ratioDb)
+	}
+}
+
+// TestPumpRecordsIQDCRatioCleanSignal drives the observer with a
+// zero-mean signal (a half-rate complex sinusoid) and asserts the
+// DC-ratio gauge reports a very negative value — the shape of a clean
+// off-channel capture, which serves as the regression guard against
+// false-positive DC alarms.
+func TestPumpRecordsIQDCRatioCleanSignal(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	pwr := &recordingPower{}
+	d, err := New(Options{
+		Bus: bus, IQ: &fakeIQSource{}, SampleRateHz: 48000, Metrics: pwr,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d.activeAt = "TestSys"
+
+	chunk := make([]complex64, 128)
+	for i := range chunk {
+		// Alternating ±(0.5+0.5i) — pure tone at fs/2, sample mean is 0.
+		if i%2 == 0 {
+			chunk[i] = complex(0.5, 0.5)
+		} else {
+			chunk[i] = complex(-0.5, -0.5)
+		}
+	}
+
+	d.pump(chunk)
+	d.pwWindowAt = d.pwWindowAt.Add(-2 * iqPowerWindow)
+	d.pump(chunk)
+
+	if len(pwr.dcSets) != 1 {
+		t.Fatalf("dcSets = %d, want 1", len(pwr.dcSets))
+	}
+	got := pwr.dcSets[0]
+	// Mean(IQ) = 0 → DC power = 0 → DC dBFS clamped at the -120 dBFS
+	// epsilon floor (10·log10(1e-12)). Total dBFS ≈ -3 (|0.5+0.5i|² = 0.5).
+	// ratio = dc - total ≈ -117 dB. Assert well below the
+	// iqDCRatioWarnDb threshold; the exact value is sensitive to the
+	// epsilon floor and not interesting.
+	if got.ratioDb > -60 {
+		t.Errorf("dc_ratio_db = %v, want very negative (zero-mean signal)", got.ratioDb)
+	}
+}
+
+// TestClearActiveClearsDCRatio asserts that tearing the active pipeline
+// down drops the DC-ratio gauge series alongside the IQ-power gauge —
+// so stale ratios don't linger after a retune to a different system.
+func TestClearActiveClearsDCRatio(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	pwr := &recordingPower{}
+	d, err := New(Options{
+		Bus: bus, IQ: &fakeIQSource{}, SampleRateHz: 48000, Metrics: pwr,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d.activeAt = "TestSys"
+
+	d.mu.Lock()
+	d.clearActiveLocked()
+	d.mu.Unlock()
+
+	if len(pwr.cleared) != 1 || pwr.cleared[0] != "TestSys" {
+		t.Errorf("cleared (power) = %v, want [TestSys]", pwr.cleared)
+	}
+	if len(pwr.dcCleared) != 1 || pwr.dcCleared[0] != "TestSys" {
+		t.Errorf("cleared (dc) = %v, want [TestSys]", pwr.dcCleared)
 	}
 }
 

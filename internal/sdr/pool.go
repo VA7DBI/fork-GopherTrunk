@@ -112,23 +112,70 @@ func (h Hint) WithGain(tenthDB int) Hint {
 // agree on a known-good fallback.
 const DefaultSampleRateHz uint32 = 2_048_000
 
-// Open enumerates every registered driver, opens devices that match the
-// supplied hints (or simply all of them when hints is empty), programs
-// the IQ sample rate on each device (issue #275 — without this the chip
-// streams at whatever rate its resampler powered up at), and assigns
-// roles. The first opened device gets RoleControl unless a hint says
-// otherwise; subsequent devices get RoleVoice. Passing sampleRateHz == 0
-// falls back to DefaultSampleRateHz. A device whose SetSampleRate
-// fails is closed and skipped — a wrong-rate radio produces silent
-// decoder failures, which is worse than no radio at all.
+// PoolOpenOptions parameterises Pool.OpenWith. Use this when callers
+// need to engage strict mode; the historical Pool.Open(rate, hints)
+// signature still works and remains the default for code paths that
+// want today's open-everything behaviour.
+type PoolOpenOptions struct {
+	// SampleRateHz is the IQ rate to program on every opened device.
+	// Zero falls back to DefaultSampleRateHz.
+	SampleRateHz uint32
+	// Hints carries the per-device tuning the pool applies once each
+	// device is opened (PPM, gain, bias-tee, role). Hints are matched
+	// to discovered devices by serial.
+	Hints []Hint
+	// Strict treats Hints as an allowlist: a discovered device whose
+	// serial is not present in Hints is logged and skipped instead of
+	// being auto-roled. The daemon engages strict mode when the user
+	// has populated cfg.SDR.Devices — that's the operator's signal
+	// that they want only the devices they named, not whatever else
+	// happens to be on the USB bus.
+	Strict bool
+}
+
+// Open is a backwards-compatible shim over OpenWith. It preserves the
+// historical "open every enumerated device" behaviour; callers that
+// want allowlist semantics should construct PoolOpenOptions and call
+// OpenWith directly.
 func (p *Pool) Open(sampleRateHz uint32, hints []Hint) error {
+	return p.OpenWith(PoolOpenOptions{SampleRateHz: sampleRateHz, Hints: hints})
+}
+
+// OpenWith enumerates every registered driver, opens the devices the
+// options select, programs the IQ sample rate on each one (issue #275 —
+// without this the chip streams at whatever rate its resampler powered
+// up at), and assigns roles. The first opened device gets RoleControl
+// unless a hint says otherwise; subsequent devices get RoleVoice.
+//
+// When opts.Strict is false, every discovered device is opened. A
+// non-hinted device gets an auto-assigned role and runs with the
+// driver's default PPM / gain.
+//
+// When opts.Strict is true, only devices whose serial matches a hint
+// are opened. Discovered devices without a matching hint are logged at
+// INFO and skipped. Hints whose serial doesn't match any discovered
+// device produce a WARN. Hints with empty serial are dropped at ingest
+// with a WARN — an empty-serial hint in strict mode is ambiguous (no
+// way to honour an allowlist entry that doesn't name anything).
+//
+// Strict mode is how operators get "only the devices I listed in
+// config.yaml are touched"; rtl_tcp and baseband replay always
+// originate from explicit config entries, so strict mode applies to
+// them uniformly. An rtl_tcp endpoint without a serial: in config is
+// therefore skipped in strict mode — set serial: on the endpoint to
+// keep it.
+//
+// A device whose SetSampleRate fails is closed and skipped — a
+// wrong-rate radio produces silent decoder failures, which is worse
+// than no radio at all.
+func (p *Pool) OpenWith(opts PoolOpenOptions) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.entries) > 0 {
 		return errors.New("pool already populated; close first")
 	}
 
-	rate := sampleRateHz
+	rate := opts.SampleRateHz
 	if rate == 0 {
 		rate = DefaultSampleRateHz
 	}
@@ -154,18 +201,29 @@ func (p *Pool) Open(sampleRateHz uint32, hints []Hint) error {
 
 	hintBySerial := map[string]Hint{}
 	controlClaimed := false
-	for _, h := range hints {
-		if h.Serial != "" {
-			hintBySerial[h.Serial] = h
-			if h.Role == RoleControl {
-				controlClaimed = true
+	for _, h := range opts.Hints {
+		if h.Serial == "" {
+			if opts.Strict {
+				p.log.Warn("ignoring hint with empty serial in strict mode; set serial: in config to use this entry",
+					"role", h.Role.String())
 			}
+			continue
+		}
+		hintBySerial[h.Serial] = h
+		if h.Role == RoleControl {
+			controlClaimed = true
 		}
 	}
 
+	openedSerials := map[string]struct{}{}
 	for _, d := range all {
-		role := RoleAuto
 		hint, hinted := hintBySerial[d.info.Serial]
+		if opts.Strict && !hinted {
+			p.log.Info("skipping non-configured SDR; add its serial to sdr.devices to use it",
+				"driver", d.drv.Name(), "serial", d.info.Serial)
+			continue
+		}
+		role := RoleAuto
 		if hinted {
 			role = hint.Role
 		}
@@ -202,9 +260,27 @@ func (p *Pool) Open(sampleRateHz uint32, hints []Hint) error {
 		}
 		entry := &PoolEntry{Driver: d.drv, Device: dev, Info: d.info, Role: role, Hint: hint}
 		p.entries = append(p.entries, entry)
+		openedSerials[d.info.Serial] = struct{}{}
+		// Include the per-device tuning in the open log so an
+		// operator can grep the boot log to confirm the value they
+		// put in config.yaml actually landed on this serial (issue
+		// #264 surfaced as "ppm of -4 is not adopted" because the
+		// device that received the SetPPM call wasn't the one
+		// driving cchunt).
 		p.log.Info("device opened",
-			"driver", d.drv.Name(), "serial", d.info.Serial, "role", role.String(), "rate_hz", rate)
+			"driver", d.drv.Name(),
+			"serial", d.info.Serial,
+			"role", role.String(),
+			"rate_hz", rate,
+			"ppm", hint.PPM,
+			"bias_tee", hint.BiasTee)
 		p.publish(events.KindSDRAttached, entry.Snapshot(true))
+	}
+	for serial := range hintBySerial {
+		if _, ok := openedSerials[serial]; !ok {
+			p.log.Warn("configured SDR not present on the bus; check the cable / dmesg / lsusb",
+				"serial", serial)
+		}
 	}
 	if len(p.entries) == 0 {
 		return errors.New("no SDR devices opened")
@@ -283,6 +359,18 @@ func (p *Pool) applyHintSettings(dev Device, info Info, h Hint) {
 		if err := dev.SetGain(h.Gain); err != nil {
 			p.log.Warn("set gain failed", "serial", info.Serial, "gain", h.Gain, "err", err)
 		}
+	} else {
+		// Surface the "no `gain:` in config" path explicitly. Without
+		// this warn, a device whose driver default happens to be too
+		// low for the user's antenna + LNA chain reads as completely
+		// deaf — the field symptom in issue #356 (v0.2.4 follow-up,
+		// reporter @v2maldo). The driver-default gain varies between
+		// chips and even firmware revisions; surfacing it once at open
+		// gives the operator a chance to set `gain: auto` (AGC) or a
+		// specific tenth-dB value before chasing harder hypotheses
+		// like a broken voice chain.
+		p.log.Warn("sdr: no gain configured for device; using driver default — set `gain: auto` for AGC or a specific tenth-dB value (e.g. \"496\" = 49.6 dB) if reception is weak",
+			"serial", info.Serial, "role", h.Role.String())
 	}
 	if h.BiasTee {
 		if err := dev.SetBiasTee(true); err != nil {

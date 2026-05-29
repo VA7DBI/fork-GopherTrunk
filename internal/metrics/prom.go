@@ -46,6 +46,7 @@ type Metrics struct {
 	ccTransitions *prometheus.CounterVec // by system,event (locked|lost)
 	iqUnderruns   *prometheus.CounterVec
 	iqPowerDbFS   *prometheus.GaugeVec // by system; mean IQ power on the control SDR
+	iqDCRatioDb   *prometheus.GaugeVec // by system; DC-bin power relative to total IQ power, in dB (issue #402)
 	usbReconnects *prometheus.CounterVec
 	decodeErrors  *prometheus.CounterVec
 	sdrAttached   *prometheus.GaugeVec
@@ -133,6 +134,20 @@ func New(bus *events.Bus, pool Snapshotter, version string) (*Metrics, error) {
 		Help:      "Mean IQ power on the control SDR in dBFS (window ~= 1 s). Idle ≈ -45; healthy signal ≈ -25; > -3 indicates clipping.",
 	}, []string{"system"})
 
+	// Diagnostic for the RTL-SDR R820T2 zero-IF DC-spike-on-channel
+	// failure mode (issue #402): the DC bin power of the same window
+	// the iq_power_dbfs gauge is computed over, expressed relative to
+	// total IQ power in dB. 0 dB means all channel power is in the
+	// DC bin; -20 dB or lower is a clean off-DC signal. Watch for
+	// values above -10 dB on a tuned-on-channel P25 control: that's
+	// the spike sitting on top of the channel.
+	m.iqDCRatioDb = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: "sdr",
+		Name:      "iq_dc_ratio_db",
+		Help:      "DC-bin power relative to total IQ power, in dB (window ~= 1 s). 0 = all power is DC; -20 or lower = clean. > -10 on a tuned-on-channel control SDR hints at the R820T2 DC-spike failure mode tracked in issue #402.",
+	}, []string{"system"})
+
 	m.usbReconnects = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: "sdr",
@@ -174,6 +189,7 @@ func New(bus *events.Bus, pool Snapshotter, version string) (*Metrics, error) {
 		m.ccTransitions,
 		m.iqUnderruns,
 		m.iqPowerDbFS,
+		m.iqDCRatioDb,
 		m.usbReconnects,
 		m.decodeErrors,
 		m.sdrAttached,
@@ -316,6 +332,26 @@ func (m *Metrics) ClearIQPowerDbFS(system string) {
 		return
 	}
 	m.iqPowerDbFS.DeleteLabelValues(system)
+}
+
+// RecordIQDCRatioDb sets the DC-bin-to-total IQ power ratio gauge for
+// system. The decoder computes this once per IQ-power window; the
+// metrics package just stores it. See iqDCRatioDb's Help text for
+// interpretation guidance (issue #402).
+func (m *Metrics) RecordIQDCRatioDb(system string, ratioDb float64) {
+	if system == "" {
+		system = "unknown"
+	}
+	m.iqDCRatioDb.WithLabelValues(system).Set(ratioDb)
+}
+
+// ClearIQDCRatioDb drops the DC-ratio gauge series for system. Called
+// alongside ClearIQPowerDbFS when a decoder pipeline tears down.
+func (m *Metrics) ClearIQDCRatioDb(system string) {
+	if system == "" {
+		return
+	}
+	m.iqDCRatioDb.DeleteLabelValues(system)
 }
 
 // RecordUSBReconnect increments the reconnect counter for the supplied SDR.

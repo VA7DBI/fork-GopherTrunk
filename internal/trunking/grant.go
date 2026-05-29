@@ -43,7 +43,39 @@ type Grant struct {
 	// it from its PatchRegistry so the call can be attributed to every
 	// member. Empty for an ordinary (non-patched) grant.
 	PatchedGroups []uint32
-	At            time.Time
+	// P25Phase1DemodMode mirrors the system-level
+	// trunking.System.P25Phase1DemodMode setting so the voice composer
+	// can pick the matching symbol-recovery path on grants for the
+	// system (C4FM vs CQPSK / LSM). The control-channel decoder
+	// already honours the setting via the ccdecoder connector; without
+	// this field every voice grant landed in a hardcoded C4FM voice
+	// receiver and never decoded on LSM-modulated simulcast sites
+	// (issue #356 follow-up). Populated by the protocol layer when it
+	// publishes the grant; ignored for non-P25-Phase-1 grants.
+	P25Phase1DemodMode string
+	// P25Phase2Decode carries the per-channel FEC parameters the voice
+	// composer's Phase 2 chain needs to decode MAC PDUs that
+	// interleave with voice subframes on the traffic channel (talker
+	// alias, in-call signalling). Populated by the Phase 2 control
+	// channel when publishing the grant; zero on non-Phase-2 grants.
+	P25Phase2Decode P25Phase2Decode
+	At              time.Time
+}
+
+// P25Phase2Decode is the protocol-neutral mirror of
+// p25/phase2.MACDecodeConfig: primitive fields so this struct lives
+// in the trunking package without pulling a Phase 2 import. The
+// composer translates back to phase2.MACDecodeConfig at use time.
+//
+// Trellis / RS / Interleave / Scrambler are numerically aligned to
+// the phase2 enum constants of the same name (TrellisOff = 0,
+// TrellisOn = 1, etc.). The composer round-trips them by casting.
+type P25Phase2Decode struct {
+	Trellis    uint8
+	RS         uint8
+	Interleave uint8
+	Scrambler  uint8
+	Seed       uint64
 }
 
 // String renders a one-line summary of a Grant for log output.
@@ -76,12 +108,24 @@ func (g Grant) String() string {
 type EndReason uint8
 
 const (
-	EndReasonUnknown    EndReason = iota
-	EndReasonNormal               // CC announced channel release / talk-off
-	EndReasonTimeout              // engine watchdog fired (no recent activity)
-	EndReasonPreempted            // higher-priority grant kicked us off
-	EndReasonLockout              // talkgroup is locked out by policy
-	EndReasonNoVoiceSDR           // every Voice-role SDR was busy
+	EndReasonUnknown EndReason = iota
+	// EndReasonNormal is the carrier-drop natural end: either the CC
+	// announced a channel release / talk-off, or — far more common
+	// on P25 where no such announcement is ever sent — the watchdog
+	// reaped a call whose Touch advanced past StartedAt (frames were
+	// decoded and then the transmitter stopped). Operator-visible
+	// meaning: the call ended cleanly, no decode problem.
+	EndReasonNormal
+	// EndReasonTimeout is the silent-from-start decode failure: the
+	// watchdog reaped a call whose LastHeardAt never moved past
+	// StartedAt — not a single LDU / voice subframe was delivered.
+	// This is the real failure mode (wrong demod mode, gain too low,
+	// LSM site decoded as C4FM, etc.) — distinct from EndReasonNormal
+	// above, which fires when the radio simply stopped transmitting.
+	EndReasonTimeout
+	EndReasonPreempted  // higher-priority grant kicked us off
+	EndReasonLockout    // talkgroup is locked out by policy
+	EndReasonNoVoiceSDR // every Voice-role SDR was busy
 	EndReasonError
 	EndReasonManual // operator ended the call via API / TUI
 )
@@ -172,4 +216,24 @@ type CallEncryption struct {
 	KeyID            uint16
 	MessageIndicator [9]byte
 	At               time.Time
+}
+
+// CallSourceUpdate is the payload of an events.KindCallSourceUpdate
+// event. The voice composer publishes one when it recovers the
+// source radio ID + encryption state from in-call traffic-channel
+// signalling — e.g. a P25 Phase 2 GROUP_VOICE_CHANNEL_USER PDU
+// where the CC grant arrived in a compressed form without those
+// fields (src=0 + enc=false). The engine subscribes, backfills the
+// bound ActiveCall.Grant.SourceID + .Encrypted via the voice pool,
+// and republishes the event with System / Protocol / GroupID
+// populated so SSE + TUI consumers can patch their live view.
+// DeviceSerial keys the update to a specific active call.
+type CallSourceUpdate struct {
+	DeviceSerial string
+	System       string // filled in by the engine on republish
+	Protocol     string
+	GroupID      uint32 // filled in by the engine on republish from the bound Grant
+	SourceID     uint32
+	Encrypted    bool
+	At           time.Time
 }

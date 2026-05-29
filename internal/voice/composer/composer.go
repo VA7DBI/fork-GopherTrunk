@@ -34,6 +34,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/equalizer"
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/filter"
 	"github.com/MattCheramie/GopherTrunk/internal/events"
+	p25p2 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase2"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
@@ -60,8 +61,16 @@ type EqualizerConfig struct {
 // IQSource is the subset of sdr.Device the composer needs. Decoupling
 // keeps the package free of a hard import on internal/sdr and makes
 // testing trivial with an in-memory channel.
+//
+// SampleRateHz reports the chunk rate this source delivers. The
+// composer reads it once when a call starts so per-source rates
+// (a wideband-derived virtual voice tuner emits 48 kHz while a
+// physical SDR emits the daemon-wide 2.4 MS/s) drive the right
+// decimation factor. Sources that return 0 fall back to the
+// daemon-wide rate the Composer was constructed with.
 type IQSource interface {
 	StreamIQ(ctx context.Context) (<-chan []complex64, error)
+	SampleRateHz() uint32
 }
 
 // Devices resolves a Voice-role IQ source by its serial. The daemon
@@ -384,6 +393,16 @@ func (c *Composer) handleStart(parent context.Context, cs trunking.CallStart) {
 		c.log.Warn("composer: StreamIQ failed", "serial", cs.DeviceSerial, "err", err)
 		return
 	}
+	// Per-source rate lets a virtual voice tuner (wideband-derived,
+	// emits 48 kHz IQ) coexist with physical SDRs (daemon-wide
+	// rate, typically 2.4 MS/s) in the same composer — the chain
+	// resolves its decimator off this value instead of a fixed
+	// daemon-wide constant. Sources that don't yet know their
+	// rate (return 0) fall back to the daemon-wide setting.
+	rateHz := src.SampleRateHz()
+	if rateHz == 0 {
+		rateHz = c.iqHz
+	}
 	ch := &chain{cancel: cancel, done: make(chan struct{})}
 	c.mu.Lock()
 	c.chains[cs.DeviceSerial] = ch
@@ -399,13 +418,20 @@ func (c *Composer) handleStart(parent context.Context, cs trunking.CallStart) {
 				"device", cs.DeviceSerial, "system", cs.Grant.System,
 				"group", cs.Grant.GroupID)
 		}
-		go c.runDMRVoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
+		go c.runDMRVoiceChain(chainCtx, cs.DeviceSerial, iqCh, rateHz, ch.done)
 	case isP25P2Voice:
-		go c.runP25Phase2VoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
+		macCfg := p25p2.MACDecodeConfig{
+			Trellis:    p25p2.TrellisMode(cs.Grant.P25Phase2Decode.Trellis),
+			RS:         p25p2.RSMode(cs.Grant.P25Phase2Decode.RS),
+			Interleave: p25p2.InterleaveMode(cs.Grant.P25Phase2Decode.Interleave),
+			Scrambler:  p25p2.ScramblerMode(cs.Grant.P25Phase2Decode.Scrambler),
+			Seed:       cs.Grant.P25Phase2Decode.Seed,
+		}
+		go c.runP25Phase2VoiceChain(chainCtx, cs.DeviceSerial, cs.Grant.System, macCfg, iqCh, rateHz, ch.done)
 	case isP25P1Voice:
-		go c.runP25Phase1VoiceChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
+		go c.runP25Phase1VoiceChain(chainCtx, cs.DeviceSerial, iqCh, rateHz, cs.Grant.P25Phase1DemodMode, ch.done)
 	default:
-		go c.runFMChain(chainCtx, cs.DeviceSerial, iqCh, ch.done)
+		go c.runFMChain(chainCtx, cs.DeviceSerial, iqCh, rateHz, ch.done)
 	}
 }
 
@@ -439,11 +465,11 @@ func (c *Composer) cancelAll() {
 // (proper polyphase resamplers, de-emphasis, post-demod LPF) is a
 // follow-up; this is honest passthrough quality good enough to verify
 // the wiring end-to-end and to land the operator-visible plumbing.
-func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []complex64, done chan<- struct{}) {
+func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []complex64, iqHz uint32, done chan<- struct{}) {
 	defer close(done)
 
 	// Front-end LPF: cutoff = bw / iqHz (normalized 0..0.5).
-	cutoff := float64(c.bw) / float64(c.iqHz)
+	cutoff := float64(c.bw) / float64(iqHz)
 	if cutoff > 0.45 {
 		cutoff = 0.45
 	}
@@ -453,7 +479,7 @@ func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []
 	// Naive decimation factors. They aren't exact; resampling-quality
 	// audio lands with the polyphase resampler in a follow-up.
 	const intermediateHz = 48_000
-	decim1 := int(c.iqHz) / intermediateHz
+	decim1 := int(iqHz) / intermediateHz
 	if decim1 < 1 {
 		decim1 = 1
 	}
@@ -477,7 +503,7 @@ func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []
 	// treble for SNR; without the matching low-pass the recording
 	// sounds harsh. Filter runs on the real audio at the intermediate
 	// rate (~48 kHz) before the second naive decimation to PCM.
-	intermediateHzf := float64(c.iqHz) / float64(decim1)
+	intermediateHzf := float64(iqHz) / float64(decim1)
 	var deemph *filter.DeEmphasis
 	if c.deemphCfg.Enabled {
 		deemph = filter.NewDeEmphasis(c.deemphCfg.TimeConstant, intermediateHzf)

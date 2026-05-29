@@ -155,3 +155,321 @@ func TestComposerP25Phase2VoiceChainExtractsRawFrames(t *testing.T) {
 	// The chain keeps the call alive via Engine.Touch.
 	waitFor(t, time.Second, func() bool { return eng.touched.Load() > 0 })
 }
+
+// buildP25P2AliasStream assembles n superframes that interleave Voice4V
+// sub-frames with MAC sub-frames carrying the two talker-alias
+// fragments needed to spell "UNIT-7" for source ID 0xABC123. The
+// fragments occupy sub-frames 0 and 6 (one per timeslot) of every
+// superframe, so even a partial chain decode catches them.
+func buildP25P2AliasStream(n int) (dibits []uint8, aliasSrc uint32, aliasText string) {
+	aliasSrc = 0xABC123
+	aliasText = "UNIT-7"
+
+	frag0 := p25p2.EncodeTalkerAliasFragment(p25p2.TalkerAliasFragment{
+		SourceID: aliasSrc, BlockIndex: 0, BlockCount: 2, Data: []byte("UNIT"),
+	})
+	frag1 := p25p2.EncodeTalkerAliasFragment(p25p2.TalkerAliasFragment{
+		SourceID: aliasSrc, BlockIndex: 1, BlockCount: 2, Data: []byte("-7"),
+	})
+
+	dibits = make([]uint8, 600)
+	for i := range dibits {
+		dibits[i] = uint8(i % 4)
+	}
+	for s := 0; s < n; s++ {
+		var subs [p25p2.SubframesPerSuperframe][]uint8
+		for i := range subs {
+			switch i {
+			case 0:
+				subs[i] = p25p2.EncodeMACSubframe(p25p2.SlotTypeMACSignaling, uint8(i),
+					frag0, p25p2.TrellisOn, p25p2.InterleaveOff)
+			case 6:
+				subs[i] = p25p2.EncodeMACSubframe(p25p2.SlotTypeMACSignaling, uint8(i),
+					frag1, p25p2.TrellisOn, p25p2.InterleaveOff)
+			default:
+				payloads := make([][]byte, p25p2.Voice4VFrameCount)
+				for j := range payloads {
+					payloads[j] = p25p2VoicePayload(s*p25p2.SubframesPerSuperframe*p25p2.Voice4VFrameCount + i*p25p2.Voice4VFrameCount + j)
+				}
+				subs[i] = p25p2.EncodeVoiceSubframe(p25p2.SlotTypeVoice4V, uint8(i), payloads)
+			}
+		}
+		dibits = append(dibits, p25p2.EncodeSuperframe(subs)...)
+	}
+	return dibits, aliasSrc, aliasText
+}
+
+// TestComposerP25Phase2TalkerAliasFires drives the full composer Phase 2
+// voice path with a synthesized superframe that interleaves Voice4V
+// sub-frames with MAC sub-frames carrying talker-alias fragments —
+// the on-air shape #376's MMR field report sees — and confirms the
+// chain publishes a trunking.TalkerAlias event with the reassembled
+// "UNIT-7" alias. This is the regression guard for the issue's core
+// claim: aliases ride the voice-channel MAC dispatch, not the CC.
+func TestComposerP25Phase2TalkerAliasFires(t *testing.T) {
+	const (
+		sampleRate  = 48_000.0
+		sps         = 8
+		span        = 8
+		alpha       = 0.20
+		superframes = 6
+	)
+
+	dibits, wantSrc, wantAlias := buildP25P2AliasStream(superframes)
+	iq := demod.ModulatePiOver4DQPSK(dibits, sps, span, alpha, math.Pi/8)
+
+	src := newFakeSource()
+	bus := events.NewBus(64)
+	sink := &recordingSink{}
+	eng := &fakeEngine{}
+	c, err := New(Options{
+		Bus:           bus,
+		Devices:       &fakeDevices{src: map[string]IQSource{"VOICE-1": src}},
+		Sink:          sink,
+		Engine:        eng,
+		IQSampleRate:  uint32(sampleRate),
+		PCMSampleRate: 8000,
+		TouchInterval: 30 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	defer c.Close()
+
+	// Subscribe AFTER composer construction so the composer's
+	// subscriber drains its CallStart first; this subscriber only sees
+	// the TalkerAlias published by the chain.
+	aliasSub := bus.Subscribe()
+	defer aliasSub.Close()
+	defer bus.Close()
+
+	bus.Publish(events.Event{
+		Kind: events.KindCallStart,
+		Payload: trunking.CallStart{
+			Grant: trunking.Grant{
+				System: "P25P2Site", Protocol: "p25-phase2",
+				GroupID: 42, FrequencyHz: 851_062_500,
+				// The encoder above leaves the MAC PDUs unscrambled
+				// + RS-uncovered (matching every existing Phase 2
+				// fixture), so the composer's MAC decode needs the
+				// same TrellisOn / ScramblerOff config.
+				P25Phase2Decode: trunking.P25Phase2Decode{
+					Trellis: uint8(p25p2.TrellisOn),
+				},
+			},
+			DeviceSerial: "VOICE-1",
+			StartedAt:    time.Now().UTC(),
+		},
+	})
+
+	waitFor(t, 2*time.Second, func() bool { return len(c.ActiveChains()) == 1 })
+	src.SendIQ(iq)
+
+	deadline := time.After(6 * time.Second)
+	for {
+		select {
+		case ev := <-aliasSub.C:
+			if ev.Kind != events.KindTalkerAlias {
+				continue
+			}
+			ta, ok := ev.Payload.(trunking.TalkerAlias)
+			if !ok {
+				t.Fatalf("KindTalkerAlias payload type = %T, want trunking.TalkerAlias", ev.Payload)
+			}
+			if ta.SourceID != wantSrc {
+				t.Errorf("TalkerAlias.SourceID = %#x, want %#x", ta.SourceID, wantSrc)
+			}
+			if ta.Alias != wantAlias {
+				t.Errorf("TalkerAlias.Alias = %q, want %q", ta.Alias, wantAlias)
+			}
+			if ta.Protocol != "p25-phase2" {
+				t.Errorf("TalkerAlias.Protocol = %q, want p25-phase2", ta.Protocol)
+			}
+			if ta.System != "P25P2Site" {
+				t.Errorf("TalkerAlias.System = %q, want P25P2Site", ta.System)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no KindTalkerAlias event published within 6s")
+		}
+	}
+}
+
+// buildP25P2MetadataStream assembles n superframes carrying three
+// in-call MAC PDUs the MMR field test surfaced as missing from the
+// composer dispatch: GROUP_VOICE_CHANNEL_USER (source RID + svc opts),
+// ENCRYPTION_SYNC (ALGID + KID), and a talker-alias fragment pair —
+// interleaved with Voice4V sub-frames.
+func buildP25P2MetadataStream(n int) (dibits []uint8, wantSrc uint32, wantAlias string, wantAlgID uint8, wantKeyID uint16) {
+	wantSrc = 315203 // the reporter's MMR sample radio
+	wantAlias = "UNIT-7"
+	wantAlgID = 0x84 // AES-256
+	wantKeyID = 0x1234
+
+	userPDU := p25p2.EncodeGroupVoiceChannelUser(p25p2.GroupVoiceChannelUser{
+		ServiceOptions: 0x40, // bit 6 = encrypted
+		GroupAddress:   0x4EEA,
+		SourceID:       wantSrc,
+	}, false)
+	encPDU := p25p2.EncodeEncryptionSync(p25p2.EncryptionSync{
+		AlgorithmID:      wantAlgID,
+		KeyID:            wantKeyID,
+		MessageIndicator: [9]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09},
+	})
+	frag0 := p25p2.EncodeTalkerAliasFragment(p25p2.TalkerAliasFragment{
+		SourceID: wantSrc, BlockIndex: 0, BlockCount: 2, Data: []byte("UNIT"),
+	})
+	frag1 := p25p2.EncodeTalkerAliasFragment(p25p2.TalkerAliasFragment{
+		SourceID: wantSrc, BlockIndex: 1, BlockCount: 2, Data: []byte("-7"),
+	})
+
+	dibits = make([]uint8, 600)
+	for i := range dibits {
+		dibits[i] = uint8(i % 4)
+	}
+	for s := 0; s < n; s++ {
+		var subs [p25p2.SubframesPerSuperframe][]uint8
+		for i := range subs {
+			switch i {
+			case 0:
+				subs[i] = p25p2.EncodeMACSubframe(p25p2.SlotTypeMACSignaling, uint8(i),
+					userPDU, p25p2.TrellisOn, p25p2.InterleaveOff)
+			case 3:
+				subs[i] = p25p2.EncodeMACSubframe(p25p2.SlotTypeMACSignaling, uint8(i),
+					encPDU, p25p2.TrellisOn, p25p2.InterleaveOff)
+			case 6:
+				subs[i] = p25p2.EncodeMACSubframe(p25p2.SlotTypeMACSignaling, uint8(i),
+					frag0, p25p2.TrellisOn, p25p2.InterleaveOff)
+			case 9:
+				subs[i] = p25p2.EncodeMACSubframe(p25p2.SlotTypeMACSignaling, uint8(i),
+					frag1, p25p2.TrellisOn, p25p2.InterleaveOff)
+			default:
+				payloads := make([][]byte, p25p2.Voice4VFrameCount)
+				for j := range payloads {
+					payloads[j] = p25p2VoicePayload(s*p25p2.SubframesPerSuperframe*p25p2.Voice4VFrameCount + i*p25p2.Voice4VFrameCount + j)
+				}
+				subs[i] = p25p2.EncodeVoiceSubframe(p25p2.SlotTypeVoice4V, uint8(i), payloads)
+			}
+		}
+		dibits = append(dibits, p25p2.EncodeSuperframe(subs)...)
+	}
+	return dibits, wantSrc, wantAlias, wantAlgID, wantKeyID
+}
+
+// TestComposerP25Phase2InCallMetadataFires drives all three in-call
+// MAC PDU transports the composer now dispatches (User Abbreviated,
+// Encryption Sync, Talker Alias) through the full Phase 2 voice chain
+// and asserts the corresponding bus events fire. This is the
+// regression guard for #376's MMR follow-up: source RID +
+// encryption state + alias must all surface from traffic-channel MAC
+// PDUs when the CC grant is compressed (src=0, enc=false).
+func TestComposerP25Phase2InCallMetadataFires(t *testing.T) {
+	const (
+		sampleRate  = 48_000.0
+		sps         = 8
+		span        = 8
+		alpha       = 0.20
+		superframes = 6
+	)
+
+	dibits, wantSrc, wantAlias, wantAlgID, wantKeyID := buildP25P2MetadataStream(superframes)
+	iq := demod.ModulatePiOver4DQPSK(dibits, sps, span, alpha, math.Pi/8)
+
+	src := newFakeSource()
+	bus := events.NewBus(128)
+	sink := &recordingSink{}
+	eng := &fakeEngine{}
+	c, err := New(Options{
+		Bus:           bus,
+		Devices:       &fakeDevices{src: map[string]IQSource{"VOICE-1": src}},
+		Sink:          sink,
+		Engine:        eng,
+		IQSampleRate:  uint32(sampleRate),
+		PCMSampleRate: 8000,
+		TouchInterval: 30 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	defer c.Close()
+
+	evSub := bus.Subscribe()
+	defer evSub.Close()
+	defer bus.Close()
+
+	bus.Publish(events.Event{
+		Kind: events.KindCallStart,
+		Payload: trunking.CallStart{
+			Grant: trunking.Grant{
+				System: "MMR", Protocol: "p25-phase2",
+				GroupID: 20202, FrequencyHz: 421_387_500,
+				P25Phase2Decode: trunking.P25Phase2Decode{
+					Trellis: uint8(p25p2.TrellisOn),
+				},
+			},
+			DeviceSerial: "VOICE-1",
+			StartedAt:    time.Now().UTC(),
+		},
+	})
+	waitFor(t, 2*time.Second, func() bool { return len(c.ActiveChains()) == 1 })
+	src.SendIQ(iq)
+
+	deadline := time.After(6 * time.Second)
+	var (
+		gotSource, gotEnc, gotAlias bool
+	)
+	for !(gotSource && gotEnc && gotAlias) {
+		select {
+		case ev := <-evSub.C:
+			switch ev.Kind {
+			case events.KindCallSourceUpdate:
+				s, ok := ev.Payload.(trunking.CallSourceUpdate)
+				if !ok {
+					t.Fatalf("KindCallSourceUpdate payload type = %T", ev.Payload)
+				}
+				if s.SourceID != wantSrc {
+					t.Errorf("CallSourceUpdate.SourceID = %#x, want %#x", s.SourceID, wantSrc)
+				}
+				if !s.Encrypted {
+					t.Errorf("CallSourceUpdate.Encrypted = false, want true")
+				}
+				if s.DeviceSerial != "VOICE-1" {
+					t.Errorf("CallSourceUpdate.DeviceSerial = %q, want VOICE-1", s.DeviceSerial)
+				}
+				gotSource = true
+			case events.KindCallEncryption:
+				e, ok := ev.Payload.(trunking.CallEncryption)
+				if !ok {
+					t.Fatalf("KindCallEncryption payload type = %T", ev.Payload)
+				}
+				if e.AlgorithmID != wantAlgID || e.KeyID != wantKeyID {
+					t.Errorf("CallEncryption alg/key = 0x%X/0x%X, want 0x%X/0x%X",
+						e.AlgorithmID, e.KeyID, wantAlgID, wantKeyID)
+				}
+				if e.DeviceSerial != "VOICE-1" {
+					t.Errorf("CallEncryption.DeviceSerial = %q, want VOICE-1", e.DeviceSerial)
+				}
+				gotEnc = true
+			case events.KindTalkerAlias:
+				a, ok := ev.Payload.(trunking.TalkerAlias)
+				if !ok {
+					t.Fatalf("KindTalkerAlias payload type = %T", ev.Payload)
+				}
+				if a.SourceID != wantSrc || a.Alias != wantAlias {
+					t.Errorf("TalkerAlias = (%#x, %q), want (%#x, %q)",
+						a.SourceID, a.Alias, wantSrc, wantAlias)
+				}
+				gotAlias = true
+			}
+		case <-deadline:
+			t.Fatalf("missing events after 6s: source=%v enc=%v alias=%v",
+				gotSource, gotEnc, gotAlias)
+		}
+	}
+}

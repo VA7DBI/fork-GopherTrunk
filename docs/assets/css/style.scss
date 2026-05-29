@@ -664,3 +664,127 @@ button { font: inherit; cursor: pointer; }
 
 /* ---------- Selection ---------- */
 ::selection { background: var(--accent-soft); color: var(--fg); }
+
+/* ---------- Blog ---------- */
+.post__header {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.post__title {
+  margin: 0 0 0.5rem;
+}
+.post__meta {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 0.95rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.post__sep {
+  color: var(--border);
+}
+.post__tags {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.post__tag {
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+}
+.category-chip {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 500;
+  text-decoration: none;
+  line-height: 1.4;
+}
+a.category-chip:hover {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.blog-section {
+  margin: 0 0 3rem;
+}
+.blog-section__header {
+  margin-bottom: 1rem;
+}
+.blog-section__heading {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+}
+.blog-section__heading a {
+  color: var(--fg);
+  text-decoration: none;
+}
+.blog-section__heading a:hover {
+  color: var(--link);
+}
+.blog-section__lede {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+.post-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1rem;
+}
+.post-list__empty {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.post-card {
+  padding: 1.25rem 1.5rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.post-card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow);
+}
+.post-card__link {
+  text-decoration: none;
+  color: inherit;
+}
+.post-card__title {
+  margin: 0 0 0.5rem;
+  font-size: 1.2rem;
+  color: var(--link);
+}
+.post-card__link:hover .post-card__title {
+  color: var(--link-hover);
+}
+.post-card__meta {
+  margin: 0 0 0.5rem;
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.post-card__desc {
+  margin: 0;
+  color: var(--fg);
+}
+.blog-feed-link {
+  margin-top: 2rem;
+  color: var(--fg-muted);
+  font-size: 0.95rem;
+}

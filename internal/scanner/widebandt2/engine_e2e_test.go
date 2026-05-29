@@ -56,7 +56,7 @@ func TestEngineEndToEndT2GrantFromSynthesizedIQ(t *testing.T) {
 	// 1. Build the dibit stream + modulate to baseband IQ at the
 	// wideband rate.
 	dibits := buildT2VoiceLCHeaderDibits(burstRepeats, colorCode, groupID, sourceID)
-	baseband := demod.ModulateC4FM(dibits, spsWideband, spanSymbols, alpha, widebandRateHz, deviationHz)
+	baseband := demod.ModulateC4FM(dibits, spsWideband, spanSymbols, alpha, widebandRateHz, dmrDeviationHz)
 
 	// 2. Optionally shift the baseband by offsetHz. At offsetHz=0
 	// this is a no-op; kept as a seam so a future variant of this

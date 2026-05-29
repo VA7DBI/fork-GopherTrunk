@@ -28,7 +28,17 @@ type UnitActivity struct {
 	// Registered is true once the unit has been seen in a unit
 	// registration message.
 	Registered bool      `json:"registered"`
+	FirstSeen  time.Time `json:"first_seen"`
 	LastSeen   time.Time `json:"last_seen"`
+	// CallCount counts grants observed for this unit since it entered
+	// the table — a simple "recurring radio" signal for the RID list
+	// (issue #376).
+	CallCount uint64 `json:"call_count"`
+	// TalkerAlias is the most-recently-decoded over-the-air talker
+	// alias for this unit (the radio's own display name), distinct
+	// from any operator-assigned alias in the RIDDB.
+	TalkerAlias   string    `json:"talker_alias,omitempty"`
+	TalkerAliasAt time.Time `json:"talker_alias_at,omitempty"`
 }
 
 // AffiliationTracker maintains a live, protocol-agnostic table of which
@@ -114,30 +124,45 @@ func (t *AffiliationTracker) handle(ev events.Event) {
 	switch ev.Kind {
 	case events.KindGrant:
 		if g, ok := ev.Payload.(Grant); ok && g.SourceID != 0 {
-			t.observe(g.SourceID, g.GroupID, g.System, g.Protocol, false, false)
+			t.observe(g.SourceID, g.GroupID, g.System, g.Protocol, false, false, true)
 		}
 	case events.KindAffiliation:
 		if a, ok := ev.Payload.(Affiliation); ok && a.SourceID != 0 &&
 			a.Response == AffiliationAccepted {
-			t.observe(a.SourceID, a.GroupID, a.System, a.Protocol, true, false)
+			t.observe(a.SourceID, a.GroupID, a.System, a.Protocol, true, false, false)
 		}
 	case events.KindUnitRegistration:
 		if r, ok := ev.Payload.(UnitRegistration); ok && r.SourceID != 0 &&
 			r.Response == RegistrationAccepted {
-			t.observe(r.SourceID, 0, r.System, r.Protocol, false, true)
+			t.observe(r.SourceID, 0, r.System, r.Protocol, false, true, false)
+		}
+	case events.KindTalkerAlias:
+		if a, ok := ev.Payload.(TalkerAlias); ok && a.SourceID != 0 && a.Alias != "" {
+			t.observeAlias(a.SourceID, a.System, a.Protocol, a.Alias)
+		}
+	case events.KindCallSourceUpdate:
+		// In-call source RID backfill (P25 Phase 2 traffic-channel
+		// GROUP_VOICE_CHANNEL_USER). The grant fired with src=0 so
+		// the original KindGrant case above didn't observe; record
+		// the real source now so /rids and history surface it.
+		// countCall=false because the call was already counted on
+		// the grant; this only stamps the source identity.
+		if u, ok := ev.Payload.(CallSourceUpdate); ok && u.SourceID != 0 {
+			t.observe(u.SourceID, u.GroupID, u.System, u.Protocol, false, false, false)
 		}
 	}
 }
 
 // observe records (or refreshes) a unit's activity. A talkgroup of 0
 // (a bare registration) refreshes the unit without clobbering a known
-// talkgroup association.
-func (t *AffiliationTracker) observe(radioID, talkgroup uint32, system, protocol string, explicit, registered bool) {
+// talkgroup association. countCall increments the unit's call counter
+// — true only for grant observations.
+func (t *AffiliationTracker) observe(radioID, talkgroup uint32, system, protocol string, explicit, registered, countCall bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	u := t.units[radioID]
 	if u == nil {
-		u = &UnitActivity{RadioID: radioID}
+		u = &UnitActivity{RadioID: radioID, FirstSeen: t.now()}
 		t.units[radioID] = u
 	}
 	if talkgroup != 0 {
@@ -153,6 +178,31 @@ func (t *AffiliationTracker) observe(radioID, talkgroup uint32, system, protocol
 	if registered {
 		u.Registered = true
 	}
+	if countCall {
+		u.CallCount++
+	}
+	u.LastSeen = t.now()
+}
+
+// observeAlias records an over-the-air talker alias for the given
+// unit. Refreshes LastSeen so a passive alias broadcast keeps the
+// unit alive in the table even without a fresh grant.
+func (t *AffiliationTracker) observeAlias(radioID uint32, system, protocol, alias string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	u := t.units[radioID]
+	if u == nil {
+		u = &UnitActivity{RadioID: radioID, FirstSeen: t.now()}
+		t.units[radioID] = u
+	}
+	if system != "" {
+		u.System = system
+	}
+	if protocol != "" {
+		u.Protocol = protocol
+	}
+	u.TalkerAlias = alias
+	u.TalkerAliasAt = t.now()
 	u.LastSeen = t.now()
 }
 
