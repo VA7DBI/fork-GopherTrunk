@@ -254,6 +254,9 @@ func TestFleetSyncExporterRetriesTransientFailure(t *testing.T) {
 	if stats := exporter.Stats(); stats.RetriedLast60sTotal != 2 || stats.RetryRateLast60s != 2.0/3.0 {
 		t.Fatalf("rolling retry pressure=%+v", stats)
 	}
+	if stats := exporter.Stats(); stats.LastEventAt.IsZero() || stats.LastSendAt.IsZero() || stats.TelemetryAgeSeconds < 0 {
+		t.Fatalf("liveness stats=%+v", stats)
+	}
 }
 
 func TestFleetSyncExporterRecordsPermanentFailure(t *testing.T) {
@@ -291,6 +294,9 @@ func TestFleetSyncExporterRecordsPermanentFailure(t *testing.T) {
 	}
 	if stats.RetriedLast60sTotal != 2 || stats.RetryRateLast60s != 2.0/3.0 {
 		t.Fatalf("rolling retry pressure=%+v", stats)
+	}
+	if stats.LastEventAt.IsZero() || stats.LastFailureAt.IsZero() || stats.TelemetryAgeSeconds < 0 {
+		t.Fatalf("liveness stats=%+v", stats)
 	}
 }
 

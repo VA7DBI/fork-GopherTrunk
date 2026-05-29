@@ -117,6 +117,10 @@ type FleetSyncOptions struct {
 type FleetSyncStats struct {
 	Queued                          int                `json:"queued"`
 	Dropped                         int                `json:"dropped"`
+	LastEventAt                     time.Time          `json:"last_event_at,omitempty"`
+	LastSendAt                      time.Time          `json:"last_send_at,omitempty"`
+	LastFailureAt                   time.Time          `json:"last_failure_at,omitempty"`
+	TelemetryAgeSeconds             float64            `json:"telemetry_age_seconds,omitempty"`
 	QueueDepth                      int                `json:"queue_depth"`
 	QueueCapacity                   int                `json:"queue_capacity"`
 	QueueUtilization                float64            `json:"queue_utilization"`
@@ -162,6 +166,9 @@ type FleetSyncExporter struct {
 	startedAt           time.Time
 	queued              int
 	dropped             int
+	lastEventAt         time.Time
+	lastSendAt          time.Time
+	lastFailureAt       time.Time
 	droppedBySource     map[string]int
 	recentDropsBySource map[string][]time.Time
 	sent                map[string]int
@@ -262,10 +269,12 @@ func (f *FleetSyncExporter) dispatch(msg *FleetSyncEvent) {
 	select {
 	case f.jobs <- msg:
 		f.mu.Lock()
+		f.lastEventAt = time.Now().UTC()
 		f.queued++
 		f.mu.Unlock()
 	default:
 		f.mu.Lock()
+		f.lastEventAt = time.Now().UTC()
 		f.dropped++
 		f.droppedBySource[msg.Source]++
 		now := time.Now()
@@ -324,6 +333,7 @@ func (f *FleetSyncExporter) sendWithRetry(backend FleetSyncBackend, msg *FleetSy
 		if err == nil {
 			now = time.Now()
 			f.mu.Lock()
+			f.lastSendAt = now.UTC()
 			f.sent[backend.Name()]++
 			f.recentSent[backend.Name()] = append(f.recentSent[backend.Name()], now)
 			f.pruneRecentBackendLocked(now.Add(-60 * time.Second))
@@ -341,6 +351,7 @@ func (f *FleetSyncExporter) sendWithRetry(backend FleetSyncBackend, msg *FleetSy
 	}
 	now := time.Now()
 	f.mu.Lock()
+	f.lastFailureAt = now.UTC()
 	f.failed[backend.Name()]++
 	f.recentFailed[backend.Name()] = append(f.recentFailed[backend.Name()], now)
 	f.pruneRecentBackendLocked(now.Add(-60 * time.Second))
@@ -353,6 +364,9 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	out := FleetSyncStats{
 		Queued:                          f.queued,
 		Dropped:                         f.dropped,
+		LastEventAt:                     f.lastEventAt,
+		LastSendAt:                      f.lastSendAt,
+		LastFailureAt:                   f.lastFailureAt,
 		QueueDepth:                      len(f.jobs),
 		QueueCapacity:                   cap(f.jobs),
 		DroppedBySource:                 make(map[string]int, len(f.droppedBySource)),
@@ -429,6 +443,16 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	}
 	if attemptsLast60sTotal > 0 {
 		out.RetryRateLast60s = float64(out.RetriedLast60sTotal) / float64(attemptsLast60sTotal)
+	}
+	latest := out.LastEventAt
+	if out.LastSendAt.After(latest) {
+		latest = out.LastSendAt
+	}
+	if out.LastFailureAt.After(latest) {
+		latest = out.LastFailureAt
+	}
+	if !latest.IsZero() {
+		out.TelemetryAgeSeconds = time.Since(latest).Seconds()
 	}
 	return out
 }

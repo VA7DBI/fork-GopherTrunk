@@ -106,6 +106,10 @@ Exporter health is included under `runtime.export`:
 
 - `queued`
 - `dropped`
+- `last_event_at` (most recent export event accepted or dropped by the exporter)
+- `last_send_at` (most recent successful backend delivery timestamp)
+- `last_failure_at` (most recent terminal backend delivery failure timestamp)
+- `telemetry_age_seconds` (seconds since the freshest export liveness timestamp)
 - `queue_depth` (current messages waiting in exporter queue)
 - `queue_capacity` (configured exporter queue size)
 - `queue_utilization` (fraction of queue in use, from 0.0 to 1.0)

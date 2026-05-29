@@ -231,6 +231,10 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 		Export: FleetSyncExportRuntimeStatsDTO{
 			Queued:                          10,
 			Dropped:                         1,
+			LastEventAt:                     time.Unix(1700000190, 0).UTC(),
+			LastSendAt:                      time.Unix(1700000185, 0).UTC(),
+			LastFailureAt:                   time.Unix(1700000180, 0).UTC(),
+			TelemetryAgeSeconds:             10,
 			QueueDepth:                      4,
 			QueueCapacity:                   1024,
 			QueueUtilization:                4.0 / 1024.0,
@@ -296,6 +300,9 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 	}
 	if got.Runtime.Export.QueueUtilization != 4.0/1024.0 {
 		t.Fatalf("runtime.export.queue_utilization = %f", got.Runtime.Export.QueueUtilization)
+	}
+	if got.Runtime.Export.LastEventAt.IsZero() || got.Runtime.Export.LastSendAt.IsZero() || got.Runtime.Export.LastFailureAt.IsZero() || got.Runtime.Export.TelemetryAgeSeconds != 10 {
+		t.Fatalf("runtime.export.liveness = event=%v send=%v failure=%v age=%f", got.Runtime.Export.LastEventAt, got.Runtime.Export.LastSendAt, got.Runtime.Export.LastFailureAt, got.Runtime.Export.TelemetryAgeSeconds)
 	}
 	if got.Runtime.Export.SentLast60sTotal != 4 || got.Runtime.Export.FailedLast60sTotal != 1 {
 		t.Fatalf("runtime.export.rolling_outcome_totals = sent=%d failed=%d", got.Runtime.Export.SentLast60sTotal, got.Runtime.Export.FailedLast60sTotal)
