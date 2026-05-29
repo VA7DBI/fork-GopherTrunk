@@ -49,6 +49,8 @@ func TestHandleRuntime_ServesDTO(t *testing.T) {
 		LastFatalError:     "http: bind: address already in use",
 		LastFatalComponent: "http",
 		LastFatalAt:        time.Unix(1717000000, 0).UTC(),
+		LastFatalClass:     "bind_conflict",
+		LastFatalHint:      "A listener port is already in use; change the configured address/port or stop the conflicting process.",
 	}}
 	s, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Bus: bus, Runtime: fake})
 	if err != nil {
@@ -76,5 +78,8 @@ func TestHandleRuntime_ServesDTO(t *testing.T) {
 	}
 	if out.LastFatalError != fake.dto.LastFatalError || out.LastFatalComponent != fake.dto.LastFatalComponent || !out.LastFatalAt.Equal(fake.dto.LastFatalAt) {
 		t.Errorf("fatal metadata lost in runtime DTO round-trip: got=%+v want error=%q component=%q at=%s", out, fake.dto.LastFatalError, fake.dto.LastFatalComponent, fake.dto.LastFatalAt)
+	}
+	if out.LastFatalClass != fake.dto.LastFatalClass || out.LastFatalHint != fake.dto.LastFatalHint {
+		t.Errorf("fatal classification metadata lost in runtime DTO round-trip: class=%q hint=%q", out.LastFatalClass, out.LastFatalHint)
 	}
 }
