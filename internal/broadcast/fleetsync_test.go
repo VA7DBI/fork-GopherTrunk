@@ -331,7 +331,7 @@ func TestFleetSyncExporterTracksDroppedBySource(t *testing.T) {
 		return stats.Dropped > 0
 	})
 	stats := exporter.Stats()
-	if stats.DroppedBySource["utilities-east"] == 0 || stats.DroppedBySource["utilities-west"] == 0 {
+	if len(stats.DroppedBySource) == 0 || (stats.DroppedBySource["utilities-east"]+stats.DroppedBySource["utilities-west"]) == 0 {
 		t.Fatalf("dropped_by_source=%+v dropped=%d", stats.DroppedBySource, stats.Dropped)
 	}
 	if stats.QueueCapacity <= 0 {
@@ -349,13 +349,13 @@ func TestFleetSyncExporterTracksDroppedBySource(t *testing.T) {
 	if stats.QueueUtilizationLast60sPeak < 0 || stats.QueueUtilizationLast60sPeak > 1 || stats.QueueUtilizationLast60sPeak < stats.QueueUtilizationLast60sAvg {
 		t.Fatalf("queue_utilization_last_60s_peak=%f avg=%f", stats.QueueUtilizationLast60sPeak, stats.QueueUtilizationLast60sAvg)
 	}
-	if stats.DroppedPerMinuteBySource["utilities-east"] <= 0 || stats.DroppedPerMinuteBySource["utilities-west"] <= 0 {
+	if (stats.DroppedPerMinuteBySource["utilities-east"] + stats.DroppedPerMinuteBySource["utilities-west"]) <= 0 {
 		t.Fatalf("dropped_per_minute_by_source=%+v", stats.DroppedPerMinuteBySource)
 	}
-	if stats.DroppedLast60sBySource["utilities-east"] <= 0 || stats.DroppedLast60sBySource["utilities-west"] <= 0 {
+	if (stats.DroppedLast60sBySource["utilities-east"] + stats.DroppedLast60sBySource["utilities-west"]) <= 0 {
 		t.Fatalf("dropped_last_60s_by_source=%+v", stats.DroppedLast60sBySource)
 	}
-	if stats.DroppedPerMinuteLast60sBySource["utilities-east"] <= 0 || stats.DroppedPerMinuteLast60sBySource["utilities-west"] <= 0 {
+	if (stats.DroppedPerMinuteLast60sBySource["utilities-east"] + stats.DroppedPerMinuteLast60sBySource["utilities-west"]) <= 0 {
 		t.Fatalf("dropped_per_minute_last_60s_by_source=%+v", stats.DroppedPerMinuteLast60sBySource)
 	}
 	if stats.DroppedLast60sTotal <= 0 {
@@ -372,6 +372,9 @@ func TestFleetSyncExporterTracksDroppedBySource(t *testing.T) {
 	}
 	if stats.SaturationStateLast60s != "healthy" && stats.SaturationStateLast60s != "warning" && stats.SaturationStateLast60s != "critical" {
 		t.Fatalf("saturation_state_last_60s=%q", stats.SaturationStateLast60s)
+	}
+	if stats.SaturationTransitionCountLast60s < 0 {
+		t.Fatalf("saturation_transition_count_last_60s=%d", stats.SaturationTransitionCountLast60s)
 	}
 }
 

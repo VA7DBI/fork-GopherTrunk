@@ -115,41 +115,42 @@ type FleetSyncOptions struct {
 
 // FleetSyncStats is a point-in-time snapshot of exporter counters.
 type FleetSyncStats struct {
-	Queued                          int                `json:"queued"`
-	Dropped                         int                `json:"dropped"`
-	LastEventAt                     time.Time          `json:"last_event_at,omitempty"`
-	LastSendAt                      time.Time          `json:"last_send_at,omitempty"`
-	LastFailureAt                   time.Time          `json:"last_failure_at,omitempty"`
-	TelemetryAgeSeconds             float64            `json:"telemetry_age_seconds,omitempty"`
-	QueueDepth                      int                `json:"queue_depth"`
-	QueueCapacity                   int                `json:"queue_capacity"`
-	QueueUtilization                float64            `json:"queue_utilization"`
-	QueueUtilizationLast60sAvg      float64            `json:"queue_utilization_last_60s_avg,omitempty"`
-	QueueUtilizationLast60sPeak     float64            `json:"queue_utilization_last_60s_peak,omitempty"`
-	DroppedBySource                 map[string]int     `json:"dropped_by_source"`
-	DroppedPerMinuteBySource        map[string]float64 `json:"dropped_per_minute_by_source,omitempty"`
-	DroppedLast60sTotal             int                `json:"dropped_last_60s_total,omitempty"`
-	DroppedPerMinuteLast60sTotal    float64            `json:"dropped_per_minute_last_60s_total,omitempty"`
-	DroppedLast60sBySource          map[string]int     `json:"dropped_last_60s_by_source,omitempty"`
-	DroppedPerMinuteLast60sBySource map[string]float64 `json:"dropped_per_minute_last_60s_by_source,omitempty"`
-	Sent                            map[string]int     `json:"sent"`
-	SentLast60s                     map[string]int     `json:"sent_last_60s,omitempty"`
-	SentLast60sTotal                int                `json:"sent_last_60s_total,omitempty"`
-	Failed                          map[string]int     `json:"failed"`
-	FailedLast60s                   map[string]int     `json:"failed_last_60s,omitempty"`
-	FailedLast60sTotal              int                `json:"failed_last_60s_total,omitempty"`
-	SuccessRateLast60s              float64            `json:"success_rate_last_60s,omitempty"`
-	FailureRateLast60s              float64            `json:"failure_rate_last_60s,omitempty"`
-	Attempts                        map[string]int     `json:"attempts"`
-	AttemptsLast60s                 map[string]int     `json:"attempts_last_60s,omitempty"`
-	Retried                         map[string]int     `json:"retried"`
-	RetriedLast60s                  map[string]int     `json:"retried_last_60s,omitempty"`
-	RetriedLast60sTotal             int                `json:"retried_last_60s_total,omitempty"`
-	RetryRateLast60s                float64            `json:"retry_rate_last_60s,omitempty"`
-	DroppedToAttemptsRateLast60s    float64            `json:"dropped_to_attempts_rate_last_60s,omitempty"`
-	SaturationSeverityLast60s       float64            `json:"saturation_severity_last_60s,omitempty"`
-	SaturationStateLast60s          string             `json:"saturation_state_last_60s,omitempty"`
-	Backends                        []string           `json:"backends"`
+	Queued                           int                `json:"queued"`
+	Dropped                          int                `json:"dropped"`
+	LastEventAt                      time.Time          `json:"last_event_at,omitempty"`
+	LastSendAt                       time.Time          `json:"last_send_at,omitempty"`
+	LastFailureAt                    time.Time          `json:"last_failure_at,omitempty"`
+	TelemetryAgeSeconds              float64            `json:"telemetry_age_seconds,omitempty"`
+	QueueDepth                       int                `json:"queue_depth"`
+	QueueCapacity                    int                `json:"queue_capacity"`
+	QueueUtilization                 float64            `json:"queue_utilization"`
+	QueueUtilizationLast60sAvg       float64            `json:"queue_utilization_last_60s_avg,omitempty"`
+	QueueUtilizationLast60sPeak      float64            `json:"queue_utilization_last_60s_peak,omitempty"`
+	DroppedBySource                  map[string]int     `json:"dropped_by_source"`
+	DroppedPerMinuteBySource         map[string]float64 `json:"dropped_per_minute_by_source,omitempty"`
+	DroppedLast60sTotal              int                `json:"dropped_last_60s_total,omitempty"`
+	DroppedPerMinuteLast60sTotal     float64            `json:"dropped_per_minute_last_60s_total,omitempty"`
+	DroppedLast60sBySource           map[string]int     `json:"dropped_last_60s_by_source,omitempty"`
+	DroppedPerMinuteLast60sBySource  map[string]float64 `json:"dropped_per_minute_last_60s_by_source,omitempty"`
+	Sent                             map[string]int     `json:"sent"`
+	SentLast60s                      map[string]int     `json:"sent_last_60s,omitempty"`
+	SentLast60sTotal                 int                `json:"sent_last_60s_total,omitempty"`
+	Failed                           map[string]int     `json:"failed"`
+	FailedLast60s                    map[string]int     `json:"failed_last_60s,omitempty"`
+	FailedLast60sTotal               int                `json:"failed_last_60s_total,omitempty"`
+	SuccessRateLast60s               float64            `json:"success_rate_last_60s,omitempty"`
+	FailureRateLast60s               float64            `json:"failure_rate_last_60s,omitempty"`
+	Attempts                         map[string]int     `json:"attempts"`
+	AttemptsLast60s                  map[string]int     `json:"attempts_last_60s,omitempty"`
+	Retried                          map[string]int     `json:"retried"`
+	RetriedLast60s                   map[string]int     `json:"retried_last_60s,omitempty"`
+	RetriedLast60sTotal              int                `json:"retried_last_60s_total,omitempty"`
+	RetryRateLast60s                 float64            `json:"retry_rate_last_60s,omitempty"`
+	DroppedToAttemptsRateLast60s     float64            `json:"dropped_to_attempts_rate_last_60s,omitempty"`
+	SaturationSeverityLast60s        float64            `json:"saturation_severity_last_60s,omitempty"`
+	SaturationStateLast60s           string             `json:"saturation_state_last_60s,omitempty"`
+	SaturationTransitionCountLast60s int                `json:"saturation_transition_count_last_60s,omitempty"`
+	Backends                         []string           `json:"backends"`
 }
 
 // FleetSyncExporter fans decoded FleetSync frames out to outbound
@@ -167,29 +168,35 @@ type FleetSyncExporter struct {
 	runDone   chan struct{}
 	closeOnce sync.Once
 
-	mu                  sync.Mutex
-	startedAt           time.Time
-	queued              int
-	dropped             int
-	lastEventAt         time.Time
-	lastSendAt          time.Time
-	lastFailureAt       time.Time
-	recentQueueSamples  []queueUtilizationSample
-	droppedBySource     map[string]int
-	recentDropsBySource map[string][]time.Time
-	sent                map[string]int
-	recentSent          map[string][]time.Time
-	failed              map[string]int
-	recentFailed        map[string][]time.Time
-	attempts            map[string]int
-	recentAttempts      map[string][]time.Time
-	retried             map[string]int
-	recentRetried       map[string][]time.Time
+	mu                     sync.Mutex
+	startedAt              time.Time
+	queued                 int
+	dropped                int
+	lastEventAt            time.Time
+	lastSendAt             time.Time
+	lastFailureAt          time.Time
+	recentQueueSamples     []queueUtilizationSample
+	recentSaturationStates []saturationStateSample
+	droppedBySource        map[string]int
+	recentDropsBySource    map[string][]time.Time
+	sent                   map[string]int
+	recentSent             map[string][]time.Time
+	failed                 map[string]int
+	recentFailed           map[string][]time.Time
+	attempts               map[string]int
+	recentAttempts         map[string][]time.Time
+	retried                map[string]int
+	recentRetried          map[string][]time.Time
 }
 
 type queueUtilizationSample struct {
 	at          time.Time
 	utilization float64
+}
+
+type saturationStateSample struct {
+	at    time.Time
+	state string
 }
 
 func NewFleetSyncExporter(opts FleetSyncOptions) (*FleetSyncExporter, error) {
@@ -472,12 +479,11 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 		}
 		out.SaturationSeverityLast60s = score
 	}
-	if out.SaturationSeverityLast60s >= 0.75 {
-		out.SaturationStateLast60s = "critical"
-	} else if out.SaturationSeverityLast60s >= 0.35 {
-		out.SaturationStateLast60s = "warning"
-	} else {
-		out.SaturationStateLast60s = "healthy"
+	out.SaturationStateLast60s = saturationStateForSeverity(out.SaturationSeverityLast60s)
+	for i := 1; i < len(f.recentSaturationStates); i++ {
+		if f.recentSaturationStates[i].state != f.recentSaturationStates[i-1].state {
+			out.SaturationTransitionCountLast60s++
+		}
 	}
 	if len(f.recentQueueSamples) > 0 {
 		sum := 0.0
@@ -525,6 +531,63 @@ func (f *FleetSyncExporter) recordQueueUtilizationLocked(now time.Time) {
 	if idx > 0 {
 		f.recentQueueSamples = append([]queueUtilizationSample(nil), f.recentQueueSamples[idx:]...)
 	}
+	f.recordSaturationStateLocked(now)
+}
+
+func (f *FleetSyncExporter) recordSaturationStateLocked(now time.Time) {
+	attemptsLast60sTotal := 0
+	for _, entries := range f.recentAttempts {
+		attemptsLast60sTotal += len(entries)
+	}
+	droppedLast60sTotal := 0
+	for _, entries := range f.recentDropsBySource {
+		droppedLast60sTotal += len(entries)
+	}
+	retriedLast60sTotal := 0
+	for _, entries := range f.recentRetried {
+		retriedLast60sTotal += len(entries)
+	}
+	queueAvg := 0.0
+	if len(f.recentQueueSamples) > 0 {
+		sum := 0.0
+		for _, sample := range f.recentQueueSamples {
+			sum += sample.utilization
+		}
+		queueAvg = sum / float64(len(f.recentQueueSamples))
+	}
+	droppedToAttempts := 0.0
+	retryRate := 0.0
+	if attemptsLast60sTotal > 0 {
+		droppedToAttempts = float64(droppedLast60sTotal) / float64(attemptsLast60sTotal)
+		retryRate = float64(retriedLast60sTotal) / float64(attemptsLast60sTotal)
+	}
+	score := (0.5 * queueAvg) + (0.35 * droppedToAttempts) + (0.15 * retryRate)
+	if score < 0 {
+		score = 0
+	}
+	if score > 1 {
+		score = 1
+	}
+	state := saturationStateForSeverity(score)
+	f.recentSaturationStates = append(f.recentSaturationStates, saturationStateSample{at: now, state: state})
+	cutoff := now.Add(-60 * time.Second)
+	idx := 0
+	for idx < len(f.recentSaturationStates) && f.recentSaturationStates[idx].at.Before(cutoff) {
+		idx++
+	}
+	if idx > 0 {
+		f.recentSaturationStates = append([]saturationStateSample(nil), f.recentSaturationStates[idx:]...)
+	}
+}
+
+func saturationStateForSeverity(score float64) string {
+	if score >= 0.75 {
+		return "critical"
+	}
+	if score >= 0.35 {
+		return "warning"
+	}
+	return "healthy"
 }
 
 func pruneTimestampMapLocked(values map[string][]time.Time, cutoff time.Time) {

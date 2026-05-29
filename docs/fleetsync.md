@@ -126,6 +126,7 @@ Exporter health is included under `runtime.export`:
 - `dropped_to_attempts_rate_last_60s` (rolling backpressure loss ratio: dropped messages divided by backend attempts in the last 60 seconds)
 - `saturation_severity_last_60s` (weighted 0.0-1.0 severity score combining rolling queue utilization, dropped-to-attempts ratio, and retry rate)
 - `saturation_state_last_60s` (severity bucket derived from score: `healthy`, `warning`, or `critical`)
+- `saturation_transition_count_last_60s` (number of saturation state changes observed within the rolling last 60 seconds)
 - `dropped_last_60s_total` (total drops across all sources in the rolling last 60 seconds)
 - `dropped_per_minute_last_60s_total` (rolling last-60s total drops normalized to per-minute)
 - `dropped_last_60s_by_source` (map of source label to drops observed in the rolling last 60 seconds)
