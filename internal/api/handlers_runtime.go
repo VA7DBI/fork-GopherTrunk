@@ -92,6 +92,13 @@ type RuntimeDTO struct {
 	// LastFatalAt is the UTC timestamp when LastFatalError was
 	// captured.
 	LastFatalAt time.Time `json:"last_fatal_at,omitempty"`
+	// LastFatalClass is a compact machine-friendly category for
+	// LastFatalError (for example bind_conflict, instance_lock,
+	// sdr_disconnect).
+	LastFatalClass string `json:"last_fatal_class,omitempty"`
+	// LastFatalHint is an operator-facing remediation hint derived
+	// from LastFatalClass.
+	LastFatalHint string `json:"last_fatal_hint,omitempty"`
 }
 
 // ToneProfileDTO is the minimal projection of a tone-out profile —
