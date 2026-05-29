@@ -1,6 +1,7 @@
 package broadcast
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -43,8 +44,12 @@ type FleetSyncEvent struct {
 func fleetSyncEventFromMessage(msg radiofleetync.Message) *FleetSyncEvent {
 	payload := append([]byte(nil), msg.Payload...)
 	rawBytes := append([]byte(nil), msg.RawBytes...)
+	receivedAt := msg.Timestamp
+	if receivedAt.IsZero() {
+		receivedAt = time.Now().UTC()
+	}
 	return &FleetSyncEvent{
-		ReceivedAt: msg.Timestamp,
+		ReceivedAt: receivedAt,
 		Source:     msg.Source,
 		Version:    uint8(msg.Version),
 		Command:    msg.Command,
@@ -341,11 +346,14 @@ func (b *fleetSyncWebhookBackend) Name() string                     { return b.n
 func (b *fleetSyncWebhookBackend) AcceptsSource(source string) bool { return b.filter.Accepts(source) }
 
 func (b *fleetSyncWebhookBackend) Send(ctx context.Context, msg *FleetSyncEvent) error {
+	if msg == nil {
+		return errors.New("broadcast/fleetsync: webhook message is nil")
+	}
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("broadcast/fleetsync: marshal webhook payload: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.url, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("broadcast/fleetsync: new webhook request: %w", err)
 	}
@@ -393,7 +401,14 @@ func (b *fleetSyncSpoolBackend) Name() string                     { return b.nam
 func (b *fleetSyncSpoolBackend) AcceptsSource(source string) bool { return b.filter.Accepts(source) }
 
 func (b *fleetSyncSpoolBackend) Send(_ context.Context, msg *FleetSyncEvent) error {
-	entryDir := filepath.Join(b.dir, fmt.Sprintf("fleetync-%d-cmd%02X-unit%d", msg.ReceivedAt.UnixNano(), msg.Command, msg.FromUnit))
+	if msg == nil {
+		return errors.New("broadcast/fleetsync: spool message is nil")
+	}
+	receivedAt := msg.ReceivedAt
+	if receivedAt.IsZero() {
+		receivedAt = time.Now().UTC()
+	}
+	entryDir := filepath.Join(b.dir, fmt.Sprintf("fleetync-%d-cmd%02X-unit%d", receivedAt.UnixNano(), msg.Command, msg.FromUnit))
 	if err := os.MkdirAll(entryDir, 0o755); err != nil {
 		return fmt.Errorf("broadcast/fleetsync: mkdir %s: %w", entryDir, err)
 	}

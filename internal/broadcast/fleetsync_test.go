@@ -50,7 +50,10 @@ func TestFleetSyncWebhookSend(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	backend, err := NewFleetSyncWebhook(FleetSyncWebhookConfig{URL: srv.URL}, srv.Client())
+	backend, err := NewFleetSyncWebhook(FleetSyncWebhookConfig{
+		URL:     srv.URL,
+		Headers: map[string]string{"X-Feed": "fleetsync"},
+	}, srv.Client())
 	if err != nil {
 		t.Fatalf("NewFleetSyncWebhook: %v", err)
 	}
@@ -59,6 +62,16 @@ func TestFleetSyncWebhookSend(t *testing.T) {
 	}
 	if got.Source != "utilities-east" || got.PayloadHex != "0102" || got.RawHex != "AABB" {
 		t.Fatalf("payload = %+v", got)
+	}
+}
+
+func TestFleetSyncWebhookSendRejectsNilMessage(t *testing.T) {
+	backend, err := NewFleetSyncWebhook(FleetSyncWebhookConfig{URL: "http://127.0.0.1:1"}, nil)
+	if err != nil {
+		t.Fatalf("NewFleetSyncWebhook: %v", err)
+	}
+	if err := backend.Send(context.Background(), nil); err == nil {
+		t.Fatal("expected error for nil webhook message")
 	}
 }
 
@@ -105,6 +118,26 @@ func TestFleetSyncSpoolSend(t *testing.T) {
 	}
 	if !bytes.Equal(rawBytes, msg.RawBytes) {
 		t.Fatalf("raw.bin=%x want %x", rawBytes, msg.RawBytes)
+	}
+}
+
+func TestFleetSyncSpoolSendRejectsNilMessage(t *testing.T) {
+	dir := t.TempDir()
+	backend, err := NewFleetSyncSpool(FleetSyncSpoolConfig{Dir: dir})
+	if err != nil {
+		t.Fatalf("NewFleetSyncSpool: %v", err)
+	}
+	if err := backend.Send(context.Background(), nil); err == nil {
+		t.Fatal("expected error for nil spool message")
+	}
+}
+
+func TestFleetSyncEventFromMessageZeroTimestamp(t *testing.T) {
+	msg := testFleetSyncMessage()
+	msg.Timestamp = time.Time{}
+	ev := fleetSyncEventFromMessage(msg)
+	if ev.ReceivedAt.IsZero() {
+		t.Fatal("ReceivedAt should be normalized when message timestamp is zero")
 	}
 }
 

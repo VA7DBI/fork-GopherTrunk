@@ -126,4 +126,25 @@ func TestPublishEvent(t *testing.T) {
 	}
 }
 
+func TestPublishNilMessageIsIgnored(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	r, err := New(Options{InputRateHz: 2_400_000, Bus: bus, SourceName: "utilities-east"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	r.publish(nil)
+	select {
+	case ev := <-sub.C:
+		t.Fatalf("unexpected event: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if r.MessagesEmitted() != 0 {
+		t.Fatalf("MessagesEmitted=%d want 0", r.MessagesEmitted())
+	}
+}
+
 var dummyMsg = fleetync.Message{Timestamp: time.Now(), Version: fleetync.VersionFleetSync1}
