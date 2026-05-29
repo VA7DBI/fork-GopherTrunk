@@ -7,6 +7,21 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Changed
+
+- **Gain-units guardrail.** `sdr.devices[].gain` (and the rtl_tcp
+  equivalent) is in *tenths* of a dB — `"320"` = 32 dB — but operators
+  coming from SDRTrunk / OP25 / gqrx routinely paste a whole-dB value
+  like `"32"`, which parses to 3.2 dB and snaps to the bottom of the
+  tuner ladder, leaving the radio effectively deaf (no control-channel
+  lock, no decodes) with no feedback. The daemon now WARNs at startup
+  when a bare-integer gain parses to ≤ 5.0 dB (`gain looks like dB, not
+  tenths-of-dB …`, suggesting the ×10 value), and the SDR pool now logs
+  the applied gain in dB on every device (`sdr: gain set … gain_db=…`)
+  so a units mistake is visible without enabling debug. No behaviour
+  change for valid configs; decimal forms like `"32.0"` are still taken
+  as whole dB. Docs (`config.example.yaml`, `docs/hardware.md`) updated.
+
 ### Added
 
 - **MDC1200 Motorola signaling decode** (#438) — end-to-end pipeline

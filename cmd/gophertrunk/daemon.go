@@ -73,6 +73,41 @@ func parseGain(s string) (int, bool) {
 	return n, true
 }
 
+// gainLooksLikeDBMistake reports whether a successfully-parsed gain value
+// is almost certainly a dB figure the operator forgot to express in
+// tenths-of-dB. GopherTrunk's gain: string is tenths (so "320" = 32 dB),
+// but SDRTrunk / OP25 / gqrx all take whole dB — a habit that lands "32"
+// (= 3.2 dB, which SetGain then snaps to the bottom of the ladder, leaving
+// the radio effectively deaf) in many first-run configs. A bare integer
+// (no decimal point) that parses to a positive value at or below 50 tenths
+// (5.0 dB) is the tell: real manual gains run ~100-496 tenths and the
+// shipped examples are all three digits, so this never fires on a correct
+// config. Decimal forms like "32.0" are already interpreted as whole dB by
+// parseGain, so they're taken at face value and skipped.
+func gainLooksLikeDBMistake(raw string, tenthDB int) bool {
+	raw = strings.TrimSpace(raw)
+	if strings.ContainsAny(raw, ".,") {
+		return false
+	}
+	return tenthDB > 0 && tenthDB <= 50
+}
+
+// warnGainUnits emits a one-line, actionable WARN when a parsed gain looks
+// like a dB figure that should have been tenths-of-dB (see
+// gainLooksLikeDBMistake). No-op for plausible gains, so it's safe to call
+// unconditionally after every successful parseGain.
+func warnGainUnits(log *slog.Logger, serial, raw string, tenthDB int) {
+	if !gainLooksLikeDBMistake(raw, tenthDB) {
+		return
+	}
+	log.Warn("daemon: gain looks like dB, not tenths-of-dB — radio may be effectively deaf",
+		"serial", serial,
+		"configured", raw,
+		"parsed_db", float64(tenthDB)/10.0,
+		"did_you_mean", strconv.Itoa(tenthDB*10),
+		"hint", "gain: is in TENTHS of a dB (\"320\" = 32 dB). SDRTrunk/OP25/gqrx users multiply dB by 10. Use 'gain: auto' or run 'gophertrunk sdr list' for the supported ladder.")
+}
+
 // Daemon owns the lifecycle of every long-lived component the
 // gophertrunk binary runs: the events bus, SDR pool, trunking engine,
 // per-call recorder, SQLite call log + retention sweeper, Prometheus
@@ -400,6 +435,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 					log.Warn("daemon: ignoring unparseable gain",
 						"serial", dev.Serial, "gain", dev.Gain)
 				} else {
+					warnGainUnits(log, dev.Serial, dev.Gain, gain)
 					h = h.WithGain(gain)
 				}
 			}
@@ -456,6 +492,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 							log.Warn("daemon: ignoring unparseable rtl_tcp gain",
 								"serial", r.Serial, "gain", r.Gain)
 						} else {
+							warnGainUnits(log, r.Serial, r.Gain, gain)
 							h = h.WithGain(gain)
 						}
 					}
