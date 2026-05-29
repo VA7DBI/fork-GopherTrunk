@@ -174,6 +174,8 @@ type Daemon struct {
 	// it up and unwinds the daemon. Guarded by mu.
 	mu       sync.Mutex
 	fatalErr error
+	fatalAt  time.Time
+	fatalSrc string
 	cancel   context.CancelFunc
 
 	wg        sync.WaitGroup
@@ -1385,18 +1387,25 @@ func (d *Daemon) markReadyAfter(ctx context.Context, grace time.Duration) {
 	d.readyOnce.Do(func() { close(d.ready) })
 }
 
-// recordFatal stores an essential-component error (first wins) and
-// cancels the daemon's run context so siblings unwind. Safe to call
-// from any goroutine.
-func (d *Daemon) recordFatal(err error) {
+// recordFatalWithSource stores an essential-component error (first
+// wins) and cancels the daemon's run context so siblings unwind.
+// Safe to call from any goroutine.
+func (d *Daemon) recordFatalWithSource(source string, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.fatalErr == nil {
 		d.fatalErr = err
+		d.fatalAt = time.Now().UTC()
+		d.fatalSrc = source
 	}
 	if d.cancel != nil {
 		d.cancel()
 	}
+}
+
+// recordFatal stores an unnamed essential-component error.
+func (d *Daemon) recordFatal(err error) {
+	d.recordFatalWithSource("", err)
 }
 
 // takeFatal returns the captured essential-component error (if any).
@@ -1404,6 +1413,13 @@ func (d *Daemon) takeFatal() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.fatalErr
+}
+
+// FatalStatus returns the first captured fatal error metadata.
+func (d *Daemon) FatalStatus() (err error, at time.Time, source string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.fatalErr, d.fatalAt, d.fatalSrc
 }
 
 // Close releases every component. Idempotent and safe to call
@@ -1640,7 +1656,7 @@ func (d *Daemon) spawn(ctx context.Context, name string, essential bool, fn func
 		if essential {
 			d.log.Error("daemon: essential component failed",
 				"component", name, "err", err)
-			d.recordFatal(fmt.Errorf("%s: %w", name, err))
+			d.recordFatalWithSource(name, fmt.Errorf("%s: %w", name, err))
 			return
 		}
 		d.log.Warn("daemon: component exited with error", "component", name, "err", err)

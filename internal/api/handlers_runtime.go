@@ -83,6 +83,15 @@ type RuntimeDTO struct {
 	// failed to open, etc.). Surfaced so the SPA Dashboard can pin
 	// them until the operator dismisses them.
 	StartupWarnings []string `json:"startup_warnings,omitempty"`
+	// LastFatalError surfaces the most recent essential-component
+	// failure captured by the daemon supervisor loop.
+	LastFatalError string `json:"last_fatal_error,omitempty"`
+	// LastFatalComponent is the component label associated with
+	// LastFatalError (for example "http" or "ccdecoder").
+	LastFatalComponent string `json:"last_fatal_component,omitempty"`
+	// LastFatalAt is the UTC timestamp when LastFatalError was
+	// captured.
+	LastFatalAt time.Time `json:"last_fatal_at,omitempty"`
 }
 
 // ToneProfileDTO is the minimal projection of a tone-out profile —

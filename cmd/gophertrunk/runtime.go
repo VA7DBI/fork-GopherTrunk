@@ -99,6 +99,11 @@ func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 	if r.daemon != nil {
 		dto.ConfigPath = r.daemon.ConfigPath()
 		dto.StartupWarnings = r.daemon.StartupWarnings()
+		if ferr, fat, src := r.daemon.FatalStatus(); ferr != nil {
+			dto.LastFatalError = ferr.Error()
+			dto.LastFatalAt = fat
+			dto.LastFatalComponent = src
+		}
 	}
 	return dto
 }
