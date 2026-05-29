@@ -29,6 +29,7 @@ type Config struct {
 	Paging     PagingConfig     `yaml:"paging"`
 	APRS       APRSConfig       `yaml:"aprs"`
 	AIS        AISConfig        `yaml:"ais"`
+	DSC        DSCConfig        `yaml:"dsc"`
 	MDC1200    MDC1200Config    `yaml:"mdc1200"`
 	ADSB       ADSBConfig       `yaml:"adsb"`
 }
@@ -108,6 +109,33 @@ type AISChannelConfig struct {
 	FrequencyHz     uint32 `yaml:"frequency_hz"`
 	DropBadFCS      bool   `yaml:"drop_bad_fcs"`
 	DropNonPosition bool   `yaml:"drop_non_position"`
+}
+
+// DSCConfig configures the marine Digital Selective Calling receiver.
+// Each entry pins an SDR to a DSC channel — VHF channel 70 is
+// 156.525 MHz; HF DSC rides 2187.5 / 8414.5 / 12577 / 16804.5 kHz
+// among others — and runs the DSP frontend (FM demod → FFSK tone
+// discriminator at 1300/2100 Hz → symbol-timing recovery → direct-FSK
+// slicer → BCH(10,7) character sync → ITU-R M.493 sequence parser)
+// against its full IQ stream. Decoded sequences publish on
+// events.KindDSCMessage; storage.DSCLog persists them, the REST
+// endpoint at /api/v1/dsc/messages and the /dsc web panel render them.
+type DSCConfig struct {
+	Channels []DSCChannelConfig `yaml:"channels"`
+}
+
+// DSCChannelConfig describes one DSC channel to decode. Serial picks
+// the SDR; the daemon tunes it to FrequencyHz and runs the FFSK
+// receiver against its full IQ stream. The VHF calling channel 70
+// (156.525 MHz) is the most common target — it carries distress /
+// urgency / safety alerts and the routine call-ups that precede a
+// voice working-channel hand-off. DropBadFCS matches the receiver's
+// option: leave it false to see BCH-marginal sequences on the panel
+// (flagged), flip it on for noisy channels.
+type DSCChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadFCS  bool   `yaml:"drop_bad_fcs"`
 }
 
 // MDC1200Config configures the Motorola MDC1200 FFSK signaling

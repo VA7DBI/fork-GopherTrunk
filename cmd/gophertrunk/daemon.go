@@ -26,6 +26,7 @@ import (
 	adsbbeast "github.com/MattCheramie/GopherTrunk/internal/radio/adsb/beast"
 	aisgmsk "github.com/MattCheramie/GopherTrunk/internal/radio/ais/gmsk"
 	aprsafsk "github.com/MattCheramie/GopherTrunk/internal/radio/aprs/afsk"
+	dscffsk "github.com/MattCheramie/GopherTrunk/internal/radio/dsc/ffsk"
 	mdc1200afsk "github.com/MattCheramie/GopherTrunk/internal/radio/mdc1200/afsk"
 	pocsagrx "github.com/MattCheramie/GopherTrunk/internal/radio/pager/pocsag/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
@@ -201,6 +202,12 @@ type Daemon struct {
 	// publishes decoded vessel messages on KindAISMessage.
 	aisReceivers []*aisgmsk.Receiver
 	aisSpecs     []aisSpec // index-aligned with aisReceivers
+	// dscReceivers holds one DSC FFSK receiver per configured
+	// dsc.channels entry. Same shape as the AIS receivers above: each
+	// subscribes to its assigned SDR's iqtap broker and publishes
+	// decoded DSC sequences on KindDSCMessage.
+	dscReceivers []*dscffsk.Receiver
+	dscSpecs     []dscSpec // index-aligned with dscReceivers
 	// mdc1200Receivers holds one MDC1200 FFSK receiver per configured
 	// mdc1200.channels entry. Same shape as the APRS receivers above:
 	// each subscribes to its assigned SDR's iqtap broker and publishes
@@ -1071,6 +1078,38 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		d.aisSpecs = append(d.aisSpecs, spec)
 	}
 
+	// DSC FFSK receivers — one per configured dsc.channels entry.
+	// Same construction shape as AIS / MDC1200 above: per-entry
+	// validation in the receiver, failures surface as a startup
+	// warning and skip the entry (nil slot preserved for stable
+	// indexing).
+	for _, dc := range cfg.DSC.Channels {
+		spec := dscSpec{serial: dc.Serial, freq: dc.FrequencyHz}
+		if dc.Serial == "" || dc.FrequencyHz == 0 {
+			d.addWarning(fmt.Sprintf(
+				"dsc.channels: entry missing serial or frequency_hz (serial=%q freq=%d) — skipped",
+				dc.Serial, dc.FrequencyHz))
+			d.dscReceivers = append(d.dscReceivers, nil)
+			d.dscSpecs = append(d.dscSpecs, spec)
+			continue
+		}
+		rcv, err := dscffsk.New(dscffsk.Options{
+			InputRateHz: cfg.SDR.SampleRate,
+			SourceName:  dc.Serial,
+			Bus:         d.bus,
+			DropBadFCS:  dc.DropBadFCS,
+			Log:         log,
+		})
+		if err != nil {
+			d.addWarning(fmt.Sprintf("dsc.channels[%s]: %v — skipped", dc.Serial, err))
+			d.dscReceivers = append(d.dscReceivers, nil)
+			d.dscSpecs = append(d.dscSpecs, spec)
+			continue
+		}
+		d.dscReceivers = append(d.dscReceivers, rcv)
+		d.dscSpecs = append(d.dscSpecs, spec)
+	}
+
 	// MDC1200 FFSK receivers — one per configured mdc1200.channels
 	// entry. Same construction shape as APRS / AIS above: per-entry
 	// validation in the receiver, failures surface as a startup
@@ -1620,6 +1659,38 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			if err := br.SetCenterFreq(spec.freq); err != nil {
 				d.log.Warn("ais: SetCenterFreq failed",
+					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
+				return nil
+			}
+			sub := br.Subscribe()
+			defer sub.Close()
+			return rcv.Process(ctx, sub.C)
+		})
+	}
+	// DSC receivers — same shape as AIS above. Each subscribes to its
+	// assigned SDR's iqtap broker and runs the FFSK pipeline (FM demod
+	// → FFSK discriminator at 1300/2100 Hz → symbol-timing recovery →
+	// direct-FSK slicer → BCH character sync → ITU-R M.493 parser),
+	// publishing sequences onto the events bus where the DSCLog
+	// subscriber persists them and the /dsc panel renders them.
+	// Non-essential: a missing SDR or misconfigured frequency is
+	// logged but doesn't bring down the trunking pipeline.
+	for i, rcv := range d.dscReceivers {
+		if rcv == nil {
+			continue // skipped at construction; warning already logged
+		}
+		rcv := rcv
+		spec := d.dscSpecs[i]
+		name := fmt.Sprintf("dsc-%s-%d", spec.serial, spec.freq)
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			br := d.iqBrokers[spec.serial]
+			if br == nil {
+				d.log.Warn("dsc: SDR not found, skipping receiver",
+					"serial", spec.serial, "freq_hz", spec.freq)
+				return nil
+			}
+			if err := br.SetCenterFreq(spec.freq); err != nil {
+				d.log.Warn("dsc: SetCenterFreq failed",
 					"serial", spec.serial, "freq_hz", spec.freq, "err", err)
 				return nil
 			}
@@ -2624,6 +2695,15 @@ type aprsSpec struct {
 // loop can spawn each receiver without re-walking the YAML. Mirrors
 // aprsSpec / pocsagSpec.
 type aisSpec struct {
+	serial string
+	freq   uint32
+}
+
+// dscSpec captures the broker-side wiring info for one configured DSC
+// channel. Index-aligned with Daemon.dscReceivers so the Run loop can
+// spawn each receiver without re-walking the YAML. Mirrors aisSpec /
+// mdc1200Spec.
+type dscSpec struct {
 	serial string
 	freq   uint32
 }
