@@ -196,6 +196,30 @@ CREATE TABLE IF NOT EXISTS vessel_log (
 
 CREATE INDEX IF NOT EXISTS idx_vessel_log_time ON vessel_log(received_at);
 CREATE INDEX IF NOT EXISTS idx_vessel_log_mmsi ON vessel_log(mmsi, received_at);
+
+-- DSC (Digital Selective Calling) sequences persisted from the
+-- decoder pipeline. One row per decoded sequence: format
+-- (distress / all-ships / individual / ...), category, source +
+-- target MMSI, plus distress-specific fields (nature, time,
+-- position) when applicable.
+CREATE TABLE IF NOT EXISTS dsc_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at  INTEGER NOT NULL,             -- unix nanoseconds
+    format       TEXT    NOT NULL DEFAULT '',  -- "distress" | "all-ships" | "individual" | ...
+    category     TEXT    NOT NULL DEFAULT '',  -- "distress" | "urgency" | "safety" | "routine"
+    self_mmsi    INTEGER NOT NULL DEFAULT 0,   -- sender's 9-digit MMSI
+    target_mmsi  INTEGER NOT NULL DEFAULT 0,   -- recipient's MMSI (0 for all-ships)
+    nature       TEXT    NOT NULL DEFAULT '',  -- distress nature ("fire", "sinking", ...)
+    time_utc     TEXT    NOT NULL DEFAULT '',  -- HH:MM, distress only
+    latitude     REAL    NOT NULL DEFAULT 0,
+    longitude    REAL    NOT NULL DEFAULT 0,
+    has_position INTEGER NOT NULL DEFAULT 0,
+    body         TEXT    NOT NULL DEFAULT '',  -- type-specific summary
+    raw_hex      TEXT    NOT NULL DEFAULT ''   -- hex-encoded 7-bit symbol stream
+);
+
+CREATE INDEX IF NOT EXISTS idx_dsc_log_time      ON dsc_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_dsc_log_self_mmsi ON dsc_log(self_mmsi, received_at);
 `
 
 func (d *DB) migrate() error {

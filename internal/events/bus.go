@@ -139,6 +139,13 @@ const (
 	// position + speed + course + vessel name (where available).
 	// Surfaced over SSE / WS for the live AIS panel.
 	KindAISMessage Kind = "ais.message"
+	// KindDSCMessage fires when the DSC decoder finishes one
+	// sequence off the marine VHF channel-70 (156.525 MHz) DSC
+	// channel or one of the HF DSC channels. Payload is a
+	// storage.DSCMessage carrying source / target MMSI + format
+	// + category + (for distress alerts) position + nature.
+	// Surfaced over SSE / WS for the live DSC panel.
+	KindDSCMessage Kind = "dsc.message"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol

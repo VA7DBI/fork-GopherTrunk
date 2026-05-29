@@ -9,6 +9,52 @@ for tagged releases.
 
 ### Added
 
+- **DSC marine — protocol layer + bus / storage / REST / panel
+  scaffolding.** First slice of Phase 5 DSC: GMDSS Digital
+  Selective Calling messages — distress alerts, urgency / safety
+  broadcasts, individual / group / all-ships routine calls — are
+  the SOLAS-mandated digital signalling on marine VHF channel 70
+  (156.525 MHz) and the HF DSC channels. A coast-guard MMSI
+  lighting up the channel-70 stream is near-instant visibility
+  into SAR activity.
+  New `internal/radio/dsc` package decodes ITU-R M.493-15
+  formats: Distress (self-MMSI + nature + position + UTC time),
+  All-Ships safety / urgency / routine, Individual call
+  (target + source MMSI), Group, Geographic-area, and
+  Auto-Individual. BCH(10,7) syndrome check (CRC-3 with
+  `g(x) = x³+x+1`) — the spec calls it "BCH" but min Hamming
+  distance is 2, so single-bit errors are reliably **detected**
+  but not corrected at this layer; DSC achieves the actual
+  correction via DX / RX redundancy at the bit-stream layer
+  above (each character is sent twice and the receiver compares
+  the two streams).
+  MMSI codec unpacks 5 symbols × 2 digits → 9-digit MMSI.
+  Position codec decodes the 10-digit `Q.DD.MM.DDD.MM` format
+  with quadrant-bit hemisphere flip (0 = NE, 1 = NW, 2 = SE,
+  3 = SW). The all-9s "position unknown" sentinel collapses
+  `HasPosition` to false.
+  New `events.KindDSCMessage` event + `storage.DSCMessage`
+  payload + `dsc_log` SQLite table (one row per decoded
+  sequence, indexes on `(received_at)` and
+  `(self_mmsi, received_at)`). `storage.DSCLog` subscriber
+  drains the bus and writes one row per message; the daemon
+  spawns it alongside `vesselLog` / `aprsLog` / `pagerLog`.
+  New REST endpoint `GET /api/v1/dsc/messages?limit=N` (default
+  200, max 5000) and web panel `/dsc` with columns Received /
+  Format / Category / Self MMSI / Target-or-Nature / Body /
+  Lat-Lon. Rows tint by category — distress = red, urgency =
+  orange, safety = blue, routine = default.
+  Tests: 15 protocol-layer (BCH round-trip + syndrome check +
+  single-bit error detection, MMSI codec, position quadrant
+  signs, position unknown-sentinel, end-to-end distress decode
+  with position + nature + UTC time, individual-call decode,
+  all-ships safety decode, short-payload safety), 4 storage
+  (insert distress / individual / filter / order), 3 REST
+  (503 / list / limit), 4 web (empty / distress / individual /
+  error). All passing.
+- DSP frontend (1200 Bd FSK at 1300 / 2100 Hz tones + 10-bit
+  symbol assembly + DX/RX redundancy merge) follows as the
+  next slice. See [docs/dsc.md](docs/dsc.md).
 - **AIS DSP frontend + receiver glue — pipeline is now end-to-end.**
   Second slice of Phase 5 AIS: `internal/radio/ais/receiver` is the
   bit-stream orchestrator (HDLC framer → CRC-CCITT validation →
