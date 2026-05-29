@@ -19,6 +19,7 @@ import { APRS } from "./panels/APRS";
 import { AIS } from "./panels/AIS";
 import { DSC } from "./panels/DSC";
 import { ADSB } from "./panels/ADSB";
+import { MDC1200 } from "./panels/MDC1200";
 import { Metrics } from "./panels/Metrics";
 import { Pagers } from "./panels/Pagers";
 import { RadioIDs } from "./panels/RadioIDs";
@@ -49,6 +50,7 @@ const EXTRA_TABS: Tab[] = [
   { to: "/ais", label: "AIS", icon: "⚓" },
   { to: "/dsc", label: "DSC", icon: "📡" },
   { to: "/adsb", label: "ADS-B", icon: "✈" },
+  { to: "/mdc1200", label: "MDC1200", icon: "📻" },
   { to: "/spectrum", label: "Spectrum", icon: "≈" },
   { to: "/constellation", label: "Constellation", icon: "✦" },
   { to: "/bookmarks", label: "Bookmarks", icon: "★" },
@@ -164,6 +166,7 @@ export function App() {
           <Route path="/ais" element={<AIS />} />
           <Route path="/dsc" element={<DSC />} />
           <Route path="/adsb" element={<ADSB />} />
+          <Route path="/mdc1200" element={<MDC1200 />} />
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/devices" element={<Devices />} />
           <Route path="/settings" element={<Settings />} />
