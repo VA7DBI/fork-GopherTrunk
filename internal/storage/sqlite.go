@@ -250,6 +250,25 @@ CREATE TABLE IF NOT EXISTS aircraft_log (
 
 CREATE INDEX IF NOT EXISTS idx_aircraft_log_time ON aircraft_log(received_at);
 CREATE INDEX IF NOT EXISTS idx_aircraft_log_icao ON aircraft_log(icao, received_at);
+
+-- MDC1200 signaling bursts persisted from the decoder pipeline. One
+-- row per decoded burst: the transmitting radio's unit ID + the
+-- operation (PTT ID / emergency / status / radio check / ...) decoded
+-- from the op/arg pair, plus whether the CRC validated.
+CREATE TABLE IF NOT EXISTS mdc1200_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at INTEGER NOT NULL,             -- unix nanoseconds
+    op          INTEGER NOT NULL DEFAULT 0,   -- operation code (data[0])
+    arg         INTEGER NOT NULL DEFAULT 0,   -- operation argument (data[1])
+    unit_id     INTEGER NOT NULL DEFAULT 0,   -- transmitting radio's unit ID
+    operation   TEXT    NOT NULL DEFAULT '',  -- "PTT ID" | "Emergency" | ... ("" if unknown)
+    body        TEXT    NOT NULL DEFAULT '',  -- one-line summary
+    raw_hex     TEXT    NOT NULL DEFAULT '',  -- hex of the decoded header bytes
+    crc_ok      INTEGER NOT NULL DEFAULT 0    -- 1 when the CRC validated
+);
+
+CREATE INDEX IF NOT EXISTS idx_mdc1200_log_time    ON mdc1200_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_mdc1200_log_unit_id ON mdc1200_log(unit_id, received_at);
 `
 
 func (d *DB) migrate() error {

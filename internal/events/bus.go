@@ -155,6 +155,14 @@ const (
 	// + track + vertical rate). Surfaced over SSE / WS for the
 	// live ADS-B panel.
 	KindAircraftReport Kind = "adsb.aircraft"
+
+	// KindMDC1200Message fires when the MDC1200 decoder completes one
+	// signaling burst off a conventional analog FM voice channel.
+	// Payload is a storage.MDC1200Message carrying the transmitting
+	// radio's unit ID plus the operation (PTT ID, emergency, status,
+	// radio check, ...) and the CRC-valid flag. Surfaced over SSE / WS
+	// for the live MDC1200 panel.
+	KindMDC1200Message Kind = "mdc1200.message"
 )
 
 // Stage names a particular FEC / parser checkpoint inside a protocol

@@ -301,6 +301,29 @@ sdr:
 #                                     #  messages and keep only vessel
 #                                     #  position reports
 
+# MDC1200 Motorola FFSK signaling. Each entry pins one SDR to a
+# conventional analog VHF / UHF voice channel and decodes the
+# in-band data bursts Motorola radios key at the head (and tail) of
+# a transmission. Pipeline: FM demod → FFSK discriminator (CCIR
+# tones, mark 1200 Hz / space 1800 Hz, 1200 baud) → symbol-timing
+# recovery → NRZ slicer → 40-bit sync framer → op/arg/unit-ID
+# parser with CRC check. Decoded bursts publish on
+# events.KindMDC1200Message; storage.MDC1200Log persists them to the
+# mdc1200_log SQLite table, the REST endpoint at
+# /api/v1/mdc1200/messages returns the most recent N, and the
+# /mdc1200 web panel renders them live (unit IDs, PTT ANI, emergency
+# / status / radio-check signaling).
+#
+# mdc1200:
+#   channels:
+#     - serial: "vhf-antenna"         # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 154_000_000     # conventional analog voice channel
+#                                     #  carrying Motorola signaling
+#       drop_bad_crc: false           # true to silently drop CRC-failed
+#                                     #  bursts instead of publishing them
+#                                     #  with crc_ok=false
+
 # DSC marine distress / safety / routine calls. The DSP frontend
 # (1200 Bd FSK on channel 70 = 156.525 MHz, mark 1300 Hz / space
 # 2100 Hz) ships in a follow-up PR; the protocol parser + bus +

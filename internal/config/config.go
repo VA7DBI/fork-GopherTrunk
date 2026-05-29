@@ -29,6 +29,7 @@ type Config struct {
 	Paging     PagingConfig     `yaml:"paging"`
 	APRS       APRSConfig       `yaml:"aprs"`
 	AIS        AISConfig        `yaml:"ais"`
+	MDC1200    MDC1200Config    `yaml:"mdc1200"`
 	ADSB       ADSBConfig       `yaml:"adsb"`
 }
 
@@ -107,6 +108,31 @@ type AISChannelConfig struct {
 	FrequencyHz     uint32 `yaml:"frequency_hz"`
 	DropBadFCS      bool   `yaml:"drop_bad_fcs"`
 	DropNonPosition bool   `yaml:"drop_non_position"`
+}
+
+// MDC1200Config configures the Motorola MDC1200 FFSK signaling
+// receiver. Each entry pins an SDR to a conventional analog VHF / UHF
+// voice channel and runs the DSP frontend (FM demod → FFSK
+// discriminator at 1200/1800 Hz → symbol-timing recovery → NRZ
+// slicer → sync framer → op/arg/unit-ID parser) against its full IQ
+// stream. Decoded bursts publish on events.KindMDC1200Message;
+// storage.MDC1200Log persists them, the REST endpoint at
+// /api/v1/mdc1200/messages and the /mdc1200 web panel render them.
+type MDC1200Config struct {
+	Channels []MDC1200ChannelConfig `yaml:"channels"`
+}
+
+// MDC1200ChannelConfig describes one MDC1200 channel to decode. Serial
+// picks the SDR; the daemon tunes it to FrequencyHz and runs the FFSK
+// receiver against its full IQ stream. Target the conventional analog
+// voice channels of the systems you monitor — MDC1200 bursts ride at
+// the head (and optionally tail) of each transmission. DropBadCRC
+// matches the receiver's option — leave it false to see CRC-failed
+// bursts on the panel (flagged), flip it on for noisy channels.
+type MDC1200ChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadCRC  bool   `yaml:"drop_bad_crc"`
 }
 
 // PagingConfig configures pager decoders (POCSAG today, FLEX
