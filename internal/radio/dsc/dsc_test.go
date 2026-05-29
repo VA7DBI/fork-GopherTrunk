@@ -38,10 +38,10 @@ func TestFormatAndCategoryStableLabels(t *testing.T) {
 
 func TestNatureStringSampleValues(t *testing.T) {
 	cases := map[NatureOfDistress]string{
-		DistressFire:      "fire / explosion",
-		DistressCollision: "collision",
-		DistressMOB:       "man overboard",
-		DistressEPIRB:     "EPIRB emission",
+		DistressFire:         "fire / explosion",
+		DistressCollision:    "collision",
+		DistressMOB:          "man overboard",
+		DistressEPIRB:        "EPIRB emission",
 		NatureOfDistress(50): "",
 	}
 	for n, want := range cases {
@@ -127,12 +127,12 @@ func TestDecodeDistressMessage(t *testing.T) {
 	// nature=fire (100), position 37°48' N / 122°24' E,
 	// time 14:25 UTC, EOS=127.
 	symbols := []byte{
-		112,                       // format = Distress
-		36, 60, 53, 20, 90,        // self-MMSI 366053209
-		100,                       // nature = fire
-		3, 74, 81, 22, 24,         // position (NE 37°48' / 122°24')
-		14, 25,                    // time 14:25
-		127,                       // EOS
+		112,                // format = Distress
+		36, 60, 53, 20, 90, // self-MMSI 366053209
+		100,               // nature = fire
+		3, 74, 81, 22, 24, // position (NE 37°48' / 122°24')
+		14, 25, // time 14:25
+		127, // EOS
 	}
 	m := Decode(symbols)
 	if m.Format != FormatDistress {
@@ -164,11 +164,11 @@ func TestDecodeIndividualCall(t *testing.T) {
 	// EOS=127. Symbol pairs for MMSI 003660000:
 	//   00 36 60 00 00.
 	symbols := []byte{
-		120,                       // format = Individual
-		0, 36, 60, 0, 0,           // target-MMSI 003660000
-		100,                       // category = routine
-		36, 60, 53, 20, 90,        // self-MMSI 366053209
-		127,                       // EOS
+		120,             // format = Individual
+		0, 36, 60, 0, 0, // target-MMSI 003660000
+		100,                // category = routine
+		36, 60, 53, 20, 90, // self-MMSI 366053209
+		127, // EOS
 	}
 	m := Decode(symbols)
 	if m.Format != FormatIndividual {
@@ -189,11 +189,11 @@ func TestDecodeAllShipsSafety(t *testing.T) {
 	// All-ships safety: format=116, MMSI all-ships (any),
 	// category=safety (108), self-MMSI=003669999.
 	symbols := []byte{
-		116,                       // format = AllShips
-		0, 0, 0, 0, 0,             // address (ignored for all-ships)
-		108,                       // category = safety
-		0, 36, 69, 99, 90,         // self-MMSI 003669999
-		127,                       // EOS
+		116,           // format = AllShips
+		0, 0, 0, 0, 0, // address (ignored for all-ships)
+		108,               // category = safety
+		0, 36, 69, 99, 90, // self-MMSI 003669999
+		127, // EOS
 	}
 	m := Decode(symbols)
 	if m.Format != FormatAllShips {

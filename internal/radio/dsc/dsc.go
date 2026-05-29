@@ -159,17 +159,17 @@ type Position struct {
 
 // Message is one decoded DSC sequence.
 type Message struct {
-	Format          Format
-	Category        Category
-	SelfMMSI        uint64 // sender's 9-digit MMSI
-	TargetMMSI      uint64 // recipient's MMSI (0 for all-ships)
-	Nature          NatureOfDistress // distress only; 0 otherwise
-	Position        *Position
-	TimeUTC         string // HH:MM, distress only; empty otherwise
-	WorkingChannel  int    // working frequency channel for ack; 0 if absent
-	EOS             uint8  // end-of-sequence symbol
-	RawSymbols      string // hex-encoded 7-bit symbol stream for debugging
-	EFCChecksumOK   bool   // ECC byte matched
+	Format         Format
+	Category       Category
+	SelfMMSI       uint64           // sender's 9-digit MMSI
+	TargetMMSI     uint64           // recipient's MMSI (0 for all-ships)
+	Nature         NatureOfDistress // distress only; 0 otherwise
+	Position       *Position
+	TimeUTC        string // HH:MM, distress only; empty otherwise
+	WorkingChannel int    // working frequency channel for ack; 0 if absent
+	EOS            uint8  // end-of-sequence symbol
+	RawSymbols     string // hex-encoded 7-bit symbol stream for debugging
+	EFCChecksumOK  bool   // ECC byte matched
 }
 
 // Decode parses a sequence of post-BCH-corrected 7-bit data

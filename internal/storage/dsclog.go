@@ -31,8 +31,8 @@ type DSCMessage struct {
 	Longitude   float64 `json:"longitude,omitempty"`
 	HasPosition bool    `json:"has_position"`
 
-	Body   string `json:"body"`     // type-specific summary
-	RawHex string `json:"raw_hex"`  // hex-encoded 7-bit symbol stream
+	Body   string `json:"body"`    // type-specific summary
+	RawHex string `json:"raw_hex"` // hex-encoded 7-bit symbol stream
 }
 
 // DSCLog drains KindDSCMessage events until ctx cancels or the bus
