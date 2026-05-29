@@ -301,6 +301,43 @@ sdr:
 #                                     #  messages and keep only vessel
 #                                     #  position reports
 
+# DSC marine distress / safety / routine calls. The DSP frontend
+# (1200 Bd FSK on channel 70 = 156.525 MHz, mark 1300 Hz / space
+# 2100 Hz) ships in a follow-up PR; the protocol parser + bus +
+# storage + REST + panel scaffolding is live now. Operators
+# subscribing to the events.KindDSCMessage bus topic (e.g. a
+# custom CL replay tool) get decoded messages as soon as they
+# feed symbols into dsc.Decode.
+#
+# dsc:
+#   channels:
+#     - serial: "marine-antenna"      # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 156_525_000     # marine VHF channel 70 (or one of
+#                                     #  the HF DSC channels: 2_187_500,
+#                                     #  8_414_500, 12_577_000, 16_804_500)
+#       drop_non_distress: false      # true to drop routine / safety
+#                                     #  chatter and keep only distress
+#                                     #  + urgency alerts
+
+# ADS-B / aviation. The protocol parser + bus + storage + REST +
+# panel scaffolding is live; the DSP frontend (1 Msps PPM demod +
+# Mode-S preamble correlation + 56/112-bit frame extraction)
+# ships in a follow-up PR. Operators producing Mode-S frames from
+# an external source (dump1090 hex output, captured BEAST stream,
+# etc.) and feeding them to events.KindAircraftReport will see
+# decoded reports on the bus / panel today.
+#
+# adsb:
+#   channels:
+#     - serial: "1090-antenna"        # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp; dedicate one
+#                                     #  RTL-SDR + 1090 MHz filter + LNA
+#                                     #  to this — the bandwidth needs
+#                                     #  ~1 Msps which crowds out other
+#                                     #  decoders on the same dongle)
+#       frequency_hz: 1_090_000_000   # 1090 MHz centre
+
 trunking:
   # call_timeout_ms: inactivity window after which the engine's
   # watchdog ends a call (publishes CallEnd with EndReasonTimeout

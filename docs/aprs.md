@@ -171,10 +171,14 @@ skipped — same non-essential treatment as `paging.pocsag`.
   the standard `latitude` / `longitude` columns. Surfacing the
   rich fields needs an `aprs_log` schema bump + REST DTO + a
   new column on `/aprs`.
-- **Live map.** Position-bearing types have lat/lon — a
-  Leaflet / MapLibre overlay on top of `/aprs` showing the most
-  recent station fixes is an obvious next step once the panel
-  has real traffic.
+## Live map
+
+Position-bearing rows (uncompressed positions, Mic-E) light up
+the shared Leaflet map at the top of `/aprs` — blue markers
+plotted on the OpenStreetMap tile layer with the station
+callsign on hover, camera auto-fits to the current rowset. The
+same `<PositionMap>` component renders on `/ais`, `/dsc` (for
+distress alerts that included a position), and `/adsb`.
 
 ## References
 

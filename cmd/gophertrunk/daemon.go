@@ -112,6 +112,8 @@ type Daemon struct {
 	pagerLog     *storage.PagerLog
 	aprsLog      *storage.APRSLog
 	vesselLog    *storage.VesselLog
+	dscLog       *storage.DSCLog
+	aircraftLog  *storage.AircraftLog
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -657,6 +659,16 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		var sink composer.PCMSink = d.recorder
 		if len(sinks) > 1 {
 			sink = fanoutSink(sinks)
+			// Surface the fanout wiring at startup so operators can
+			// confirm from logs that the raw-frame path is in place.
+			// Before the fanoutSink.WriteRawFrame fix (issue #356), a
+			// multi-sink config silently dropped every IMBE / AMBE
+			// frame and there was nothing in the logs to tell the
+			// operator the audio path was broken.
+			log.Info("composer: sink fanout configured",
+				"count", len(sinks), "raw_frames_supported", true)
+		} else {
+			log.Info("composer: sink direct configured")
 		}
 		comp, err := composer.New(composer.Options{
 			Bus:           d.bus,
@@ -1055,6 +1067,20 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.vesselLog = vl
 
+		dl, err := storage.NewDSCLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: dsc log: %w", err)
+		}
+		d.dscLog = dl
+
+		acl, err := storage.NewAircraftLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: aircraft log: %w", err)
+		}
+		d.aircraftLog = acl
+
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
 			if err != nil {
@@ -1120,6 +1146,12 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.vesselLog != nil {
 			opts.AIS = aisProvider{log: d.vesselLog}
+		}
+		if d.dscLog != nil {
+			opts.DSC = dscProvider{log: d.dscLog}
+		}
+		if d.aircraftLog != nil {
+			opts.ADSB = adsbProvider{log: d.aircraftLog}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1296,6 +1328,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.vesselLog != nil {
 		d.spawn(runCtx, "vessellog", false, func(ctx context.Context) error {
 			return d.vesselLog.Run(ctx)
+		})
+	}
+	if d.dscLog != nil {
+		d.spawn(runCtx, "dsclog", false, func(ctx context.Context) error {
+			return d.dscLog.Run(ctx)
+		})
+	}
+	if d.aircraftLog != nil {
+		d.spawn(runCtx, "aircraftlog", false, func(ctx context.Context) error {
+			return d.aircraftLog.Run(ctx)
 		})
 	}
 	if d.messageLog != nil {
@@ -1589,6 +1631,12 @@ func (d *Daemon) Close() {
 		}
 		if d.vesselLog != nil {
 			_ = d.vesselLog.Close()
+		}
+		if d.dscLog != nil {
+			_ = d.dscLog.Close()
+		}
+		if d.aircraftLog != nil {
+			_ = d.aircraftLog.Close()
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
@@ -1934,6 +1982,26 @@ type fanoutSink []composer.PCMSink
 func (f fanoutSink) WritePCM(serial string, samples []int16) error {
 	for _, s := range f {
 		_ = s.WritePCM(serial, samples)
+	}
+	return nil
+}
+
+// WriteRawFrame fans raw IMBE / AMBE frames out to every contained
+// sink that implements the rawFrameSink shape — currently just the
+// recorder. Sinks that don't (tone-out, live player, audio publisher)
+// are silently skipped. Without this the voice composer chains'
+// `rs, _ := c.sink.(rawFrameSink)` type assertion fails against a
+// fanoutSink, rs stays nil, and every IMBE / AMBE frame is dropped
+// before reaching disk while the activity counter still bumps —
+// producing healthy-looking call lifecycle logs alongside 0-byte
+// .raw and 44-byte (header-only) .wav files. Issue #356 root cause.
+func (f fanoutSink) WriteRawFrame(serial string, frame []byte) error {
+	for _, s := range f {
+		if rs, ok := s.(interface {
+			WriteRawFrame(string, []byte) error
+		}); ok {
+			_ = rs.WriteRawFrame(serial, frame)
+		}
 	}
 	return nil
 }
@@ -2333,6 +2401,24 @@ func (a aprsProvider) RecentAPRSPackets(limit int) ([]storage.APRSPacket, error)
 type aisProvider struct{ log *storage.VesselLog }
 
 func (a aisProvider) RecentAISMessages(limit int) ([]storage.AISMessage, error) {
+	return a.log.Recent(limit)
+}
+
+// dscProvider adapts storage.DSCLog into api.DSCProvider so the
+// api package stays free of the storage import dependency. Read-only
+// — the decoder writes via the events bus.
+type dscProvider struct{ log *storage.DSCLog }
+
+func (d dscProvider) RecentDSCMessages(limit int) ([]storage.DSCMessage, error) {
+	return d.log.Recent(limit)
+}
+
+// adsbProvider adapts storage.AircraftLog into api.ADSBProvider so
+// the api package stays free of the storage import dependency.
+// Read-only — the decoder writes via the events bus.
+type adsbProvider struct{ log *storage.AircraftLog }
+
+func (a adsbProvider) RecentAircraftReports(limit int) ([]storage.AircraftReport, error) {
 	return a.log.Recent(limit)
 }
 

@@ -203,6 +203,77 @@ func TestDDAClampHolds(t *testing.T) {
 	}
 }
 
+// TestDDAAcceptedResidualMeanZeroOnCorrectDecisions: when every
+// decision is correct (soft == expected) the mean accepted residual
+// stays ~0 for any symbol distribution — the property the receiver
+// relies on to tell a real lock from a biased false lock. Issue #402.
+func TestDDAAcceptedResidualMeanZeroOnCorrectDecisions(t *testing.T) {
+	const (
+		slicerScale = 0.2356
+		sampleRate  = 48000.0
+		maxOffset   = 25000.0
+	)
+	dda := NewDecisionDirectedAFC(maxOffset, sampleRate, slicerScale)
+
+	// Heavily unbalanced symbol stream, but every decision correct.
+	syms := []float64{slicerScale, slicerScale, slicerScale, -slicerScale / 3}
+	for i := 0; i < 8*ddaSymbols; i++ {
+		s := float32(syms[i%len(syms)])
+		dda.Update(s, s, 1.0)
+	}
+	if math.Abs(dda.AcceptedResidualMean()) > 1e-6 {
+		t.Errorf("AcceptedResidualMean() = %v on correct decisions, want ~0", dda.AcceptedResidualMean())
+	}
+}
+
+// TestDDAAcceptedResidualMeanNonzeroOnBiasedEye: a uniformly-biased
+// eye whose residuals still land inside the gate leaves a sustained
+// non-zero mean tracking the bias — the signal a count-only handoff
+// gate misses and that drove the stable-but-wrong lock in issue #402.
+func TestDDAAcceptedResidualMeanNonzeroOnBiasedEye(t *testing.T) {
+	const (
+		slicerScale = 0.2356
+		sampleRate  = 48000.0
+		maxOffset   = 25000.0
+	)
+	dda := NewDecisionDirectedAFC(maxOffset, sampleRate, slicerScale)
+
+	// Bias inside the gate (gate = slicerScale/3).
+	bias := slicerScale / 6.0
+	syms := []float64{slicerScale, slicerScale / 3, -slicerScale / 3, -slicerScale}
+	for i := 0; i < 8*ddaSymbols; i++ {
+		expected := float32(syms[i%4])
+		soft := float32(syms[i%4] + bias)
+		if !dda.Update(soft, expected, 1.0) {
+			t.Fatalf("within-gate biased residual was rejected at i=%d", i)
+		}
+	}
+	if got := dda.AcceptedResidualMean(); math.Abs(got-bias) > 0.05*bias {
+		t.Errorf("AcceptedResidualMean() = %.5f, want within 5%% of bias %.5f", got, bias)
+	}
+}
+
+// TestDDAResetClearsResidualMean confirms Reset wipes the accepted-
+// residual-mean accumulator alongside the integrator.
+func TestDDAResetClearsResidualMean(t *testing.T) {
+	const (
+		slicerScale = 0.2356
+		sampleRate  = 48000.0
+		maxOffset   = 25000.0
+	)
+	dda := NewDecisionDirectedAFC(maxOffset, sampleRate, slicerScale)
+	for i := 0; i < ddaSymbols; i++ {
+		dda.Update(float32(slicerScale/6), 0, 1.0)
+	}
+	if dda.AcceptedResidualMean() == 0 {
+		t.Fatal("AcceptedResidualMean() = 0 after biased updates, want non-zero")
+	}
+	dda.Reset()
+	if dda.AcceptedResidualMean() != 0 {
+		t.Errorf("AcceptedResidualMean() = %v after Reset, want 0", dda.AcceptedResidualMean())
+	}
+}
+
 // TestNewDecisionDirectedAFCRejectsBadArgs documents the constructor
 // preconditions — symmetric with TestNewCoarseAFCRejectsBadSps.
 func TestNewDecisionDirectedAFCRejectsBadArgs(t *testing.T) {

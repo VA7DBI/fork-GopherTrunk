@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fetchAISVessels, type AISMessage } from "../api/ais";
+import { PositionMap, type MapPoint } from "../components/PositionMap";
 import { selectClientConfig, useShared } from "../store/shared";
 
 // AIS panel — list of recent decoded marine-AIS messages. Each row
@@ -39,6 +40,26 @@ export function AIS() {
     };
   }, [cfg]);
 
+  const mapPoints = useMemo<MapPoint[]>(
+    () =>
+      messages
+        .filter(
+          (m) =>
+            m.has_position &&
+            typeof m.latitude === "number" &&
+            typeof m.longitude === "number",
+        )
+        .map((m) => ({
+          id: `ais-${m.id}`,
+          latitude: m.latitude as number,
+          longitude: m.longitude as number,
+          kind: "ais" as const,
+          label: m.vessel_name || String(m.mmsi).padStart(9, "0"),
+          detail: m.body ?? "",
+        })),
+    [messages],
+  );
+
   return (
     <div className="space-y-3">
       <header className="flex items-center justify-between">
@@ -47,6 +68,8 @@ export function AIS() {
           {messages.length} message{messages.length === 1 ? "" : "s"}
         </span>
       </header>
+
+      {mapPoints.length > 0 && <PositionMap points={mapPoints} />}
 
       {error && (
         <div className="rounded border border-red-700/40 bg-red-900/20 text-red-200 text-xs px-3 py-2">

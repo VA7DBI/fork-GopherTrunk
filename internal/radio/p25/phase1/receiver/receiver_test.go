@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/demod"
+	"github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
 )
 
 // TestReceiverConstructsAndProcessesSilence is a smoke test: make
@@ -337,6 +338,85 @@ func TestC4FMSymbolAGCRescuesCollapsedSlicer(t *testing.T) {
 	}
 }
 
+// TestAdaptiveSlicerNoRegressionOnCleanC4FMStream is the receiver-level
+// no-regression guard for the issue #402 adaptive slicer. It captures the
+// receiver's post-AGC soft symbols from a clean, symmetric spec-P25 stream
+// (via SoftSink) and slices that identical stream both ways. The adaptive
+// slicer (default-on for the DeviationHz path) must decode at least as
+// faithfully as the fixed slicer it replaces — i.e. it adds no skew of its
+// own when there's no asymmetry to correct. Comparing the two slicers on
+// the same soft stream isolates the slicer from sps-dependent matched-
+// filter ISI, which neither slicer can fix and which would otherwise make
+// an absolute per-bin threshold flaky.
+func TestAdaptiveSlicerNoRegressionOnCleanC4FMStream(t *testing.T) {
+	const (
+		// sps=40 (sr=192000): ModulateP25C4FM only renders a clean, open
+		// four-level eye at high sps; at the production sps=10 its ISI
+		// closes the eye far more than real hardware does (the #402
+		// capture is open at sps=10), so a low-sps synthetic eye is a
+		// degenerate baseline, not a no-regression bar. sps=40 is the
+		// lowest that keeps the eye open here, chosen to bound the
+		// matched-filter cost (~sps²) so the test stays fast under -race.
+		sr  = 192_000.0
+		dev = 1800.0
+		n   = 4000
+	)
+	dibits := make([]uint8, n)
+	for i := range dibits {
+		dibits[i] = uint8((i*7 + 3) & 3)
+	}
+	iq := demod.ModulateP25C4FM(dibits, sr, dev)
+
+	var soft []float32
+	r := New(Options{
+		SampleRateHz: sr,
+		DeviationHz:  dev,
+		SoftSink:     func(s []float32) { soft = append(soft, s...) },
+		DibitSink:    func([]uint8, int) {}, // required; the soft stream is what we score
+	})
+	r.Process(iq)
+	if len(soft) == 0 {
+		t.Fatalf("receiver produced no soft symbols")
+	}
+
+	slicerScale := r.AGCTarget() * 3.0 / 2.0 // target = slicerScale·2/3
+
+	fixed := demod.NewC4FMWithTaps([]float32{1}, slicerScale)
+	adapt := demod.NewAdaptiveC4FMSlicer(slicerScale)
+	fixedOut := fixed.SliceMany(nil, soft)
+	adaptOut := adapt.SliceMany(nil, soft)
+
+	var fixedHist, adaptHist [4]int
+	for _, s := range fixedOut {
+		fixedHist[phase1.SymbolToDibit(s)&3]++
+	}
+	for _, s := range adaptOut {
+		adaptHist[phase1.SymbolToDibit(s)&3]++
+	}
+	t.Logf("fixed dibit hist=%v  adaptive dibit hist=%v", fixedHist, adaptHist)
+
+	// Per bin, the adaptive slicer must not under-populate relative to the
+	// fixed slicer by more than a small margin (5 % of the bin) — it tracks
+	// a symmetric eye, so it should land within noise of the fixed result.
+	for v := 0; v < 4; v++ {
+		margin := fixedHist[v] / 20
+		if adaptHist[v] < fixedHist[v]-margin {
+			t.Errorf("dibit %d: adaptive %d < fixed %d − margin %d — slicer skewed a clean stream",
+				v, adaptHist[v], fixedHist[v], margin)
+		}
+	}
+
+	// On a symmetric eye the tracked levels must stay near nominal (no
+	// runaway): correct sign ordering and outer rails symmetric within 25 %.
+	lv := r.SlicerLevels()
+	if !(lv[0] < 0 && lv[1] < 0 && lv[2] > 0 && lv[3] > 0) {
+		t.Fatalf("slicer levels lost their sign ordering: %v", lv)
+	}
+	if asym := math.Abs(lv[3]+lv[0]) / lv[3]; asym > 0.25 {
+		t.Errorf("outer rails asymmetric by %.0f%% on a clean stream: %v", asym*100, lv)
+	}
+}
+
 // TestReceiverStateAccessorsReturnDefaults pins the contract for the
 // new diagnostic accessors (issue #402 Phase 2): on a freshly-
 // constructed C4FM Receiver, the AFC bias must read 0 (the IIR's
@@ -431,11 +511,16 @@ func TestReceiverDDAHandoffFiresOnCleanLockedStream(t *testing.T) {
 
 	var totalDibits int
 	r := New(Options{
-		SampleRateHz: sr,
-		DeviationHz:  dev,
-		DibitSink:    func(d []uint8, _ int) { totalDibits += len(d) },
+		SampleRateHz:              sr,
+		DeviationHz:               dev,
+		EnableDecisionDirectedAFC: true,
+		DibitSink:                 func(d []uint8, _ int) { totalDibits += len(d) },
 	})
-	r.Process(iq)
+	// Feed in chunks — the freeze-then-handoff state machine advances
+	// per Process call, so a single whole-stream call can't exercise it
+	// (and is correctly refused by the handoff gate, since CoarseAFC
+	// never freezes mid-call). Issue #402.
+	feedChunked(r, iq, 200, nil)
 
 	if totalDibits == 0 {
 		t.Fatalf("receiver emitted no dibits")
@@ -456,20 +541,25 @@ func TestReceiverDDAHandoffFiresOnCleanLockedStream(t *testing.T) {
 // slicer.
 func TestReceiverDDAResetClearsHandoffState(t *testing.T) {
 	r := New(Options{
-		SampleRateHz: 48_000,
-		DeviationHz:  1800,
-		Sink:         func([]byte) {},
+		SampleRateHz:              48_000,
+		DeviationHz:               1800,
+		EnableDecisionDirectedAFC: true,
+		Sink:                      func([]byte) {},
 	})
-	// Drive enough biased traffic through to push past handoff.
+	// Drive enough traffic through (chunked, so the handoff fires) to
+	// populate the DDA state Reset must clear.
 	dibits := make([]uint8, 8000)
 	for i := range dibits {
 		dibits[i] = uint8((i*7 + 3) & 3)
 	}
 	iq := demod.ModulateP25C4FM(dibits, 48_000, 1800)
-	iq = demod.ApplyImpairments(iq, 48_000, demod.Impairments{FreqOffsetHz: 3000})
-	r.Process(iq)
+	iq = demod.ApplyImpairments(iq, 48_000, demod.Impairments{FreqOffsetHz: 1500})
+	feedChunked(r, iq, 200, nil)
 	if r.AFCBiasRadPerSample() == 0 {
-		t.Fatalf("AFC didn't accumulate any estimate on a 3 kHz-offset stream — receiver state setup is broken")
+		t.Fatalf("AFC didn't accumulate any estimate on an offset stream — receiver state setup is broken")
+	}
+	if !r.ddaActive {
+		t.Fatalf("DDA never handed off — Reset's handoff-state clearing would be untested")
 	}
 
 	r.Reset()
@@ -479,10 +569,333 @@ func TestReceiverDDAResetClearsHandoffState(t *testing.T) {
 	if r.ddaActive {
 		t.Error("ddaActive remained true after Reset")
 	}
+	if r.ddaLearning {
+		t.Error("ddaLearning remained true after Reset")
+	}
 	if r.ddaValidUpdates != 0 {
 		t.Errorf("ddaValidUpdates = %d after Reset, want 0", r.ddaValidUpdates)
 	}
+	if r.ddaTotalUpdates != 0 {
+		t.Errorf("ddaTotalUpdates = %d after Reset, want 0", r.ddaTotalUpdates)
+	}
+	if r.afcAtHandoff != 0 {
+		t.Errorf("afcAtHandoff = %v after Reset, want 0", r.afcAtHandoff)
+	}
+	if r.ddaRearms != 0 {
+		t.Errorf("ddaRearms = %d after Reset, want 0", r.ddaRearms)
+	}
+	if r.ddaWarmupDoneAt != ddaWarmupSymbols {
+		t.Errorf("ddaWarmupDoneAt = %d after Reset, want %d", r.ddaWarmupDoneAt, ddaWarmupSymbols)
+	}
 	if r.c4fmSymbolsTotal != 0 {
 		t.Errorf("c4fmSymbolsTotal = %d after Reset, want 0", r.c4fmSymbolsTotal)
+	}
+}
+
+// feedChunked pushes iq through r in fixed-size chunks, calling after
+// each Process call. This exercises the per-batch freeze/handoff/
+// watchdog state machine the way the live daemon (small USB transfers)
+// does — a single Process(iq) call can't, since the freeze takes
+// effect only from the batch after warmup completes. Issue #402.
+func feedChunked(r *Receiver, iq []complex64, chunk int, after func()) {
+	for i := 0; i < len(iq); i += chunk {
+		end := i + chunk
+		if end > len(iq) {
+			end = len(iq)
+		}
+		r.Process(iq[i:end])
+		if after != nil {
+			after()
+		}
+	}
+}
+
+// TestReceiverFreezesCoarseAFCAtWarmupBoundary pins Part A of the
+// issue #402 fix: once the DDA starts learning, CoarseAFC is frozen
+// (subtract-only) for the entire learning window, so its estimate is
+// constant from the first learning batch through handoff. A constant
+// estimate is what makes the handoff fold-in exact (no wandering-data-
+// mean error).
+func TestReceiverFreezesCoarseAFCAtWarmupBoundary(t *testing.T) {
+	const (
+		sr       = 48_000.0
+		dev      = 1800.0
+		offsetHz = 1_000.0
+		nDibits  = 4_000
+	)
+	dibits := make([]uint8, nDibits)
+	for i := range dibits {
+		dibits[i] = uint8((i*7 + 3) & 3)
+	}
+	iq := demod.ModulateP25C4FM(dibits, sr, dev)
+	iq = demod.ApplyImpairments(iq, sr, demod.Impairments{FreqOffsetHz: offsetHz})
+
+	r := New(Options{
+		SampleRateHz:              sr,
+		DeviationHz:               dev,
+		EnableDecisionDirectedAFC: true,
+		DibitSink:                 func([]uint8, int) {},
+	})
+
+	var afcAtLearnStart, afcBeforeHandoff float64
+	learnSeen := false
+	feedChunked(r, iq, 200, func() {
+		if r.ddaLearning && !learnSeen {
+			afcAtLearnStart = r.afc.Offset()
+			learnSeen = true
+		}
+		if learnSeen && !r.ddaActive {
+			afcBeforeHandoff = r.afc.Offset()
+		}
+	})
+
+	if !learnSeen {
+		t.Fatal("DDA never entered the learning window")
+	}
+	if !r.ddaActive {
+		t.Fatal("DDA never handed off")
+	}
+	if math.Abs(afcAtLearnStart-afcBeforeHandoff) > 1e-9 {
+		t.Errorf("CoarseAFC moved during the learning window: %.9f at start vs %.9f before handoff — freeze didn't take",
+			afcAtLearnStart, afcBeforeHandoff)
+	}
+	if afcAtLearnStart == 0 {
+		t.Error("CoarseAFC froze at 0 — it never converged during warmup")
+	}
+}
+
+// TestReceiverHandoffDataImmuneAcrossUnbalancedLearning is the headline
+// regression test for issue #402. A swinging, unbalanced symbol stream
+// (the field condition that made CoarseAFC's estimate oscillate) must
+// hand off to the same AFC estimate as a balanced stream at the same
+// carrier offset — proving the DDA carries the true carrier offset and
+// not the data mean the open-loop tracker confused it with. Before the
+// fix, CoarseAFC kept adapting through the learning window and the
+// fold-in captured a wandering value, so the unbalanced stream settled
+// on a different (wrong) offset and decode collapsed.
+func TestReceiverHandoffDataImmuneAcrossUnbalancedLearning(t *testing.T) {
+	const (
+		sr       = 48_000.0
+		dev      = 1800.0
+		offsetHz = 1_200.0
+		nDibits  = 12_000
+	)
+	balanced := make([]uint8, nDibits)
+	for i := range balanced {
+		balanced[i] = uint8(i & 3)
+	}
+	// Swinging skew: alternating positive- and negative-heavy runs,
+	// net-balanced over time but with a strong local data mean that
+	// drags an open-loop tracker around.
+	unbalanced := make([]uint8, nDibits)
+	posHeavy := []uint8{0, 1, 0, 1, 2, 3} // dibits 0,1 → +1,+3 ; 2,3 → -1,-3
+	negHeavy := []uint8{2, 3, 2, 3, 0, 1}
+	for i := range unbalanced {
+		pat := posHeavy
+		if (i/80)%2 == 1 {
+			pat = negHeavy
+		}
+		unbalanced[i] = pat[i%len(pat)]
+	}
+
+	runAFC := func(dibits []uint8) float64 {
+		iq := demod.ModulateP25C4FM(dibits, sr, dev)
+		iq = demod.ApplyImpairments(iq, sr, demod.Impairments{FreqOffsetHz: offsetHz})
+		r := New(Options{
+			SampleRateHz:              sr,
+			DeviationHz:               dev,
+			EnableDecisionDirectedAFC: true,
+			DibitSink:                 func([]uint8, int) {},
+		})
+		feedChunked(r, iq, 200, nil)
+		if !r.ddaActive {
+			t.Fatalf("DDA never handed off")
+		}
+		return r.AFCBiasRadPerSample()
+	}
+
+	ref := runAFC(balanced)
+	got := runAFC(unbalanced)
+	if ref == 0 {
+		t.Fatal("balanced reference AFC is 0")
+	}
+	if rel := math.Abs(got-ref) / math.Abs(ref); rel > 0.20 {
+		t.Errorf("unbalanced-stream AFC = %.4f, balanced reference = %.4f (%.0f%% off) — handoff not data-immune",
+			got, ref, rel*100)
+	}
+}
+
+// TestReceiverHandoffReadyBlocksBiasedEye pins Part B's validity gate
+// (issue #402): a uniformly-biased eye produces plenty of within-gate
+// ("accepted") updates, so the raw count alone would green-light a
+// handoff onto a stable-but-wrong offset. ddaHandoffReady must refuse
+// it because the mean accepted residual is non-zero, and must allow a
+// clean (near-zero-mean) eye.
+func TestReceiverHandoffReadyBlocksBiasedEye(t *testing.T) {
+	const (
+		sr  = 48_000.0
+		dev = 1800.0
+	)
+	slicerScale := 2.0 * math.Pi * dev / sr
+
+	newRx := func() *Receiver {
+		return New(Options{SampleRateHz: sr, DeviationHz: dev, EnableDecisionDirectedAFC: true, DibitSink: func([]uint8, int) {}})
+	}
+
+	// Drive the DDA directly with the same call shape Process uses, so
+	// the gate sees realistic counters and residual mean.
+	drive := func(r *Receiver, bias float64) {
+		syms := []float64{slicerScale, slicerScale / 3, -slicerScale / 3, -slicerScale}
+		for i := 0; i < 4*1024; i++ {
+			expected := float32(syms[i%4])
+			soft := float32(syms[i%4] + bias)
+			if r.dda.Update(soft, expected, 1.0) {
+				r.ddaValidUpdates++
+			}
+			r.ddaTotalUpdates++
+		}
+	}
+
+	clean := newRx()
+	drive(clean, 0)
+	if !clean.ddaHandoffReady() {
+		t.Errorf("ddaHandoffReady = false on a clean eye (residMean=%.5f) — gate too strict", clean.dda.AcceptedResidualMean())
+	}
+
+	biased := newRx()
+	drive(biased, slicerScale/6) // within the gate, but clearly off-centre
+	if biased.ddaHandoffReady() {
+		t.Errorf("ddaHandoffReady = true on a biased eye (residMean=%.5f, gate=%.5f) — false lock not blocked",
+			biased.dda.AcceptedResidualMean(), biased.ddaResidMeanGate)
+	}
+}
+
+// TestReceiverWatchdogReArmsOnRunawayDrift pins Part B's watchdog
+// (issue #402): after a healthy handoff, if the DDA's estimate walks
+// far from the gate-verified handoff value (here forced by a large
+// post-handoff carrier-offset step the DDA chases), the receiver
+// reverts to CoarseAFC-alone rather than staying stuck on a DDA
+// estimate it can no longer trust. This is the reversibility guarantee
+// — the receiver can never wander into a worse-than-CoarseAFC state.
+func TestReceiverWatchdogReArmsOnRunawayDrift(t *testing.T) {
+	const (
+		sr        = 48_000.0
+		dev       = 1800.0
+		offsetHz  = 1_000.0
+		stepHz    = 9_000.0 // large step past the drift bound (4 kHz)
+		chunkSize = 200
+	)
+	clean := make([]uint8, 6_000)
+	for i := range clean {
+		clean[i] = uint8((i*7 + 3) & 3)
+	}
+	cleanIQ := demod.ModulateP25C4FM(clean, sr, dev)
+	cleanIQ = demod.ApplyImpairments(cleanIQ, sr, demod.Impairments{FreqOffsetHz: offsetHz})
+
+	r := New(Options{SampleRateHz: sr, DeviationHz: dev, EnableDecisionDirectedAFC: true, DibitSink: func([]uint8, int) {}})
+	feedChunked(r, cleanIQ, chunkSize, nil)
+	if !r.ddaActive {
+		t.Fatal("DDA never handed off on the clean stream")
+	}
+	rearmsBefore := r.ddaRearms
+
+	// Step the carrier far enough that the DDA, chasing it, walks past
+	// the drift bound and trips the watchdog.
+	stepped := make([]uint8, 30_000)
+	for i := range stepped {
+		stepped[i] = uint8((i*7 + 3) & 3)
+	}
+	steppedIQ := demod.ModulateP25C4FM(stepped, sr, dev)
+	steppedIQ = demod.ApplyImpairments(steppedIQ, sr, demod.Impairments{FreqOffsetHz: offsetHz + stepHz})
+	feedChunked(r, steppedIQ, chunkSize, nil)
+
+	if r.ddaRearms <= rearmsBefore {
+		t.Errorf("watchdog never re-armed on a runaway-drift step (rearms=%d) — receiver can't fall back to CoarseAFC", r.ddaRearms)
+	}
+}
+
+// TestReceiverDDADisabledByDefault is the issue #402 regression guard:
+// without EnableDecisionDirectedAFC the C4FM path must run CoarseAFC-
+// alone (the pre-DDA behaviour) — no DDA allocated, no handoff, ever —
+// while still emitting dibits and tracking the carrier offset. The DDA
+// is opt-in because it can stably false-lock and broke CC lock on the
+// original capture; the default path must be the known-good one.
+func TestReceiverDDADisabledByDefault(t *testing.T) {
+	const (
+		sr       = 48_000.0
+		dev      = 1800.0
+		offsetHz = 1_500.0
+		nDibits  = 8_000
+	)
+	dibits := make([]uint8, nDibits)
+	for i := range dibits {
+		dibits[i] = uint8((i*7 + 3) & 3)
+	}
+	iq := demod.ModulateP25C4FM(dibits, sr, dev)
+	iq = demod.ApplyImpairments(iq, sr, demod.Impairments{FreqOffsetHz: offsetHz})
+
+	var totalDibits int
+	r := New(Options{
+		SampleRateHz: sr,
+		DeviationHz:  dev,
+		// EnableDecisionDirectedAFC left false — the default.
+		DibitSink: func(d []uint8, _ int) { totalDibits += len(d) },
+	})
+	if r.dda != nil {
+		t.Fatal("DDA was allocated with EnableDecisionDirectedAFC unset — default must be CoarseAFC-alone")
+	}
+	feedChunked(r, iq, 200, nil)
+
+	if totalDibits == 0 {
+		t.Fatal("CoarseAFC-only receiver emitted no dibits")
+	}
+	if r.ddaActive {
+		t.Error("ddaActive went true with the DDA disabled")
+	}
+	if r.ddaLearning {
+		t.Error("ddaLearning went true with the DDA disabled")
+	}
+	if r.ddaRearms != 0 {
+		t.Errorf("ddaRearms = %d with the DDA disabled, want 0", r.ddaRearms)
+	}
+	// CoarseAFC alone must still converge onto the offset.
+	if got := r.AFCBiasRadPerSample(); got <= 0 {
+		t.Errorf("AFCBiasRadPerSample = %.4f on a +%g Hz offset stream with CoarseAFC alone, want > 0", got, offsetHz)
+	}
+}
+
+// TestReceiverAFCOffsetHzUndoesMatchedFilterGain pins the issue #402
+// diagnostic correction: AFCOffsetHz must report the TRUE carrier
+// offset (~offsetHz), not the ≈sps×-inflated AFCBias·Fs/(2π) value the
+// state log used to print. That inflation sent three rounds of #402
+// chasing a phantom ~10 kHz error that was really ~1 kHz.
+func TestReceiverAFCOffsetHzUndoesMatchedFilterGain(t *testing.T) {
+	const (
+		sr       = 48_000.0
+		dev      = 1800.0
+		offsetHz = 1_500.0
+		nDibits  = 8_000
+	)
+	sps := sr / SymbolRate // 10
+	// Balanced stream so CoarseAFC converges cleanly onto the offset.
+	dibits := make([]uint8, nDibits)
+	for i := range dibits {
+		dibits[i] = uint8(i & 3)
+	}
+	iq := demod.ModulateP25C4FM(dibits, sr, dev)
+	iq = demod.ApplyImpairments(iq, sr, demod.Impairments{FreqOffsetHz: offsetHz})
+
+	r := New(Options{SampleRateHz: sr, DeviationHz: dev, DibitSink: func([]uint8, int) {}})
+	feedChunked(r, iq, 200, nil)
+
+	trueHz := r.AFCOffsetHz()
+	if math.Abs(trueHz-offsetHz)/offsetHz > 0.25 {
+		t.Errorf("AFCOffsetHz = %.1f Hz, want ≈ %g Hz (within 25%%) — true-offset conversion is wrong", trueHz, offsetHz)
+	}
+	// The old (wrong) Fs-form is ≈sps× larger; confirm AFCOffsetHz is
+	// NOT that value, i.e. the sps gain really was divided out.
+	oldForm := r.AFCBiasRadPerSample() * sr / (2 * math.Pi)
+	if ratio := oldForm / trueHz; math.Abs(ratio-sps) > 0.5 {
+		t.Errorf("old-form/AFCOffsetHz = %.2f, want ≈ sps = %.0f — AFCOffsetHz isn't dividing out the matched-filter gain", ratio, sps)
 	}
 }
