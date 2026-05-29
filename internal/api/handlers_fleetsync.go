@@ -78,6 +78,9 @@ type FleetSyncRuntimeChannelStatsDTO struct {
 type FleetSyncExportRuntimeStatsDTO struct {
 	Queued                          int                              `json:"queued"`
 	Dropped                         int                              `json:"dropped"`
+	QueueDepth                      int                              `json:"queue_depth"`
+	QueueCapacity                   int                              `json:"queue_capacity"`
+	QueueUtilization                float64                          `json:"queue_utilization"`
 	DroppedBySource                 map[string]int                   `json:"dropped_by_source,omitempty"`
 	DroppedPerMinuteBySource        map[string]float64               `json:"dropped_per_minute_by_source,omitempty"`
 	DroppedLast60sBySource          map[string]int                   `json:"dropped_last_60s_by_source,omitempty"`

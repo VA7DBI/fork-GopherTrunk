@@ -117,6 +117,9 @@ type FleetSyncOptions struct {
 type FleetSyncStats struct {
 	Queued                          int                `json:"queued"`
 	Dropped                         int                `json:"dropped"`
+	QueueDepth                      int                `json:"queue_depth"`
+	QueueCapacity                   int                `json:"queue_capacity"`
+	QueueUtilization                float64            `json:"queue_utilization"`
 	DroppedBySource                 map[string]int     `json:"dropped_by_source"`
 	DroppedPerMinuteBySource        map[string]float64 `json:"dropped_per_minute_by_source,omitempty"`
 	DroppedLast60sBySource          map[string]int     `json:"dropped_last_60s_by_source,omitempty"`
@@ -320,6 +323,8 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	out := FleetSyncStats{
 		Queued:                          f.queued,
 		Dropped:                         f.dropped,
+		QueueDepth:                      len(f.jobs),
+		QueueCapacity:                   cap(f.jobs),
 		DroppedBySource:                 make(map[string]int, len(f.droppedBySource)),
 		DroppedPerMinuteBySource:        make(map[string]float64, len(f.droppedBySource)),
 		DroppedLast60sBySource:          make(map[string]int, len(f.recentDropsBySource)),
@@ -332,6 +337,9 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	mins := time.Since(f.startedAt).Minutes()
 	if mins <= 0 {
 		mins = 1.0 / 60.0
+	}
+	if out.QueueCapacity > 0 {
+		out.QueueUtilization = float64(out.QueueDepth) / float64(out.QueueCapacity)
 	}
 	now := time.Now()
 	f.pruneRecentDropsLocked(now.Add(-60 * time.Second))

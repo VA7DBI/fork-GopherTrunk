@@ -310,6 +310,15 @@ func TestFleetSyncExporterTracksDroppedBySource(t *testing.T) {
 	if stats.DroppedBySource["utilities-east"] == 0 || stats.DroppedBySource["utilities-west"] == 0 {
 		t.Fatalf("dropped_by_source=%+v dropped=%d", stats.DroppedBySource, stats.Dropped)
 	}
+	if stats.QueueCapacity <= 0 {
+		t.Fatalf("queue_capacity=%d", stats.QueueCapacity)
+	}
+	if stats.QueueDepth < 0 || stats.QueueDepth > stats.QueueCapacity {
+		t.Fatalf("queue_depth=%d queue_capacity=%d", stats.QueueDepth, stats.QueueCapacity)
+	}
+	if stats.QueueUtilization < 0 || stats.QueueUtilization > 1 {
+		t.Fatalf("queue_utilization=%f", stats.QueueUtilization)
+	}
 	if stats.DroppedPerMinuteBySource["utilities-east"] <= 0 || stats.DroppedPerMinuteBySource["utilities-west"] <= 0 {
 		t.Fatalf("dropped_per_minute_by_source=%+v", stats.DroppedPerMinuteBySource)
 	}

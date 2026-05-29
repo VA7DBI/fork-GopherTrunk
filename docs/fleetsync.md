@@ -106,6 +106,9 @@ Exporter health is included under `runtime.export`:
 
 - `queued`
 - `dropped`
+- `queue_depth` (current messages waiting in exporter queue)
+- `queue_capacity` (configured exporter queue size)
+- `queue_utilization` (fraction of queue in use, from 0.0 to 1.0)
 - `dropped_by_source` (map of source label to dropped count)
 - `dropped_per_minute_by_source` (map of source label to average drops/minute since exporter start)
 - `dropped_last_60s_by_source` (map of source label to drops observed in the rolling last 60 seconds)
