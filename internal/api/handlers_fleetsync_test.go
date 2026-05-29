@@ -234,6 +234,10 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 			QueueDepth:                      4,
 			QueueCapacity:                   1024,
 			QueueUtilization:                4.0 / 1024.0,
+			SentLast60sTotal:                4,
+			FailedLast60sTotal:              1,
+			SuccessRateLast60s:              0.8,
+			FailureRateLast60s:              0.2,
 			DroppedBySource:                 map[string]int{"utilities-west": 1},
 			DroppedPerMinuteBySource:        map[string]float64{"utilities-west": 2.5},
 			DroppedLast60sTotal:             1,
@@ -290,6 +294,12 @@ func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
 	}
 	if got.Runtime.Export.QueueUtilization != 4.0/1024.0 {
 		t.Fatalf("runtime.export.queue_utilization = %f", got.Runtime.Export.QueueUtilization)
+	}
+	if got.Runtime.Export.SentLast60sTotal != 4 || got.Runtime.Export.FailedLast60sTotal != 1 {
+		t.Fatalf("runtime.export.rolling_outcome_totals = sent=%d failed=%d", got.Runtime.Export.SentLast60sTotal, got.Runtime.Export.FailedLast60sTotal)
+	}
+	if got.Runtime.Export.SuccessRateLast60s != 0.8 || got.Runtime.Export.FailureRateLast60s != 0.2 {
+		t.Fatalf("runtime.export.rolling_outcome_rates = success=%f failure=%f", got.Runtime.Export.SuccessRateLast60s, got.Runtime.Export.FailureRateLast60s)
 	}
 	if got.Runtime.Export.DroppedLast60sTotal != 1 || got.Runtime.Export.DroppedPerMinuteLast60sTotal != 1.0 {
 		t.Fatalf("runtime.export.rolling_drop_totals = total=%d rate=%f", got.Runtime.Export.DroppedLast60sTotal, got.Runtime.Export.DroppedPerMinuteLast60sTotal)
