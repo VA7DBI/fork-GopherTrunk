@@ -105,6 +105,36 @@ Silicon and Intel. Full per-OS recipes at
   selective call). Plus `events.KindMDC1200Message` bus event,
   SQLite `mdc1200_log`, `GET /api/v1/mdc1200/messages`, and
   `/mdc1200` web panel. See [docs/mdc1200.md](docs/mdc1200.md).
+- **DSC marine distress** — protocol layer for the GMDSS Digital
+  Selective Calling system that fires every marine VHF channel-
+  70 distress alert. ITU-R M.493-15 format dispatch (Distress,
+  All-Ships, Individual, Group, Geographic, Auto-Individual),
+  BCH(10,7) syndrome check, position decoder with quadrant
+  hemisphere flip, nature-of-distress table. Plus
+  `events.KindDSCMessage` bus event, SQLite `dsc_log`,
+  `GET /api/v1/dsc/messages`, and `/dsc` web panel (rows tint
+  by category — distress=red, urgency=orange, safety=blue).
+  DSP frontend (1200 Bd FSK at 1300/2100 Hz tones) follows.
+  See [docs/dsc.md](docs/dsc.md).
+- **ADS-B aviation** — end-to-end pipeline for the 1090 MHz
+  Mode-S transponder broadcasts every commercial flight emits.
+  ICAO Annex 10 Vol IV / DO-260B parser (CRC-24 + DF dispatch +
+  type-code dispatch for identification, airborne / surface
+  position with 12-bit Q-bit altitude, airborne velocity);
+  globally-unambiguous CPR position decoder + per-ICAO
+  even+odd pair tracker. **BEAST upstream** consumes Mode-S
+  frames from any dump1090 / readsb / BeastSplitter via TCP —
+  most 1090 MHz receive chains already run one, GopherTrunk
+  decodes its output. Plus `events.KindAircraftReport` bus
+  event, SQLite `aircraft_log`, `GET /api/v1/adsb/aircraft`,
+  and `/adsb` web panel. Native 1 Msps PPM DSP frontend
+  follows. See [docs/adsb.md](docs/adsb.md).
+- **Live map** — Shared Leaflet map at the top of each
+  position-bearing panel (APRS / AIS / DSC / ADS-B) renders
+  decoded positions over OpenStreetMap tiles, colour-coded per
+  protocol (blue / cyan / red-distress / purple), with marker
+  tooltips and camera auto-fit. Same `<PositionMap>` component
+  drives all four panels.
 - **Pure-Go voice path** — IMBE (P25 Phase 1) and AMBE+2 (P25
   Phase 2 / DMR) vocoders in Go, no DVSI / mbelib dependency.
   Per-call WAV + raw-frame sidecars; live PCM playback via direct

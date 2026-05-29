@@ -30,6 +30,28 @@ type Config struct {
 	APRS       APRSConfig       `yaml:"aprs"`
 	AIS        AISConfig        `yaml:"ais"`
 	MDC1200    MDC1200Config    `yaml:"mdc1200"`
+	ADSB       ADSBConfig       `yaml:"adsb"`
+}
+
+// ADSBConfig configures the ADS-B aircraft-tracking input. The
+// native 1 Msps PPM DSP frontend is planned; for now the BEAST
+// upstream lets operators consume Mode-S frames from a separately-
+// running dump1090 / readsb / BeastSplitter / commercial hub. Most
+// 1090 MHz receiver chains already run dump1090 on a dedicated
+// RTL-SDR + 1090 MHz filter + LNA; pointing GopherTrunk at it
+// is a one-line config away.
+type ADSBConfig struct {
+	BeastUpstreams []ADSBBeastConfig `yaml:"beast_upstreams"`
+}
+
+// ADSBBeastConfig describes one BEAST upstream to consume. Addr is
+// typically "host:30005" — the standard dump1090 / readsb BEAST
+// output port. Multiple upstreams can run side-by-side (e.g. a
+// local antenna + a remote hub at the airport) and their frames
+// merge into the same `events.KindAircraftReport` stream.
+type ADSBBeastConfig struct {
+	Addr string `yaml:"addr"`
+	Name string `yaml:"name"` // log + metrics label
 }
 
 // APRSConfig configures the APRS / AX.25 Bell-202 AFSK receiver.

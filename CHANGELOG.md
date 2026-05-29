@@ -22,6 +22,53 @@ for tagged releases.
   `mdc1200_log`, `GET /api/v1/mdc1200/messages`, the `/mdc1200` web
   panel, and an `mdc1200.channels` config block. Clean-room
   implementation under Apache-2.0. See [docs/mdc1200.md](docs/mdc1200.md).
+- **ADS-B end-to-end via BEAST upstreams + per-ICAO CPR pair-
+  tracker.** Most 1090 MHz receive chains already run
+  dump1090 / readsb / BeastSplitter against a dedicated
+  RTL-SDR; GopherTrunk now consumes their BEAST binary output
+  over TCP and feeds the frames into the same
+  `events.KindAircraftReport` bus / `aircraft_log` SQLite /
+  `/api/v1/adsb/aircraft` REST / `/adsb` web panel stack that
+  shipped in #434. Operators add an `adsb.beast_upstreams`
+  entry (typically `127.0.0.1:30005` — the standard
+  dump1090 / readsb BEAST port) and aircraft start landing on
+  the live map immediately. Reconnect-with-backoff on
+  upstream drops; the embedded CPR tracker resets between
+  reconnects so stale even/odd halves don't pair across the
+  gap. No native 1 Msps PPM DSP frontend yet — that's the
+  next slice — but for the operator workflow this PR is the
+  one that makes ADS-B *useful*.
+  New `internal/radio/adsb.Tracker` is the per-ICAO state
+  machine that buffers the most-recent CPR half and calls
+  `CPRDecodeGlobal` when both halves arrive within the spec's
+  10 s window (DO-260B §2.2.3.2.3.7). Thread-safe;
+  `Prune(now)` evicts ICAOs that haven't transmitted in > 10 s
+  so the state map doesn't grow with every aircraft ever
+  seen. Extends the existing `adsb.Position` struct with
+  `Latitude` / `Longitude` / `HasGlobalPosition` fields the
+  tracker populates on a successful pair-decode.
+  New `internal/radio/adsb/beast` package — BEAST frame
+  parser (`ReadFrame` handles the 0x1A byte-stuffing
+  transparently, hunts for sync after a torn TCP segment) +
+  TCP client (`Client.Run` reconnects on drop, applies a
+  per-read deadline so a silent upstream re-dials instead of
+  hanging forever, pipes each Mode-S frame through
+  `adsb.Decode` → `Tracker.Update` → `bus.Publish`).
+  New `internal/config.ADSBBeastConfig` schema + daemon
+  wiring (`d.adsbBeastClients` slice, spawn in the run loop
+  via the standard `spawn` closure).
+  Tests: 7 new tracker tests (canonical dump1090 CPR pair
+  globally decodes to 52.2572 N / 3.91937 E; rejects pairs
+  older than 10 s; passes non-position messages through;
+  ignores CRC-failed frames with ICAO 0; tracks multiple
+  ICAOs independently; `Prune` drops stale; `Reset` clears).
+  8 new BEAST tests (long-frame round-trip, short-frame
+  round-trip, byte-stuffing unstuff, clean-EOF, garbage-
+  before-sync recovery, options validation, end-to-end
+  client test driving the gpsd canonical identification +
+  CPR pair through a loopback TCP server and asserting the
+  bus event carries the right ICAO + globally-decoded
+  lat/lon). All passing.
 
 ## [v0.2.6] — 2026-05-29
 

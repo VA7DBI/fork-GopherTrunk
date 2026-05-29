@@ -23,6 +23,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/conventional"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/widebandt2"
 
+	adsbbeast "github.com/MattCheramie/GopherTrunk/internal/radio/adsb/beast"
 	aisgmsk "github.com/MattCheramie/GopherTrunk/internal/radio/ais/gmsk"
 	aprsafsk "github.com/MattCheramie/GopherTrunk/internal/radio/aprs/afsk"
 	mdc1200afsk "github.com/MattCheramie/GopherTrunk/internal/radio/mdc1200/afsk"
@@ -171,6 +172,13 @@ type Daemon struct {
 	// decoded signaling bursts on KindMDC1200Message.
 	mdc1200Receivers []*mdc1200afsk.Receiver
 	mdc1200Specs     []mdc1200Spec // index-aligned with mdc1200Receivers
+	// adsbBeastClients consume ADS-B Mode-S frames from external
+	// dump1090 / readsb upstreams (BEAST binary protocol). Each
+	// client decodes frames, pairs CPR halves via an embedded
+	// per-ICAO tracker, and publishes KindAircraftReport. Native
+	// 1 Msps PPM DSP frontend is a planned follow-up.
+	adsbBeastClients []*adsbbeast.Client
+	adsbBeastNames   []string // index-aligned with adsbBeastClients
 	// iqBrokers holds an iqtap.Broker per pool entry, keyed by serial.
 	// Primary consumers (CC decoder, conventional scanner) stream IQ
 	// through the broker so secondary observers (live spectrum,
@@ -1058,6 +1066,37 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		d.mdc1200Specs = append(d.mdc1200Specs, spec)
 	}
 
+	// ADS-B BEAST upstreams — one client per configured
+	// adsb.beast_upstreams entry. Each opens a TCP connection
+	// to a dump1090 / readsb BEAST output port, decodes the
+	// Mode-S frames, runs them through the CPR pair-tracker,
+	// and publishes KindAircraftReport. Validation failures
+	// surface as startup warnings.
+	for _, bc := range cfg.ADSB.BeastUpstreams {
+		if bc.Addr == "" {
+			d.addWarning(fmt.Sprintf(
+				"adsb.beast_upstreams: entry missing addr (name=%q) — skipped",
+				bc.Name))
+			continue
+		}
+		name := bc.Name
+		if name == "" {
+			name = bc.Addr
+		}
+		client, err := adsbbeast.New(adsbbeast.Options{
+			Addr:       bc.Addr,
+			Bus:        d.bus,
+			SourceName: name,
+			Log:        log,
+		})
+		if err != nil {
+			d.addWarning(fmt.Sprintf("adsb.beast_upstreams[%s]: %v — skipped", name, err))
+			continue
+		}
+		d.adsbBeastClients = append(d.adsbBeastClients, client)
+		d.adsbBeastNames = append(d.adsbBeastNames, name)
+	}
+
 	// Storage / call log / retention — optional.
 	if cfg.Storage.Path != "" {
 		db, err := storage.Open(cfg.Storage.Path)
@@ -1582,6 +1621,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 			sub := br.Subscribe()
 			defer sub.Close()
 			return rcv.Process(ctx, sub.C)
+		})
+	}
+	// ADS-B BEAST upstream clients — each consumes Mode-S
+	// frames from a separately-running dump1090 / readsb /
+	// commercial hub. Reconnect-with-backoff on disconnects;
+	// the embedded CPR tracker pairs even+odd position halves
+	// so the resulting AircraftReport rows carry decoded
+	// lat/lon.
+	for i, client := range d.adsbBeastClients {
+		client := client
+		name := fmt.Sprintf("adsb-beast-%s", d.adsbBeastNames[i])
+		d.spawn(runCtx, name, false, func(ctx context.Context) error {
+			return client.Run(ctx)
 		})
 	}
 	if d.pool != nil {
