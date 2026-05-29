@@ -370,6 +370,9 @@ func TestFleetSyncExporterTracksDroppedBySource(t *testing.T) {
 	if stats.SaturationSeverityLast60s <= 0 || stats.SaturationSeverityLast60s > 1 {
 		t.Fatalf("saturation_severity_last_60s=%f", stats.SaturationSeverityLast60s)
 	}
+	if stats.SaturationStateLast60s != "healthy" && stats.SaturationStateLast60s != "warning" && stats.SaturationStateLast60s != "critical" {
+		t.Fatalf("saturation_state_last_60s=%q", stats.SaturationStateLast60s)
+	}
 }
 
 func TestNewFleetSyncExporterRequiresBus(t *testing.T) {
