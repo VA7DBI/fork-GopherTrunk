@@ -147,6 +147,7 @@ type FleetSyncStats struct {
 	RetriedLast60sTotal             int                `json:"retried_last_60s_total,omitempty"`
 	RetryRateLast60s                float64            `json:"retry_rate_last_60s,omitempty"`
 	DroppedToAttemptsRateLast60s    float64            `json:"dropped_to_attempts_rate_last_60s,omitempty"`
+	SaturationSeverityLast60s       float64            `json:"saturation_severity_last_60s,omitempty"`
 	Backends                        []string           `json:"backends"`
 }
 
@@ -459,6 +460,16 @@ func (f *FleetSyncExporter) Stats() FleetSyncStats {
 	if attemptsLast60sTotal > 0 {
 		out.RetryRateLast60s = float64(out.RetriedLast60sTotal) / float64(attemptsLast60sTotal)
 		out.DroppedToAttemptsRateLast60s = float64(out.DroppedLast60sTotal) / float64(attemptsLast60sTotal)
+	}
+	if out.QueueUtilizationLast60sAvg > 0 || out.DroppedToAttemptsRateLast60s > 0 || out.RetryRateLast60s > 0 {
+		score := (0.5 * out.QueueUtilizationLast60sAvg) + (0.35 * out.DroppedToAttemptsRateLast60s) + (0.15 * out.RetryRateLast60s)
+		if score < 0 {
+			score = 0
+		}
+		if score > 1 {
+			score = 1
+		}
+		out.SaturationSeverityLast60s = score
 	}
 	if len(f.recentQueueSamples) > 0 {
 		sum := 0.0

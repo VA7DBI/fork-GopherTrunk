@@ -96,6 +96,7 @@ type FleetSyncExportRuntimeStatsDTO struct {
 	RetriedLast60sTotal             int                              `json:"retried_last_60s_total,omitempty"`
 	RetryRateLast60s                float64                          `json:"retry_rate_last_60s,omitempty"`
 	DroppedToAttemptsRateLast60s    float64                          `json:"dropped_to_attempts_rate_last_60s,omitempty"`
+	SaturationSeverityLast60s       float64                          `json:"saturation_severity_last_60s,omitempty"`
 	DroppedLast60sTotal             int                              `json:"dropped_last_60s_total,omitempty"`
 	DroppedPerMinuteLast60sTotal    float64                          `json:"dropped_per_minute_last_60s_total,omitempty"`
 	DroppedLast60sBySource          map[string]int                   `json:"dropped_last_60s_by_source,omitempty"`

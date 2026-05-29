@@ -367,6 +367,9 @@ func TestFleetSyncExporterTracksDroppedBySource(t *testing.T) {
 	if stats.DroppedToAttemptsRateLast60s <= 0 {
 		t.Fatalf("dropped_to_attempts_rate_last_60s=%f", stats.DroppedToAttemptsRateLast60s)
 	}
+	if stats.SaturationSeverityLast60s <= 0 || stats.SaturationSeverityLast60s > 1 {
+		t.Fatalf("saturation_severity_last_60s=%f", stats.SaturationSeverityLast60s)
+	}
 }
 
 func TestNewFleetSyncExporterRequiresBus(t *testing.T) {
