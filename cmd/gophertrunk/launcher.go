@@ -87,17 +87,17 @@ func launchModeFlag(m launchMode) string {
 // headless modes — the caller is expected to keep waiting on Run.
 func runLauncher(ctx context.Context, d *Daemon, log *slog.Logger, logSwap *gtlog.SwappableWriter, mode launchMode) {
 	if mode == launchHeadless {
-		printWarnings(d.StartupWarnings())
+		printWarnings(d)
 		return
 	}
 
 	// Auto: TTY → prompt; non-TTY → silent headless.
 	if mode == launchAuto {
 		if !stdinIsTerminal() {
-			printWarnings(d.StartupWarnings())
+			printWarnings(d)
 			return
 		}
-		printWarnings(d.StartupWarnings())
+		printWarnings(d)
 		chosen, ok := promptLaunchChoice(ctx)
 		if !ok {
 			return // headless or cancelled
@@ -120,7 +120,15 @@ func runLauncher(ctx context.Context, d *Daemon, log *slog.Logger, logSwap *gtlo
 // printWarnings sends the daemon's collected startup warnings to
 // stderr (red-ish when supported). The launcher menu and headless
 // path both call this so silently-degraded startups always surface.
-func printWarnings(ws []string) {
+func printWarnings(d *Daemon) {
+	ws := append([]string(nil), d.StartupWarnings()...)
+	if ferr, _, src := d.FatalStatus(); ferr != nil {
+		fclass, hint := classifyFatal(src, ferr.Error())
+		ws = append(ws, "Last fatal error class: "+fclass)
+		if hint != "" {
+			ws = append(ws, hint)
+		}
+	}
 	if len(ws) == 0 {
 		return
 	}

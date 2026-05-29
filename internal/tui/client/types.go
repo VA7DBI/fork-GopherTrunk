@@ -288,6 +288,13 @@ type RuntimeDTO struct {
 	// collected during NewDaemon. The Dashboard pins them as a
 	// one-shot banner.
 	StartupWarnings []string `json:"startup_warnings,omitempty"`
+	// LastFatal* surfaces the most recent essential-component
+	// failure metadata from /api/v1/runtime.
+	LastFatalError     string    `json:"last_fatal_error,omitempty"`
+	LastFatalComponent string    `json:"last_fatal_component,omitempty"`
+	LastFatalAt        time.Time `json:"last_fatal_at,omitempty"`
+	LastFatalClass     string    `json:"last_fatal_class,omitempty"`
+	LastFatalHint      string    `json:"last_fatal_hint,omitempty"`
 }
 
 // ToneProfileDTO mirrors api.ToneProfileDTO.

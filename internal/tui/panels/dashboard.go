@@ -112,6 +112,29 @@ func (p *DashboardPanel) healthBody(s *state.SharedState) string {
 			fmt.Sprintf("SDRs: %d (%d control, %d voice)", len(s.Devices), control, voice),
 		))
 	}
+	if len(s.Runtime.StartupWarnings) > 0 {
+		lines = append(lines, dashErr.Render(fmt.Sprintf("Startup warnings: %d", len(s.Runtime.StartupWarnings))))
+		maxWarnings := len(s.Runtime.StartupWarnings)
+		if maxWarnings > 2 {
+			maxWarnings = 2
+		}
+		for i := 0; i < maxWarnings; i++ {
+			lines = append(lines, dashDim.Render("! "+s.Runtime.StartupWarnings[i]))
+		}
+		if len(s.Runtime.StartupWarnings) > maxWarnings {
+			lines = append(lines, dashDim.Render(fmt.Sprintf("... %d more", len(s.Runtime.StartupWarnings)-maxWarnings)))
+		}
+	}
+	if s.Runtime.LastFatalError != "" {
+		label := "Last fatal"
+		if s.Runtime.LastFatalClass != "" {
+			label += " (" + s.Runtime.LastFatalClass + ")"
+		}
+		lines = append(lines, dashErr.Render(label))
+		if s.Runtime.LastFatalHint != "" {
+			lines = append(lines, dashDim.Render(s.Runtime.LastFatalHint))
+		}
+	}
 	return strings.Join(lines, "\n")
 }
 
