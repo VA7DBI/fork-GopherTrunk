@@ -657,6 +657,16 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		var sink composer.PCMSink = d.recorder
 		if len(sinks) > 1 {
 			sink = fanoutSink(sinks)
+			// Surface the fanout wiring at startup so operators can
+			// confirm from logs that the raw-frame path is in place.
+			// Before the fanoutSink.WriteRawFrame fix (issue #356), a
+			// multi-sink config silently dropped every IMBE / AMBE
+			// frame and there was nothing in the logs to tell the
+			// operator the audio path was broken.
+			log.Info("composer: sink fanout configured",
+				"count", len(sinks), "raw_frames_supported", true)
+		} else {
+			log.Info("composer: sink direct configured")
 		}
 		comp, err := composer.New(composer.Options{
 			Bus:           d.bus,
@@ -1934,6 +1944,26 @@ type fanoutSink []composer.PCMSink
 func (f fanoutSink) WritePCM(serial string, samples []int16) error {
 	for _, s := range f {
 		_ = s.WritePCM(serial, samples)
+	}
+	return nil
+}
+
+// WriteRawFrame fans raw IMBE / AMBE frames out to every contained
+// sink that implements the rawFrameSink shape — currently just the
+// recorder. Sinks that don't (tone-out, live player, audio publisher)
+// are silently skipped. Without this the voice composer chains'
+// `rs, _ := c.sink.(rawFrameSink)` type assertion fails against a
+// fanoutSink, rs stays nil, and every IMBE / AMBE frame is dropped
+// before reaching disk while the activity counter still bumps —
+// producing healthy-looking call lifecycle logs alongside 0-byte
+// .raw and 44-byte (header-only) .wav files. Issue #356 root cause.
+func (f fanoutSink) WriteRawFrame(serial string, frame []byte) error {
+	for _, s := range f {
+		if rs, ok := s.(interface {
+			WriteRawFrame(string, []byte) error
+		}); ok {
+			_ = rs.WriteRawFrame(serial, frame)
+		}
 	}
 	return nil
 }
