@@ -45,12 +45,16 @@ func acquireInstanceLock(cfgPath string) (releaseFn func(), err error) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		// Read the existing file for forensic context — the previous
 		// holder wrote its PID + start timestamp on acquisition.
-		info := readLockInfo(lockPath)
+		info, pid := readLockInfo(lockPath)
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
+			ownerCheck := ""
+			if pid != "" {
+				ownerCheck = fmt.Sprintf(" (owner check: ps -p %s -o pid,comm,etimes)", pid)
+			}
 			return nil, fmt.Errorf(
-				"another gophertrunk is running against %s%s; use a different -config or stop the other process",
-				cfgPath, info)
+				"another gophertrunk is running against %s%s%s; use a different -config or stop the other process",
+				cfgPath, info, ownerCheck)
 		}
 		return nil, fmt.Errorf("instance lock: flock %s: %w", lockPath, err)
 	}
@@ -74,12 +78,12 @@ func acquireInstanceLock(cfgPath string) (releaseFn func(), err error) {
 // readLockInfo returns " (pid=42, started=…)" or "" if the lock
 // file can't be parsed. Best-effort — surfaced to the operator
 // purely for context.
-func readLockInfo(path string) string {
+func readLockInfo(path string) (info string, pid string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	var pid, started string
+	var started string
 	for _, line := range strings.Split(string(data), "\n") {
 		k, v, ok := strings.Cut(line, "=")
 		if !ok {
@@ -93,7 +97,7 @@ func readLockInfo(path string) string {
 		}
 	}
 	if pid == "" && started == "" {
-		return ""
+		return "", ""
 	}
 	parts := []string{}
 	if pid != "" {
@@ -114,7 +118,7 @@ func readLockInfo(path string) string {
 	if started != "" {
 		parts = append(parts, "started="+started)
 	}
-	return " (" + strings.Join(parts, ", ") + ")"
+	return " (" + strings.Join(parts, ", ") + ")", pid
 }
 
 // pidAlive reports whether the process with the given PID is still

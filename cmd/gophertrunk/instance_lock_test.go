@@ -40,6 +40,9 @@ func TestInstanceLock_AcquireAndRelease(t *testing.T) {
 	if !strings.Contains(err2.Error(), "another gophertrunk is running") {
 		t.Errorf("want 'another gophertrunk is running' in error, got %q", err2.Error())
 	}
+	if !strings.Contains(err2.Error(), "owner check: ps -p") {
+		t.Errorf("want owner check hint in error, got %q", err2.Error())
+	}
 
 	// After release, a fresh acquire succeeds.
 	release()

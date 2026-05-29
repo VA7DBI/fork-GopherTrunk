@@ -31,9 +31,10 @@ func acquireInstanceLock(cfgPath string) (releaseFn func(), err error) {
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			info := readWindowsLockInfo(lockPath)
+			ownerCheck := windowsOwnerCheckHint(lockPath)
 			return nil, fmt.Errorf(
-				"another gophertrunk is running against %s%s (lock file %s exists; stop the other instance, or if this looks stale, delete the lock file and retry)",
-				cfgPath, info, lockPath)
+				"another gophertrunk is running against %s%s%s (lock file %s exists; stop the other instance, or if this looks stale, delete the lock file and retry)",
+				cfgPath, info, ownerCheck, lockPath)
 		}
 		return nil, fmt.Errorf("instance lock: open %s: %w", lockPath, err)
 	}
@@ -80,4 +81,23 @@ func readWindowsLockInfo(path string) string {
 		return ""
 	}
 	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+func windowsOwnerCheckHint(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(k) != "pid" {
+			continue
+		}
+		pid := strings.TrimSpace(v)
+		if pid == "" {
+			break
+		}
+		return fmt.Sprintf(" (owner check: Get-Process -Id %s)", pid)
+	}
+	return ""
 }

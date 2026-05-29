@@ -32,6 +32,9 @@ func TestInstanceLockWindows_AcquireAndRelease(t *testing.T) {
 	if !strings.Contains(msg, "pid=") || !strings.Contains(msg, "started=") {
 		t.Fatalf("expected lock metadata in error: %q", msg)
 	}
+	if !strings.Contains(msg, "owner check: Get-Process -Id") {
+		t.Fatalf("expected owner check hint in error: %q", msg)
+	}
 
 	release()
 	release2, err := acquireInstanceLock(cfgPath)
