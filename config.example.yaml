@@ -320,6 +320,24 @@ sdr:
 #                                     #  chatter and keep only distress
 #                                     #  + urgency alerts
 
+# ADS-B / aviation. The protocol parser + bus + storage + REST +
+# panel scaffolding is live; the DSP frontend (1 Msps PPM demod +
+# Mode-S preamble correlation + 56/112-bit frame extraction)
+# ships in a follow-up PR. Operators producing Mode-S frames from
+# an external source (dump1090 hex output, captured BEAST stream,
+# etc.) and feeding them to events.KindAircraftReport will see
+# decoded reports on the bus / panel today.
+#
+# adsb:
+#   channels:
+#     - serial: "1090-antenna"        # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp; dedicate one
+#                                     #  RTL-SDR + 1090 MHz filter + LNA
+#                                     #  to this — the bandwidth needs
+#                                     #  ~1 Msps which crowds out other
+#                                     #  decoders on the same dongle)
+#       frequency_hz: 1_090_000_000   # 1090 MHz centre
+
 trunking:
   # call_timeout_ms: inactivity window after which the engine's
   # watchdog ends a call (publishes CallEnd with EndReasonTimeout

@@ -220,6 +220,36 @@ CREATE TABLE IF NOT EXISTS dsc_log (
 
 CREATE INDEX IF NOT EXISTS idx_dsc_log_time      ON dsc_log(received_at);
 CREATE INDEX IF NOT EXISTS idx_dsc_log_self_mmsi ON dsc_log(self_mmsi, received_at);
+
+-- ADS-B / Mode-S frames persisted from the decoder pipeline. One
+-- row per decoded extended-squitter message: ICAO 24-bit address +
+-- kind (identification / airborne-pos / velocity / ...) + kind-
+-- specific fields (callsign + category for identification; lat/lon
+-- + altitude for position; ground speed + track + vertical rate
+-- for velocity).
+CREATE TABLE IF NOT EXISTS aircraft_log (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at       INTEGER NOT NULL,             -- unix nanoseconds
+    icao              INTEGER NOT NULL DEFAULT 0,   -- 24-bit ICAO aircraft address
+    icao_hex          TEXT    NOT NULL DEFAULT '',  -- "4840D6" form for display
+    kind              TEXT    NOT NULL DEFAULT '',  -- "ident" | "airborne-pos" | "velocity" | ...
+    body              TEXT    NOT NULL DEFAULT '',  -- kind-specific summary
+    crc_valid         INTEGER NOT NULL DEFAULT 0,
+    callsign          TEXT    NOT NULL DEFAULT '',
+    category          INTEGER NOT NULL DEFAULT 0,
+    latitude          REAL    NOT NULL DEFAULT 0,
+    longitude         REAL    NOT NULL DEFAULT 0,
+    altitude_ft       INTEGER NOT NULL DEFAULT 0,
+    has_position      INTEGER NOT NULL DEFAULT 0,
+    has_altitude      INTEGER NOT NULL DEFAULT 0,
+    ground_speed_kn   INTEGER NOT NULL DEFAULT 0,
+    track_deg         REAL    NOT NULL DEFAULT 0,
+    vertical_rate_fpm INTEGER NOT NULL DEFAULT 0,
+    raw_hex           TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_aircraft_log_time ON aircraft_log(received_at);
+CREATE INDEX IF NOT EXISTS idx_aircraft_log_icao ON aircraft_log(icao, received_at);
 `
 
 func (d *DB) migrate() error {

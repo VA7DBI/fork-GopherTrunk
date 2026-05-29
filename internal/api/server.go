@@ -292,6 +292,12 @@ type Server struct {
 	// storage.DSCLog.
 	dsc DSCProvider
 
+	// adsb is the optional provider backing /api/v1/adsb/...
+	// routes (ADS-B aircraft report log). nil disables the
+	// routes. Implemented by the daemon over the SQLite-backed
+	// storage.AircraftLog.
+	adsb ADSBProvider
+
 	mu     sync.Mutex
 	srv    *http.Server
 	closed bool
@@ -506,6 +512,11 @@ type ServerOptions struct {
 	// marine DSC sequences. Wired by the daemon over the
 	// SQLite-backed storage.DSCLog.
 	DSC DSCProvider
+	// ADSB, when non-nil, enables the
+	// GET /api/v1/adsb/aircraft route serving recent decoded
+	// Mode-S frames. Wired by the daemon over the SQLite-backed
+	// storage.AircraftLog.
+	ADSB ADSBProvider
 	// CORS configures the cross-origin middleware. Off when
 	// AllowedOrigins is empty (the daemon emits no CORS headers).
 	// Set this when the browser-served SPA is loaded from an
@@ -608,6 +619,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		aprs:           opts.APRS,
 		ais:            opts.AIS,
 		dsc:            opts.DSC,
+		adsb:           opts.ADSB,
 	}, nil
 }
 
@@ -810,6 +822,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/aprs/packets", s.handleAPRSPackets)
 	mux.HandleFunc("GET /api/v1/ais/vessels", s.handleAISMessages)
 	mux.HandleFunc("GET /api/v1/dsc/messages", s.handleDSCMessages)
+	mux.HandleFunc("GET /api/v1/adsb/aircraft", s.handleADSBAircraft)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes

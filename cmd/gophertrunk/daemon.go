@@ -113,6 +113,7 @@ type Daemon struct {
 	aprsLog      *storage.APRSLog
 	vesselLog    *storage.VesselLog
 	dscLog       *storage.DSCLog
+	aircraftLog  *storage.AircraftLog
 	messageLog   *gtlog.MessageLog
 	retention    *storage.Retention
 	ccCache      *trunking.Cache
@@ -1073,6 +1074,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		d.dscLog = dl
 
+		acl, err := storage.NewAircraftLog(db, d.bus, log)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: aircraft log: %w", err)
+		}
+		d.aircraftLog = acl
+
 		if cfg.Retention.CallLogDays > 0 || cfg.Retention.FilesDays > 0 {
 			interval, err := retentionInterval(cfg.Retention.Interval)
 			if err != nil {
@@ -1141,6 +1149,9 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		}
 		if d.dscLog != nil {
 			opts.DSC = dscProvider{log: d.dscLog}
+		}
+		if d.aircraftLog != nil {
+			opts.ADSB = adsbProvider{log: d.aircraftLog}
 		}
 		if d.db != nil {
 			opts.History = api.HistoryFromStorage(d.db)
@@ -1322,6 +1333,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.dscLog != nil {
 		d.spawn(runCtx, "dsclog", false, func(ctx context.Context) error {
 			return d.dscLog.Run(ctx)
+		})
+	}
+	if d.aircraftLog != nil {
+		d.spawn(runCtx, "aircraftlog", false, func(ctx context.Context) error {
+			return d.aircraftLog.Run(ctx)
 		})
 	}
 	if d.messageLog != nil {
@@ -1618,6 +1634,9 @@ func (d *Daemon) Close() {
 		}
 		if d.dscLog != nil {
 			_ = d.dscLog.Close()
+		}
+		if d.aircraftLog != nil {
+			_ = d.aircraftLog.Close()
 		}
 		if d.messageLog != nil {
 			_ = d.messageLog.Close()
@@ -2392,6 +2411,15 @@ type dscProvider struct{ log *storage.DSCLog }
 
 func (d dscProvider) RecentDSCMessages(limit int) ([]storage.DSCMessage, error) {
 	return d.log.Recent(limit)
+}
+
+// adsbProvider adapts storage.AircraftLog into api.ADSBProvider so
+// the api package stays free of the storage import dependency.
+// Read-only — the decoder writes via the events bus.
+type adsbProvider struct{ log *storage.AircraftLog }
+
+func (a adsbProvider) RecentAircraftReports(limit int) ([]storage.AircraftReport, error) {
+	return a.log.Recent(limit)
 }
 
 // aprsSpec captures the broker-side wiring info for one configured
