@@ -68,6 +68,7 @@ to SQLite and exposes:
 
 - `GET /api/v1/fleetsync/messages`
 - `GET /api/v1/fleetsync/messages/{id}`
+- `GET /api/v1/fleetsync/stats`
 
 The list endpoint accepts optional query parameters:
 
@@ -76,6 +77,9 @@ The list endpoint accepts optional query parameters:
 - `destination_unit`
 - `command` (decimal or `0xNN`)
 - `since` / `until` (RFC3339)
+
+The stats endpoint accepts the same filters (except `limit`) and
+returns aggregate counters plus a per-command histogram.
 
 ## Export
 

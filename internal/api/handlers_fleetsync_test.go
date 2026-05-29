@@ -14,10 +14,13 @@ import (
 )
 
 type fakeFleetSyncProvider struct {
-	rows       []storage.FleetSyncMessage
-	listErr    error
-	getErr     error
-	lastFilter storage.FleetSyncFilter
+	rows            []storage.FleetSyncMessage
+	stats           storage.FleetSyncStats
+	listErr         error
+	getErr          error
+	statsErr        error
+	lastFilter      storage.FleetSyncFilter
+	lastStatsFilter storage.FleetSyncFilter
 }
 
 func (f *fakeFleetSyncProvider) ListFleetSyncMessages(filter storage.FleetSyncFilter) ([]storage.FleetSyncMessage, error) {
@@ -38,6 +41,14 @@ func (f *fakeFleetSyncProvider) GetFleetSyncMessage(id int64) (storage.FleetSync
 		}
 	}
 	return storage.FleetSyncMessage{}, sql.ErrNoRows
+}
+
+func (f *fakeFleetSyncProvider) FleetSyncStats(filter storage.FleetSyncFilter) (storage.FleetSyncStats, error) {
+	f.lastStatsFilter = filter
+	if f.statsErr != nil {
+		return storage.FleetSyncStats{}, f.statsErr
+	}
+	return f.stats, nil
 }
 
 func newFleetSyncTestServer(t *testing.T, prov FleetSyncProvider) *httptest.Server {
@@ -183,6 +194,49 @@ func TestFleetSyncMessagesReturns500OnProviderError(t *testing.T) {
 	prov := &fakeFleetSyncProvider{listErr: errors.New("boom")}
 	ts := newFleetSyncTestServer(t, prov)
 	resp, err := http.Get(ts.URL + "/api/v1/fleetsync/messages")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500", resp.StatusCode)
+	}
+}
+
+func TestFleetSyncStatsReturnsAggregate(t *testing.T) {
+	prov := &fakeFleetSyncProvider{stats: storage.FleetSyncStats{
+		Total:     3,
+		Emergency: 1,
+		Priority:  1,
+		FirstSeen: time.Unix(1700000000, 0).UTC(),
+		LastSeen:  time.Unix(1700000200, 0).UTC(),
+		Commands:  []storage.FleetSyncCommandStat{{Command: 0x01, Count: 2}, {Command: 0x02, Count: 1}},
+	}}
+	ts := newFleetSyncTestServer(t, prov)
+	resp, err := http.Get(ts.URL + "/api/v1/fleetsync/stats?command=0x01")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	if prov.lastStatsFilter.Command == nil || *prov.lastStatsFilter.Command != 0x01 {
+		t.Fatalf("command filter = %+v", prov.lastStatsFilter.Command)
+	}
+	var got FleetSyncStatsDTO
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Total != 3 || len(got.Commands) != 2 {
+		t.Fatalf("stats = %+v", got)
+	}
+}
+
+func TestFleetSyncStatsReturns500OnProviderError(t *testing.T) {
+	prov := &fakeFleetSyncProvider{statsErr: errors.New("boom")}
+	ts := newFleetSyncTestServer(t, prov)
+	resp, err := http.Get(ts.URL + "/api/v1/fleetsync/stats")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}

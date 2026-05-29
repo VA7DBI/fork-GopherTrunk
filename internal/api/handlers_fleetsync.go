@@ -16,6 +16,7 @@ import (
 type FleetSyncProvider interface {
 	ListFleetSyncMessages(filter storage.FleetSyncFilter) ([]storage.FleetSyncMessage, error)
 	GetFleetSyncMessage(id int64) (storage.FleetSyncMessage, error)
+	FleetSyncStats(filter storage.FleetSyncFilter) (storage.FleetSyncStats, error)
 }
 
 // FleetSyncMessageDTO is the JSON wire shape for FleetSync log endpoints.
@@ -34,6 +35,16 @@ type FleetSyncMessageDTO struct {
 	Priority   bool      `json:"priority"`
 	PayloadHex string    `json:"payload_hex"`
 	RawHex     string    `json:"raw_hex"`
+}
+
+// FleetSyncStatsDTO is the JSON wire shape for FleetSync stats.
+type FleetSyncStatsDTO struct {
+	Total     int64                          `json:"total"`
+	Emergency int64                          `json:"emergency"`
+	Priority  int64                          `json:"priority"`
+	FirstSeen time.Time                      `json:"first_seen"`
+	LastSeen  time.Time                      `json:"last_seen"`
+	Commands  []storage.FleetSyncCommandStat `json:"commands"`
 }
 
 func fleetSyncMessageToDTO(m storage.FleetSyncMessage) FleetSyncMessageDTO {
@@ -101,6 +112,34 @@ func (s *Server) handleFleetSyncMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, fleetSyncMessageToDTO(row))
+}
+
+// handleFleetSyncStats answers GET /api/v1/fleetsync/stats.
+func (s *Server) handleFleetSyncStats(w http.ResponseWriter, r *http.Request) {
+	if s.fleetsync == nil {
+		writeError(w, http.StatusServiceUnavailable, "fleetsync subsystem not enabled")
+		return
+	}
+	filter, err := parseFleetSyncFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	filter.Limit = 0 // stats endpoint is aggregate-only.
+	stats, err := s.fleetsync.FleetSyncStats(filter)
+	if err != nil {
+		s.log.Error("api: fleetsync stats", "err", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, FleetSyncStatsDTO{
+		Total:     stats.Total,
+		Emergency: stats.Emergency,
+		Priority:  stats.Priority,
+		FirstSeen: stats.FirstSeen,
+		LastSeen:  stats.LastSeen,
+		Commands:  stats.Commands,
+	})
 }
 
 func parseFleetSyncFilter(r *http.Request) (storage.FleetSyncFilter, error) {

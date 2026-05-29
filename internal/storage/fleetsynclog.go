@@ -42,6 +42,22 @@ type FleetSyncFilter struct {
 	Command         *uint8
 }
 
+// FleetSyncCommandStat is one command histogram bucket.
+type FleetSyncCommandStat struct {
+	Command uint8 `json:"command"`
+	Count   int64 `json:"count"`
+}
+
+// FleetSyncStats summarizes FleetSync messages for a filter range.
+type FleetSyncStats struct {
+	Total     int64                  `json:"total"`
+	Emergency int64                  `json:"emergency"`
+	Priority  int64                  `json:"priority"`
+	FirstSeen time.Time              `json:"first_seen"`
+	LastSeen  time.Time              `json:"last_seen"`
+	Commands  []FleetSyncCommandStat `json:"commands"`
+}
+
 // FleetSyncLog drains FleetSync events off the bus and persists them.
 type FleetSyncLog struct {
 	db        *DB
@@ -155,32 +171,8 @@ func (f *FleetSyncLog) List(filter FleetSyncFilter) ([]FleetSyncMessage, error) 
 	query := strings.Builder{}
 	query.WriteString(`SELECT id, received_at, version, command, subcommand, from_fleet, from_unit, to_fleet, to_unit,
 		all_flag, emergency, priority, payload, raw_bytes FROM fleetsync_log`)
-	clauses := make([]string, 0, 5)
-	args := make([]any, 0, 6)
-	if filter.SourceUnit != nil {
-		clauses = append(clauses, "from_unit = ?")
-		args = append(args, *filter.SourceUnit)
-	}
-	if filter.DestinationUnit != nil {
-		clauses = append(clauses, "to_unit = ?")
-		args = append(args, *filter.DestinationUnit)
-	}
-	if filter.Command != nil {
-		clauses = append(clauses, "command = ?")
-		args = append(args, *filter.Command)
-	}
-	if !filter.Since.IsZero() {
-		clauses = append(clauses, "received_at >= ?")
-		args = append(args, filter.Since.UnixNano())
-	}
-	if !filter.Until.IsZero() {
-		clauses = append(clauses, "received_at <= ?")
-		args = append(args, filter.Until.UnixNano())
-	}
-	if len(clauses) > 0 {
-		query.WriteString(" WHERE ")
-		query.WriteString(strings.Join(clauses, " AND "))
-	}
+	whereSQL, args := buildFleetSyncWhere(filter)
+	query.WriteString(whereSQL)
 	query.WriteString(" ORDER BY received_at DESC LIMIT ?")
 	args = append(args, limit)
 
@@ -199,6 +191,48 @@ func (f *FleetSyncLog) List(filter FleetSyncFilter) ([]FleetSyncMessage, error) 
 		out = append(out, msg)
 	}
 	return out, rows.Err()
+}
+
+// Stats computes aggregate FleetSync statistics and a command histogram
+// over the requested filter window.
+func (f *FleetSyncLog) Stats(filter FleetSyncFilter) (FleetSyncStats, error) {
+	whereSQL, args := buildFleetSyncWhere(filter)
+
+	query := `SELECT COUNT(*), COALESCE(SUM(emergency), 0), COALESCE(SUM(priority), 0), MIN(received_at), MAX(received_at) FROM fleetsync_log` + whereSQL
+	row := f.db.SQL().QueryRow(query, args...)
+	var (
+		stats               FleetSyncStats
+		firstSeen, lastSeen sql.NullInt64
+	)
+	if err := row.Scan(&stats.Total, &stats.Emergency, &stats.Priority, &firstSeen, &lastSeen); err != nil {
+		return FleetSyncStats{}, fmt.Errorf("storage/fleetsynclog: stats scan: %w", err)
+	}
+	if firstSeen.Valid {
+		stats.FirstSeen = time.Unix(0, firstSeen.Int64)
+	}
+	if lastSeen.Valid {
+		stats.LastSeen = time.Unix(0, lastSeen.Int64)
+	}
+
+	rows, err := f.db.SQL().Query(`SELECT command, COUNT(*) FROM fleetsync_log`+whereSQL+` GROUP BY command ORDER BY command`, args...)
+	if err != nil {
+		return FleetSyncStats{}, fmt.Errorf("storage/fleetsynclog: stats commands: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cmd uint8
+			cnt int64
+		)
+		if err := rows.Scan(&cmd, &cnt); err != nil {
+			return FleetSyncStats{}, fmt.Errorf("storage/fleetsynclog: stats commands scan: %w", err)
+		}
+		stats.Commands = append(stats.Commands, FleetSyncCommandStat{Command: cmd, Count: cnt})
+	}
+	if err := rows.Err(); err != nil {
+		return FleetSyncStats{}, fmt.Errorf("storage/fleetsynclog: stats commands rows: %w", err)
+	}
+	return stats, nil
 }
 
 func (f *FleetSyncLog) Get(id int64) (FleetSyncMessage, error) {
@@ -258,4 +292,33 @@ func (f *FleetSyncLog) Close() error {
 		}
 	})
 	return nil
+}
+
+func buildFleetSyncWhere(filter FleetSyncFilter) (string, []any) {
+	clauses := make([]string, 0, 5)
+	args := make([]any, 0, 5)
+	if filter.SourceUnit != nil {
+		clauses = append(clauses, "from_unit = ?")
+		args = append(args, *filter.SourceUnit)
+	}
+	if filter.DestinationUnit != nil {
+		clauses = append(clauses, "to_unit = ?")
+		args = append(args, *filter.DestinationUnit)
+	}
+	if filter.Command != nil {
+		clauses = append(clauses, "command = ?")
+		args = append(args, *filter.Command)
+	}
+	if !filter.Since.IsZero() {
+		clauses = append(clauses, "received_at >= ?")
+		args = append(args, filter.Since.UnixNano())
+	}
+	if !filter.Until.IsZero() {
+		clauses = append(clauses, "received_at <= ?")
+		args = append(args, filter.Until.UnixNano())
+	}
+	if len(clauses) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(clauses, " AND "), args
 }

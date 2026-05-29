@@ -768,6 +768,7 @@ func (s *Server) routes() *http.ServeMux {
 	// Read-only; the decoder writes via the events bus -> FleetSyncLog.
 	mux.HandleFunc("GET /api/v1/fleetsync/messages", s.handleFleetSyncMessages)
 	mux.HandleFunc("GET /api/v1/fleetsync/messages/{id}", s.handleFleetSyncMessage)
+	mux.HandleFunc("GET /api/v1/fleetsync/stats", s.handleFleetSyncStats)
 
 	// Embedded SPA at "/" — served only when the daemon was linked
 	// against a populated web/dist embed. SPA history routes

@@ -2075,6 +2075,10 @@ func (p fleetsyncProvider) GetFleetSyncMessage(id int64) (storage.FleetSyncMessa
 	return p.log.Get(id)
 }
 
+func (p fleetsyncProvider) FleetSyncStats(filter storage.FleetSyncFilter) (storage.FleetSyncStats, error) {
+	return p.log.Stats(filter)
+}
+
 // pocsagSpec captures the broker-side wiring info for one configured
 // POCSAG paging channel. Index-aligned with Daemon.pocsagReceivers so
 // the Run loop can spawn each receiver without re-walking the YAML.

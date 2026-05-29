@@ -145,3 +145,58 @@ func TestFleetSyncLogGetMissing(t *testing.T) {
 func isSQLNoRows(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
 }
+
+func TestFleetSyncLogStats(t *testing.T) {
+	log, bus, _ := openFleetSyncTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = log.Run(ctx) }()
+
+	publish := func(ts time.Time, cmd uint8, emergency, priority bool) {
+		bus.Publish(events.Event{Kind: events.KindFleetSyncMessage, Payload: radiofleetync.Message{
+			Timestamp: ts, Version: radiofleetync.VersionFleetSync1, Command: cmd,
+			FromUnit: 100, ToUnit: 200, Emergency: emergency, Priority: priority,
+		}})
+	}
+	publish(time.Unix(1700000000, 0), 0x01, false, false)
+	publish(time.Unix(1700000100, 0), 0x02, true, false)
+	publish(time.Unix(1700000200, 0), 0x01, false, true)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		rows, _ := log.List(FleetSyncFilter{Limit: 10})
+		if len(rows) == 3 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	stats, err := log.Stats(FleetSyncFilter{})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.Total != 3 || stats.Emergency != 1 || stats.Priority != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if stats.FirstSeen.IsZero() || stats.LastSeen.IsZero() || !stats.LastSeen.After(stats.FirstSeen) {
+		t.Fatalf("first/last seen = %s / %s", stats.FirstSeen, stats.LastSeen)
+	}
+	if len(stats.Commands) != 2 {
+		t.Fatalf("commands len = %d, want 2", len(stats.Commands))
+	}
+	if stats.Commands[0].Command != 0x01 || stats.Commands[0].Count != 2 {
+		t.Fatalf("commands[0] = %+v", stats.Commands[0])
+	}
+	if stats.Commands[1].Command != 0x02 || stats.Commands[1].Count != 1 {
+		t.Fatalf("commands[1] = %+v", stats.Commands[1])
+	}
+
+	cmd := uint8(0x02)
+	filtered, err := log.Stats(FleetSyncFilter{Command: &cmd})
+	if err != nil {
+		t.Fatalf("Stats filtered: %v", err)
+	}
+	if filtered.Total != 1 || len(filtered.Commands) != 1 || filtered.Commands[0].Command != 0x02 {
+		t.Fatalf("filtered stats = %+v", filtered)
+	}
+}
