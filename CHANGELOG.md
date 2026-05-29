@@ -9,6 +9,52 @@ for tagged releases.
 
 ### Added
 
+- **ADS-B aviation — protocol layer + bus / storage / REST / panel
+  scaffolding.** First slice of Phase 5 ADS-B: every commercial
+  passenger flight, most general-aviation, and all military
+  aircraft over US / EU airspace continuously broadcasts on
+  1090 MHz — the same data that powers FlightRadar24 /
+  FlightAware / adsb.lol / OpenSky. GopherTrunk now has the
+  protocol layer to decode it on the operator's own SDR.
+  New `internal/radio/adsb` package decodes ICAO Annex 10 Vol IV
+  Mode-S frames: CRC-24 verification with polynomial 0xFFF409
+  (verified directly on DF 11 / 17 / 18; the ICAO-overlay scheme
+  for DF 0 / 4 / 5 / 20 / 21 recovers the address by XORing the
+  computed CRC). Extended-squitter (DF 17 / 18) type-code
+  dispatch for the operator-visible majority: identification
+  (TC 1-4 with the 6-bit ICAO alphabet decoding 8-char
+  callsigns), airborne position (TC 9-18 / 20-22 with CPR-encoded
+  lat/lon and 12-bit Q-bit altitude at 25-ft resolution), surface
+  position (TC 5-8), airborne velocity (TC 19 with ground speed
+  + track for subtypes 1/2, air speed + heading for 3/4, common
+  vertical-rate field). Globally-unambiguous CPR position
+  decoder (DO-260B §2.2.3.2.3.7) from an even+odd pair, with NL
+  table matching the dump1090 reference. Validated against the
+  canonical mode-s.org reference samples (identification
+  "KLM1023" / ICAO 4840D6; CPR pair decodes to lat 52.2572 N /
+  lon 3.91937 E / alt 38000 ft; velocity GS 159 kn / track ≈ 183°
+  / VR -832 fpm).
+  New `events.KindAircraftReport` event + `storage.AircraftReport`
+  payload + `aircraft_log` SQLite table (one row per decoded
+  frame, indexes on `(received_at)` and `(icao, received_at)`).
+  `storage.AircraftLog` subscriber drains the bus and writes one
+  row per message; the daemon spawns it alongside `dscLog` /
+  `vesselLog` / `aprsLog` / `pagerLog`. New REST endpoint
+  `GET /api/v1/adsb/aircraft?limit=N` (default 200, max 5000)
+  and web panel `/adsb` with columns Received / ICAO / Kind /
+  Callsign / Lat-Lon / Alt / GS-Track / VR. CRC-failed frames
+  highlight yellow.
+  Tests: 13 protocol-layer (identification decode, CPR pair
+  global decode against the dump1090 reference vectors, velocity
+  decode, all-call DF 11, short-frame safety, CRC self-
+  consistency + corruption detection, NL table boundary values,
+  altitude Q=1 round-trip), 4 storage (insert position / ident /
+  filter / order), 3 REST (503 / list / limit), 5 web (empty /
+  position / ident / velocity / error). All passing.
+- DSP frontend (1 Msps PPM + Mode-S preamble correlation +
+  frame extraction) follows as the next slice. See
+  [docs/adsb.md](docs/adsb.md).
+
 - **DSC marine — protocol layer + bus / storage / REST / panel
   scaffolding.** First slice of Phase 5 DSC: GMDSS Digital
   Selective Calling messages — distress alerts, urgency / safety
