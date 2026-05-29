@@ -7,6 +7,35 @@ for tagged releases.
 
 ## [Unreleased]
 
+## [v0.2.6] — 2026-05-29
+
+Phase 5 expands across marine + aviation and the panels gain a shared
+map. AIS reaches end-to-end live: #427 lands the protocol layer + bus /
+storage / REST / `/ais` panel scaffolding, #428 wires the 9600 Bd GMSK
+DSP frontend + receiver glue (FM demod → 76,800 sps resample → GFSK
+matched filter at BT 0.4 → Mueller-Müller timing → NRZI → HDLC → CRC →
+`ais.Decode`), so pinning one SDR to 161.975 / 162.025 MHz lights up
+vessel positions. #433 adds the DSC marine scaffolding (ITU-R M.493-15
+distress / urgency / safety / routine call decode, BCH(10,7) syndrome
+check, MMSI + position codecs) and #434 the ADS-B aviation scaffolding
+(ICAO Annex 10 Mode-S CRC-24, DF 17 / 18 extended-squitter
+identification / position / velocity decode, globally-unambiguous CPR).
+#435 ties them together with a shared Leaflet `PositionMap` across the
+APRS / AIS / DSC / ADS-B panels — per-protocol marker colours, XSS-safe
+tooltips, camera auto-fit. Plus #419 ports the full APRS Mic-E decoder.
+Trunking robustness: #426 distinguishes a carrier-drop natural call end
+from a silent-timeout reap and #431 fans raw IMBE / AMBE frames out to
+`rawFrameSinks` (both issue #356); #417 makes `sdr.devices` a strict-mode
+allowlist (issue #264); #418 settles the warmup→step-0 race on Windows
+clone dongles (issue #395); #423 builds the wideband voice taps before
+the voice pool (fix #422) and #424 makes voice-grant preemption
+frequency-aware; #425 corrects the Motorola alias cipher stop
+recurrence. Issue #402 (RTL-SDR DC-spike on P25 control) continues:
+#429 fixes the DDA-AFC handoff regression that froze a wrong carrier
+offset, #430 defaults to CoarseAFC-alone and fixes the 10x AFC
+diagnostic, and #432 swaps in an adaptive 4-level C4FM slicer that
+tracks an asymmetric eye.
+
 ### Added
 
 - **Live map across APRS / AIS / DSC / ADS-B.** Position-bearing
