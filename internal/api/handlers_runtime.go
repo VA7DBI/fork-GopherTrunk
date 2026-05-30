@@ -87,6 +87,22 @@ type RuntimeDTO struct {
 	// failed to open, etc.). Surfaced so the SPA Dashboard can pin
 	// them until the operator dismisses them.
 	StartupWarnings []string `json:"startup_warnings,omitempty"`
+	// LastFatalError surfaces the most recent essential-component
+	// failure captured by the daemon supervisor loop.
+	LastFatalError string `json:"last_fatal_error,omitempty"`
+	// LastFatalComponent is the component label associated with
+	// LastFatalError (for example "http" or "ccdecoder").
+	LastFatalComponent string `json:"last_fatal_component,omitempty"`
+	// LastFatalAt is the UTC timestamp when LastFatalError was
+	// captured.
+	LastFatalAt time.Time `json:"last_fatal_at,omitempty"`
+	// LastFatalClass is a compact machine-friendly category for
+	// LastFatalError (for example bind_conflict, instance_lock,
+	// sdr_disconnect).
+	LastFatalClass string `json:"last_fatal_class,omitempty"`
+	// LastFatalHint is an operator-facing remediation hint derived
+	// from LastFatalClass.
+	LastFatalHint string `json:"last_fatal_hint,omitempty"`
 }
 
 // PlutoRuntimeDTO is the runtime health snapshot for the plutoplus
@@ -99,6 +115,7 @@ type PlutoRuntimeDTO struct {
 	CommandFailures   uint64 `json:"command_failures"`
 	StreamFailures    uint64 `json:"stream_failures"`
 	UnknownFailures   uint64 `json:"unknown_failures"`
+	LastFailureAt     time.Time `json:"last_failure_at,omitempty"`
 }
 
 // ToneProfileDTO is the minimal projection of a tone-out profile —

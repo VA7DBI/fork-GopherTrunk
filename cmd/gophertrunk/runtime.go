@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/api"
@@ -91,6 +92,7 @@ func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 		CommandFailures:   pm.CommandFailures,
 		StreamFailures:    pm.StreamFailures,
 		UnknownFailures:   pm.UnknownFailures,
+		LastFailureAt:     pm.LastFailureAt,
 	}
 	if cfg.Recordings.Equalizer.StepSize != 0 {
 		dto.RecordingEQStepSize = formatFloat(float64(cfg.Recordings.Equalizer.StepSize))
@@ -110,8 +112,30 @@ func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 	if r.daemon != nil {
 		dto.ConfigPath = r.daemon.ConfigPath()
 		dto.StartupWarnings = r.daemon.StartupWarnings()
+		if ferr, fat, src := r.daemon.FatalStatus(); ferr != nil {
+			dto.LastFatalError = ferr.Error()
+			dto.LastFatalAt = fat
+			dto.LastFatalComponent = src
+			dto.LastFatalClass, dto.LastFatalHint = classifyFatal(src, ferr.Error())
+		}
 	}
 	return dto
+}
+
+func classifyFatal(component, msg string) (class string, hint string) {
+	lmsg := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lmsg, "another gophertrunk is running") || strings.Contains(lmsg, ".gophertrunk.lock"):
+		return "instance_lock", "Another instance is holding the config lock; stop the other process or remove a stale .gophertrunk.lock file."
+	case strings.Contains(lmsg, "address already in use") || (strings.Contains(lmsg, "bind") && (component == "http" || component == "grpc" || component == "rigctld")):
+		return "bind_conflict", "A listener port is already in use; change the configured address/port or stop the conflicting process."
+	case strings.Contains(lmsg, "permission denied"):
+		return "permission_denied", "Check filesystem/device permissions and rerun with an account that can access configured paths/devices."
+	case strings.Contains(lmsg, "iq stream") || strings.Contains(lmsg, "device disconnected") || strings.Contains(lmsg, "usb"):
+		return "sdr_disconnect", "SDR stream dropped unexpectedly; check USB cabling/power, then restart or allow supervisor restart."
+	default:
+		return "essential_component_failure", "An essential daemon component failed; inspect LastFatalComponent and logs for stack-specific details."
+	}
 }
 
 func sdrBackendNames() []string {

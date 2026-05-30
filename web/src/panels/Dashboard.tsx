@@ -3,6 +3,8 @@ import { api } from "../api/client";
 import type { PlutoRuntimeDTO, RuntimeDTO } from "../api/types";
 import { selectClientConfig, useShared } from "../store/shared";
 
+const PLUTO_RECENT_WINDOW_MS = 10 * 60 * 1000;
+
 // Dashboard: top-line counts + a peek at the last few events. The
 // fuller dashboard (with charts) is a follow-up PR; this one
 // proves the live-update wiring works end-to-end.
@@ -200,17 +202,21 @@ function plutoFailureBreakdown(pluto?: PlutoRuntimeDTO): string {
 
 function plutoSeverity(pluto?: PlutoRuntimeDTO): { label: string; className: string } {
   const failures = plutoFailureTotal(pluto);
+  const recent = plutoFailuresRecent(pluto);
   switch (true) {
-    case failures >= 5:
+    case failures >= 5 && recent:
       return { label: "unstable", className: "pill-err" };
-    case failures > 0 || (pluto?.reconnects ?? 0) >= 3:
+    case (failures > 0 && recent) || ((pluto?.reconnects ?? 0) >= 3 && recent):
       return { label: "degraded", className: "pill-warn" };
+    case failures > 0:
+      return { label: "historical", className: "pill-ok" };
     default:
       return { label: "stable", className: "pill-ok" };
   }
 }
 
 function plutoRemediationHint(pluto?: PlutoRuntimeDTO): string {
+  if (!plutoFailuresRecent(pluto)) return "";
   const [stage, count] = plutoDominantFailure(pluto);
   if (count === 0) return "";
   switch (stage) {
@@ -244,6 +250,19 @@ function plutoDominantFailure(pluto?: PlutoRuntimeDTO): [string, number] {
     }
   }
   return [maxStage, maxCount];
+}
+
+function plutoFailuresRecent(pluto?: PlutoRuntimeDTO): boolean {
+  if (!pluto) return false;
+  const lastFailureAt = pluto.last_failure_at;
+  if (!lastFailureAt) {
+    return plutoFailureTotal(pluto) > 0;
+  }
+  const parsed = Date.parse(lastFailureAt);
+  if (Number.isNaN(parsed)) {
+    return plutoFailureTotal(pluto) > 0;
+  }
+  return Date.now() - parsed <= PLUTO_RECENT_WINDOW_MS;
 }
 
 function StatCard({

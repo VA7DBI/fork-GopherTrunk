@@ -307,6 +307,7 @@ type PlutoRuntimeDTO struct {
 	CommandFailures   uint64 `json:"command_failures"`
 	StreamFailures    uint64 `json:"stream_failures"`
 	UnknownFailures   uint64 `json:"unknown_failures"`
+	LastFailureAt     time.Time `json:"last_failure_at,omitempty"`
 }
 
 // ToneProfileDTO mirrors api.ToneProfileDTO.

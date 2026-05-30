@@ -226,6 +226,7 @@ export interface PlutoRuntimeDTO {
   command_failures?: number;
   stream_failures?: number;
   unknown_failures?: number;
+  last_failure_at?: string;
 }
 
 // SettingsPatch mirrors the daemon's PATCH /api/v1/settings body.

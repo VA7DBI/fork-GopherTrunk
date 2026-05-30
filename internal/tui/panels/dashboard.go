@@ -14,6 +14,8 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/tui/theme"
 )
 
+const plutoRecentWindow = 10 * time.Minute
+
 // DashboardPanel is the at-a-glance landing screen. It is a pure
 // renderer over SharedState; it owns no local state.
 type DashboardPanel struct{}
@@ -127,7 +129,8 @@ func (p *DashboardPanel) healthBody(s *state.SharedState) string {
 	}
 	if plutoDashboardVisible(s.Runtime) {
 		pr := s.Runtime.PlutoRuntime
-		severity, label, style := plutoDashboardSeverity(pr)
+		now := time.Now().UTC()
+		severity, label, style := plutoDashboardSeverity(pr, now)
 		_ = severity
 		lines = append(lines, "Pluto Plus: "+style.Render(label))
 		lines = append(lines, dashDim.Render(
@@ -136,7 +139,7 @@ func (p *DashboardPanel) healthBody(s *state.SharedState) string {
 		if details := plutoFailureBreakdown(pr); details != "" {
 			lines = append(lines, dashDim.Render("  "+details))
 		}
-		if hint := plutoRemediationHint(pr); hint != "" {
+		if hint := plutoRemediationHint(pr, now); hint != "" {
 			lines = append(lines, dashDim.Render("  hint: "+hint))
 		}
 	}
@@ -184,19 +187,25 @@ func plutoFailureBreakdown(pr client.PlutoRuntimeDTO) string {
 	return strings.Join(parts, "  ·  ")
 }
 
-func plutoDashboardSeverity(pr client.PlutoRuntimeDTO) (string, string, lipgloss.Style) {
+func plutoDashboardSeverity(pr client.PlutoRuntimeDTO, now time.Time) (string, string, lipgloss.Style) {
 	failures := plutoFailureTotal(pr)
+	recent := plutoFailuresRecent(pr, now)
 	switch {
-	case failures >= 5:
+	case failures >= 5 && recent:
 		return "err", "unstable", dashErr
-	case failures > 0 || pr.Reconnects >= 3:
+	case (failures > 0 && recent) || (pr.Reconnects >= 3 && recent):
 		return "warn", "degraded", dashWarn
+	case failures > 0:
+		return "ok", "historical", dashOK
 	default:
 		return "ok", "stable", dashOK
 	}
 }
 
-func plutoRemediationHint(pr client.PlutoRuntimeDTO) string {
+func plutoRemediationHint(pr client.PlutoRuntimeDTO, now time.Time) string {
+	if !plutoFailuresRecent(pr, now) {
+		return ""
+	}
 	stage, count := plutoDominantFailure(pr)
 	if count == 0 {
 		return ""
@@ -213,6 +222,19 @@ func plutoRemediationHint(pr client.PlutoRuntimeDTO) string {
 	default:
 		return "inspect daemon logs for plutoplus transport error details"
 	}
+}
+
+func plutoFailuresRecent(pr client.PlutoRuntimeDTO, now time.Time) bool {
+	if pr.LastFailureAt.IsZero() {
+		return plutoFailureTotal(pr) > 0
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if pr.LastFailureAt.After(now) {
+		return true
+	}
+	return now.Sub(pr.LastFailureAt) <= plutoRecentWindow
 }
 
 func plutoDominantFailure(pr client.PlutoRuntimeDTO) (string, uint64) {

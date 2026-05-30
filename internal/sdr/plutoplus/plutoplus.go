@@ -101,6 +101,7 @@ var (
 	metricCommandFailures   atomic.Uint64
 	metricStreamFailures    atomic.Uint64
 	metricUnknownFailures   atomic.Uint64
+	metricLastFailureNanos  atomic.Int64
 )
 
 // RuntimeMetrics is a snapshot of Pluto runtime health counters.
@@ -112,10 +113,16 @@ type RuntimeMetrics struct {
 	CommandFailures   uint64
 	StreamFailures    uint64
 	UnknownFailures   uint64
+	LastFailureAt     time.Time
 }
 
 // RuntimeMetricsSnapshot returns process-wide Pluto health counters.
 func RuntimeMetricsSnapshot() RuntimeMetrics {
+	ns := metricLastFailureNanos.Load()
+	last := time.Time{}
+	if ns > 0 {
+		last = time.Unix(0, ns).UTC()
+	}
 	return RuntimeMetrics{
 		Reconnects:        metricReconnects.Load(),
 		ReconnectFailures: metricReconnectFailures.Load(),
@@ -124,6 +131,7 @@ func RuntimeMetricsSnapshot() RuntimeMetrics {
 		CommandFailures:   metricCommandFailures.Load(),
 		StreamFailures:    metricStreamFailures.Load(),
 		UnknownFailures:   metricUnknownFailures.Load(),
+		LastFailureAt:     last,
 	}
 }
 
@@ -452,6 +460,7 @@ func (d *device) reconnect(ctx context.Context) error {
 }
 
 func recordFailureStage(err error) {
+	metricLastFailureNanos.Store(time.Now().UTC().UnixNano())
 	stage, ok := ErrorStage(err)
 	if !ok {
 		metricUnknownFailures.Add(1)

@@ -63,4 +63,22 @@ describe("Dashboard Pluto health", () => {
 		expect(screen.getByText(/stream 4/)).toBeInTheDocument();
 		expect(screen.getByText(/hint: check USB\/network stability and host performance under load/i)).toBeInTheDocument();
 	});
+
+	it("classifies stale Pluto failures as historical and suppresses remediation hint", async () => {
+		const stale = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+		vi.mocked(api.runtime).mockResolvedValue({
+			sdr_backends: ["plutoplus"],
+			pluto_runtime: {
+				reconnects: 5,
+				dial_failures: 9,
+				last_failure_at: stale,
+			},
+		});
+
+		render(<Dashboard />);
+
+		expect(await screen.findByText("Pluto Plus health")).toBeInTheDocument();
+		expect(screen.getByText("historical")).toBeInTheDocument();
+		expect(screen.queryByText(/^hint:/i)).toBeNull();
+	});
 });
