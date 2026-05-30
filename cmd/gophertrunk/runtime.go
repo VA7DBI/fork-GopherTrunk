@@ -7,6 +7,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/api"
 	"github.com/MattCheramie/GopherTrunk/internal/config"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/plutoplus"
 	"github.com/MattCheramie/GopherTrunk/internal/voice/player"
 )
 
@@ -80,6 +81,16 @@ func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 
 		MetricsEnabled: r.metrics,
 		VocoderMap:     vocoderProtocolMap,
+	}
+	pm := plutoplus.RuntimeMetricsSnapshot()
+	dto.PlutoRuntime = api.PlutoRuntimeDTO{
+		Reconnects:        pm.Reconnects,
+		ReconnectFailures: pm.ReconnectFailures,
+		DialFailures:      pm.DialFailures,
+		HandshakeFailures: pm.HandshakeFailures,
+		CommandFailures:   pm.CommandFailures,
+		StreamFailures:    pm.StreamFailures,
+		UnknownFailures:   pm.UnknownFailures,
 	}
 	if cfg.Recordings.Equalizer.StepSize != 0 {
 		dto.RecordingEQStepSize = formatFloat(float64(cfg.Recordings.Equalizer.StepSize))

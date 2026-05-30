@@ -46,6 +46,15 @@ func TestHandleRuntime_ServesDTO(t *testing.T) {
 		AudioBackends:     []string{"default", "null"},
 		RetentionInterval: 1 * time.Hour,
 		VocoderMap:        map[string]string{"p25": "imbe"},
+		PlutoRuntime: PlutoRuntimeDTO{
+			Reconnects:        3,
+			ReconnectFailures: 2,
+			DialFailures:      5,
+			HandshakeFailures: 1,
+			CommandFailures:   7,
+			StreamFailures:    11,
+			UnknownFailures:   13,
+		},
 	}}
 	s, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Bus: bus, Runtime: fake})
 	if err != nil {
@@ -70,5 +79,8 @@ func TestHandleRuntime_ServesDTO(t *testing.T) {
 	}
 	if out.RetentionInterval != fake.dto.RetentionInterval {
 		t.Errorf("retention interval lost: got %v want %v", out.RetentionInterval, fake.dto.RetentionInterval)
+	}
+	if out.PlutoRuntime != fake.dto.PlutoRuntime {
+		t.Errorf("pluto runtime counters lost in runtime DTO round-trip: got=%+v want=%+v", out.PlutoRuntime, fake.dto.PlutoRuntime)
 	}
 }

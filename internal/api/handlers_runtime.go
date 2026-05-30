@@ -72,6 +72,10 @@ type RuntimeDTO struct {
 
 	// MetricsEnabled mirrors metrics.enabled config.
 	MetricsEnabled bool `json:"metrics_enabled"`
+	// PlutoRuntime surfaces plutoplus transport health counters so
+	// operators can inspect reconnect/failure behavior from
+	// /api/v1/runtime without scraping Prometheus.
+	PlutoRuntime PlutoRuntimeDTO `json:"pluto_runtime"`
 
 	// ConfigPath is the absolute path to the config.yaml backing this
 	// daemon, or empty when the daemon was started without a -config
@@ -83,6 +87,18 @@ type RuntimeDTO struct {
 	// failed to open, etc.). Surfaced so the SPA Dashboard can pin
 	// them until the operator dismisses them.
 	StartupWarnings []string `json:"startup_warnings,omitempty"`
+}
+
+// PlutoRuntimeDTO is the runtime health snapshot for the plutoplus
+// backend.
+type PlutoRuntimeDTO struct {
+	Reconnects        uint64 `json:"reconnects"`
+	ReconnectFailures uint64 `json:"reconnect_failures"`
+	DialFailures      uint64 `json:"dial_failures"`
+	HandshakeFailures uint64 `json:"handshake_failures"`
+	CommandFailures   uint64 `json:"command_failures"`
+	StreamFailures    uint64 `json:"stream_failures"`
+	UnknownFailures   uint64 `json:"unknown_failures"`
 }
 
 // ToneProfileDTO is the minimal projection of a tone-out profile —
