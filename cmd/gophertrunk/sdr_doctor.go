@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"text/tabwriter"
+	"time"
 
+	"github.com/MattCheramie/GopherTrunk/internal/config"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/plutoplus"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/purego"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/usb"
 )
@@ -21,6 +25,7 @@ import (
 func runSDRDoctor(args []string) {
 	fs := flag.NewFlagSet("sdr doctor", flag.ExitOnError)
 	verbose := fs.Bool("v", false, "include extra columns (driver description)")
+	configPath := fs.String("config", "", "optional config file path (used to inspect sdr.pluto_plus entries)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -65,10 +70,11 @@ func runSDRDoctor(args []string) {
 			fmt.Println("  - Run `lsusb` and confirm the dongle's VID:PID appears (RTL-SDR is typically 0bda:2832 or 0bda:2838).")
 			fmt.Println("  - Confirm /sys/bus/usb/devices exists and your user has read permission.")
 		}
-		return
+	} else {
+		printDoctorRows(rows, *verbose)
 	}
 
-	printDoctorRows(rows, *verbose)
+	printPlutoDoctor(*configPath)
 }
 
 // printDoctorRows writes a tab-aligned per-dongle status table to
@@ -112,4 +118,107 @@ func printDoctorRows(rows []usb.DriverBinding, verbose bool) {
 		}
 	}
 	tw.Flush()
+}
+
+type plutoDoctorRow struct {
+	Transport string
+	Endpoint  string
+	Serial    string
+	Status    string
+	Stage     string
+	Hint      string
+}
+
+func printPlutoDoctor(configPath string) {
+	specs := doctorPlutoSpecs(configPath)
+	if len(specs) == 0 {
+		return
+	}
+
+	rows := make([]plutoDoctorRow, 0, len(specs))
+	for i, spec := range specs {
+		d := plutoplus.New([]plutoplus.Spec{spec}, nil)
+		dev, err := d.Open(0)
+		transport := spec.Transport
+		if strings.TrimSpace(transport) == "" {
+			transport = plutoplus.TransportTCP
+		}
+		endpoint := spec.Addr
+		if transport == plutoplus.TransportUSB && strings.TrimSpace(endpoint) == "" {
+			endpoint = plutoplus.DefaultUSBAddr
+		}
+		serial := spec.Serial
+		if strings.TrimSpace(serial) == "" {
+			serial = fmt.Sprintf("plutoplus[%d]", i)
+		}
+		if err == nil {
+			_ = dev.Close()
+			rows = append(rows, plutoDoctorRow{
+				Transport: transport,
+				Endpoint:  endpoint,
+				Serial:    serial,
+				Status:    "OK",
+				Stage:     "-",
+				Hint:      "endpoint reachable and handshake succeeded",
+			})
+			continue
+		}
+
+		stage := "unknown"
+		hint := "inspect endpoint logs and transport settings"
+		if s, ok := plutoplus.ErrorStage(err); ok {
+			stage = string(s)
+			switch s {
+			case plutoplus.StageDial:
+				hint = "endpoint unreachable; check host/port, USB network interface, and firewall"
+			case plutoplus.StageHandshake:
+				hint = "wrong service or protocol; expected rtl_tcp-compatible header"
+			case plutoplus.StageCommand:
+				hint = "command channel write failed; inspect endpoint stability"
+			case plutoplus.StageStream:
+				hint = "stream read failed; check link quality and endpoint runtime"
+			}
+		}
+		rows = append(rows, plutoDoctorRow{
+			Transport: transport,
+			Endpoint:  endpoint,
+			Serial:    serial,
+			Status:    "BAD",
+			Stage:     stage,
+			Hint:      hint,
+		})
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "")
+	fmt.Fprintln(tw, "PLUTO TRANSPORT\tENDPOINT\tSERIAL\tSTATUS\tSTAGE\tNEXT-STEP")
+	for _, r := range rows {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.Transport, r.Endpoint, r.Serial, r.Status, r.Stage, r.Hint)
+	}
+	tw.Flush()
+}
+
+func doctorPlutoSpecs(configPath string) []plutoplus.Spec {
+	if strings.TrimSpace(configPath) == "" {
+		return []plutoplus.Spec{{Transport: plutoplus.TransportUSB}}
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sdr doctor: could not load config %q: %v\n", configPath, err)
+		return nil
+	}
+	if len(cfg.SDR.PlutoPlus) == 0 {
+		return []plutoplus.Spec{{Transport: plutoplus.TransportUSB}}
+	}
+	out := make([]plutoplus.Spec, 0, len(cfg.SDR.PlutoPlus))
+	for _, p := range cfg.SDR.PlutoPlus {
+		out = append(out, plutoplus.Spec{
+			Addr:           p.Addr,
+			Serial:         p.Serial,
+			Role:           p.Role,
+			Transport:      p.Transport,
+			ConnectTimeout: time.Duration(p.ConnectTimeoutMs) * time.Millisecond,
+		})
+	}
+	return out
 }

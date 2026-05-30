@@ -65,6 +65,15 @@ func (e *TransportError) Error() string {
 
 func (e *TransportError) Unwrap() error { return e.Err }
 
+// ErrorStage extracts a plutoplus Stage from err when available.
+func ErrorStage(err error) (Stage, bool) {
+	var te *TransportError
+	if !errors.As(err, &te) {
+		return "", false
+	}
+	return te.Stage, true
+}
+
 func isStage(err error, stage Stage) bool {
 	var te *TransportError
 	if !errors.As(err, &te) {

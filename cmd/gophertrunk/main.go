@@ -78,7 +78,7 @@ USAGE:
   gophertrunk -web                    open the bundled web UI after daemon is ready
   gophertrunk -headless               skip the launcher (default for non-TTY stdin)
   gophertrunk sdr list [--probe]      list discovered SDR devices (--probe opens each to fill TUNER + gains)
-  gophertrunk sdr doctor [-v]         diagnose why a dongle is not recognized (per-OS driver-binding report)
+	gophertrunk sdr doctor [-v] [--config path]  diagnose SDR binding + Pluto endpoint reachability
   gophertrunk audio list              list audio output devices
   gophertrunk tui [-server URL]       open the operator TUI against a remote daemon
   gophertrunk decode [flags]          decode a captured .raw frame stream into a WAV
@@ -287,7 +287,7 @@ func runDaemon(args []string) {
 
 func runSDR(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: gophertrunk sdr (list [--probe] | doctor [-v])")
+		fmt.Fprintln(os.Stderr, "usage: gophertrunk sdr (list [--probe] | doctor [-v] [--config path])")
 		os.Exit(2)
 	}
 	switch args[0] {
