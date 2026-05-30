@@ -774,6 +774,13 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 					iqSrc = br
 					tuner = br
 				}
+				iqCorrect := false
+				for _, dev := range cfg.SDR.Devices {
+					if dev.Serial == controlEntry.Info.Serial {
+						iqCorrect = dev.IQCorrect
+						break
+					}
+				}
 				d.ccDecoderOpts = ccdecoder.Options{
 					Bus:          d.bus,
 					Log:          log,
@@ -782,6 +789,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 					Systems:      d.systems,
 					SampleRateHz: float64(cfg.SDR.SampleRate),
 					Metrics:      iqObs,
+					IQCorrect:    iqCorrect,
 				}
 				d.controlSerial = controlEntry.Info.Serial
 				d.controlSampleRate = cfg.SDR.SampleRate
