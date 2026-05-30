@@ -12,6 +12,16 @@ contained to its own package and lands independently. The historic
 log of shipped work lives in
 [`CHANGELOG.md`](https://github.com/MattCheramie/GopherTrunk/blob/main/CHANGELOG.md).
 
+## Pluto Plus first-class SDR backend
+
+Pluto Plus endpoint support now exists (`transport: tcp` and
+`transport: usb`), but final first-class parity still needs
+transport hardening, diagnostics, metrics, and real-hardware
+qualification across OSes.
+
+Execution plan and phased deliverables live in
+[plutoplus-first-class-plan.md](plutoplus-first-class-plan.md).
+
 ## DMR ARC4 / RC4 known-key voice decryption (issue #276)
 
 DMR systems that protect voice with ARC4-based "Enhanced Privacy"
