@@ -111,8 +111,17 @@ retention:
 
 sdr:
   sample_rate: 2_400_000
-  # Pluto Plus SDR support is currently a scaffold driver only
-  # (`plutoplus`): no hardware probing or IQ streaming yet.
+  # Pluto Plus endpoint mode (driver: plutoplus). Each entry is a
+  # host:port backend that serves IQ + control with an rtl_tcp-
+  # compatible wire shape.
+  # pluto_plus:
+  #   - addr: "192.168.2.1:1234"
+  #     serial: "PLUTO-001"
+  #     role: control
+  #     ppm: 0
+  #     gain: "auto"
+  #     bias_tee: false
+  #     connect_timeout_ms: 3000
   # watchdog_interval_ms: periodic USB-disconnect watchdog cadence
   # (default 30000 = 30 s). Catches dongles that vanish from the bus
   # while idle and re-acquires them by serial on reappear so the next

@@ -27,8 +27,10 @@ type Config struct {
 	Broadcast  BroadcastConfig  `yaml:"broadcast"`
 	Baseband   BasebandConfig   `yaml:"baseband"`
 	Paging     PagingConfig     `yaml:"paging"`
+	FleetSync  FleetSyncConfig  `yaml:"fleetsync"`
 	APRS       APRSConfig       `yaml:"aprs"`
 	AIS        AISConfig        `yaml:"ais"`
+	DSC        DSCConfig        `yaml:"dsc"`
 	MDC1200    MDC1200Config    `yaml:"mdc1200"`
 	ADSB       ADSBConfig       `yaml:"adsb"`
 }
@@ -41,98 +43,46 @@ type Config struct {
 // RTL-SDR + 1090 MHz filter + LNA; pointing GopherTrunk at it
 // is a one-line config away.
 type ADSBConfig struct {
-	BeastUpstreams []ADSBBeastConfig `yaml:"beast_upstreams"`
+	BeastUpstreams []ADSBBeastConfig   `yaml:"beast_upstreams"`
+	Channels       []ADSBChannelConfig `yaml:"channels"`
 }
 
-// ADSBBeastConfig describes one BEAST upstream to consume. Addr is
-// typically "host:30005" — the standard dump1090 / readsb BEAST
-// output port. Multiple upstreams can run side-by-side (e.g. a
-// local antenna + a remote hub at the airport) and their frames
-// merge into the same `events.KindAircraftReport` stream.
-type ADSBBeastConfig struct {
-	Addr string `yaml:"addr"`
-	Name string `yaml:"name"` // log + metrics label
+// ADSBChannelConfig describes one SDR pinned to 1090 MHz for the
+// native PPM Mode-S receiver — the alternative to a BEAST upstream for
+// operators who want GopherTrunk to own the whole 1090 MHz chain
+// rather than running a separate dump1090 / readsb. Serial picks the
+// SDR; the daemon tunes it to FrequencyHz (default 1090 MHz) and runs
+// the PPM demodulator against its full IQ stream. A 1090 MHz SAW
+// filter + LNA ahead of the SDR is strongly recommended — Mode-S is a
+// weak, bursty signal. The SDR must sample at ≥ 2 Msps; the receiver
+// resamples to 2 Msps internally. Decoded frames merge into the same
+// events.KindAircraftReport stream the BEAST upstreams feed, so the
+// /aircraft panel and storage are shared.
+type ADSBChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"` // defaults to 1090 MHz when zero
 }
 
-// APRSConfig configures the APRS / AX.25 Bell-202 AFSK receiver.
-// Each entry pins an SDR to a 2 m / 70 cm APRS frequency and runs
-// the DSP frontend (FM demod → FFSK discriminator → symbol-timing
-// recovery → NRZI decode → HDLC framer → AX.25 + APRS info-field
-// parsing) against its full IQ stream. Decoded packets publish on
-// events.KindAPRSPacket; the storage.APRSLog subscriber persists
-// them, the REST endpoint at /api/v1/aprs/packets and the /aprs
-// web panel render them.
-type APRSConfig struct {
-	Channels []APRSChannelConfig `yaml:"channels"`
+// FleetSyncConfig configures Kenwood FleetSync decoders (FleetSync I
+// and FleetSync II). Each entry pins one SDR to a FleetSync-bearing
+// channel and runs the per-channel decoder against its IQ stream.
+type FleetSyncConfig struct {
+	Channels []FleetSyncChannelConfig `yaml:"channels"`
 }
 
-// APRSChannelConfig describes one APRS channel to decode. Serial
-// picks the SDR; the daemon tunes it to FrequencyHz and runs the
-// AFSK receiver against its full IQ stream. The 144.39 MHz North-
-// America primary channel is the most common target; other
-// regions use 144.575 (EU R1), 144.64 (JP), 144.80 (EU R1 short-
-// distance), 145.825 (ISS digipeater), 144.575 (AU). The DropBadFCS
-// and DropNonUI toggles match the receiver's options — leave both
-// false to see marginal traffic on the panel (highlighted in
-// yellow); flip them on if the channel is dominated by noise.
-type APRSChannelConfig struct {
+// FleetSyncChannelConfig describes one FleetSync channel to decode.
+// Serial picks the SDR; the daemon tunes it to FrequencyHz and runs
+// the FleetSync decoder against its full IQ stream.
+type FleetSyncChannelConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	Name        string `yaml:"name"`
 	Serial      string `yaml:"serial"`
 	FrequencyHz uint32 `yaml:"frequency_hz"`
-	DropBadFCS  bool   `yaml:"drop_bad_fcs"`
-	DropNonUI   bool   `yaml:"drop_non_ui"`
-}
-
-// AISConfig configures the marine-AIS GMSK receiver. Each entry
-// pins an SDR to one of the AIS channels (87B = 161.975 MHz,
-// 88B = 162.025 MHz — class A vessels alternate between them
-// every second) and runs the DSP frontend (FM demod → GFSK
-// matched filter → symbol-timing recovery → NRZI decode → HDLC
-// framer → ITU-R M.1371-5 message parser) against its full IQ
-// stream. Decoded messages publish on events.KindAISMessage;
-// storage.VesselLog persists them, the REST endpoint at
-// /api/v1/ais/vessels and the /ais web panel render them.
-type AISConfig struct {
-	Channels []AISChannelConfig `yaml:"channels"`
-}
-
-// AISChannelConfig describes one AIS channel to decode. Serial
-// picks the SDR; the daemon tunes it to FrequencyHz and runs the
-// GMSK receiver against its full IQ stream. Most operators pin
-// one SDR to 161.975 (channel 87B) and another to 162.025 (88B)
-// to catch both halves of the class-A alternation; one channel
-// is enough for class-B-only or quiet-area monitoring. The
-// DropBadFCS and DropNonPosition toggles match the receiver's
-// options.
-type AISChannelConfig struct {
-	Serial          string `yaml:"serial"`
-	FrequencyHz     uint32 `yaml:"frequency_hz"`
-	DropBadFCS      bool   `yaml:"drop_bad_fcs"`
-	DropNonPosition bool   `yaml:"drop_non_position"`
-}
-
-// MDC1200Config configures the Motorola MDC1200 FFSK signaling
-// receiver. Each entry pins an SDR to a conventional analog VHF / UHF
-// voice channel and runs the DSP frontend (FM demod → FFSK
-// discriminator at 1200/1800 Hz → symbol-timing recovery → NRZ
-// slicer → sync framer → op/arg/unit-ID parser) against its full IQ
-// stream. Decoded bursts publish on events.KindMDC1200Message;
-// storage.MDC1200Log persists them, the REST endpoint at
-// /api/v1/mdc1200/messages and the /mdc1200 web panel render them.
-type MDC1200Config struct {
-	Channels []MDC1200ChannelConfig `yaml:"channels"`
-}
-
-// MDC1200ChannelConfig describes one MDC1200 channel to decode. Serial
-// picks the SDR; the daemon tunes it to FrequencyHz and runs the FFSK
-// receiver against its full IQ stream. Target the conventional analog
-// voice channels of the systems you monitor — MDC1200 bursts ride at
-// the head (and optionally tail) of each transmission. DropBadCRC
-// matches the receiver's option — leave it false to see CRC-failed
-// bursts on the panel (flagged), flip it on for noisy channels.
-type MDC1200ChannelConfig struct {
-	Serial      string `yaml:"serial"`
-	FrequencyHz uint32 `yaml:"frequency_hz"`
-	DropBadCRC  bool   `yaml:"drop_bad_crc"`
+	// Version controls decoder mode: auto|fleetsync1|fleetsync2.
+	// Empty defaults to auto.
+	Version string `yaml:"version"`
+	// BaudHz defaults to 1200 when omitted.
+	BaudHz uint32 `yaml:"baud_hz"`
 }
 
 // PagingConfig configures pager decoders (POCSAG today, FLEX
@@ -205,6 +155,37 @@ type BroadcastConfig struct {
 	RdioScanner  []RdioScannerFeedConfig  `yaml:"rdioscanner"`
 	OpenMHz      []OpenMHzFeedConfig      `yaml:"openmhz"`
 	Icecast      []IcecastFeedConfig      `yaml:"icecast"`
+	// FleetSync export feeds subscribe to decoded FleetSync frames and
+	// deliver JSON payloads to webhooks or a filesystem spool.
+	FleetSync FleetSyncBroadcastConfig `yaml:"fleetsync"`
+}
+
+// FleetSyncBroadcastConfig configures outbound export of decoded
+// FleetSync frames. Workers/retry behavior reuse the top-level
+// broadcast manager knobs.
+type FleetSyncBroadcastConfig struct {
+	Webhooks []FleetSyncWebhookFeedConfig `yaml:"webhooks"`
+	Spool    []FleetSyncSpoolFeedConfig   `yaml:"spool"`
+}
+
+// FleetSyncWebhookFeedConfig posts one JSON document per decoded
+// FleetSync frame to the configured URL. Sources optionally restrict
+// delivery to named FleetSync channels.
+type FleetSyncWebhookFeedConfig struct {
+	Enabled bool              `yaml:"enabled"`
+	Name    string            `yaml:"name"`
+	URL     string            `yaml:"url"`
+	Sources []string          `yaml:"sources"`
+	Headers map[string]string `yaml:"headers"`
+}
+
+// FleetSyncSpoolFeedConfig writes one directory per decoded FleetSync
+// frame containing JSON metadata plus payload/raw byte files.
+type FleetSyncSpoolFeedConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Name    string   `yaml:"name"`
+	Dir     string   `yaml:"dir"`
+	Sources []string `yaml:"sources"`
 }
 
 // BroadcastifyFeedConfig is one Broadcastify Calls upload feed.
@@ -246,6 +227,53 @@ type IcecastFeedConfig struct {
 	Password   string   `yaml:"password"`
 	StreamName string   `yaml:"stream_name"`
 	Systems    []string `yaml:"systems"`
+}
+
+type ADSBBeastConfig struct {
+	Addr string `yaml:"addr"`
+	Name string `yaml:"name"`
+}
+
+type APRSConfig struct {
+	Channels []APRSChannelConfig `yaml:"channels"`
+}
+
+type APRSChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadFCS  bool   `yaml:"drop_bad_fcs"`
+	DropNonUI   bool   `yaml:"drop_non_ui"`
+}
+
+type AISConfig struct {
+	Channels []AISChannelConfig `yaml:"channels"`
+}
+
+type AISChannelConfig struct {
+	Serial          string `yaml:"serial"`
+	FrequencyHz     uint32 `yaml:"frequency_hz"`
+	DropBadFCS      bool   `yaml:"drop_bad_fcs"`
+	DropNonPosition bool   `yaml:"drop_non_position"`
+}
+
+type DSCConfig struct {
+	Channels []DSCChannelConfig `yaml:"channels"`
+}
+
+type DSCChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadFCS  bool   `yaml:"drop_bad_fcs"`
+}
+
+type MDC1200Config struct {
+	Channels []MDC1200ChannelConfig `yaml:"channels"`
+}
+
+type MDC1200ChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadCRC  bool   `yaml:"drop_bad_crc"`
 }
 
 // AudioConfig controls live audio playback to the host's speakers.
@@ -376,6 +404,11 @@ type MessageLogConfig struct {
 type SDRConfig struct {
 	SampleRate uint32         `yaml:"sample_rate"`
 	Devices    []DeviceConfig `yaml:"devices"`
+	// PlutoPlus lists Pluto Plus endpoints mounted as virtual tuners.
+	// The current transport expects a TCP IQ endpoint that speaks a
+	// rtl_tcp-compatible wire shape (RTL0 header + command channel +
+	// u8 IQ stream). Each entry becomes one pool device.
+	PlutoPlus []PlutoPlusConfig `yaml:"pluto_plus"`
 	// RTLTCP lists remote rtl_tcp endpoints (host:port + optional
 	// per-endpoint metadata) to mount as virtual tuners. Each entry
 	// becomes a pool device alongside any locally-attached USB
@@ -426,6 +459,26 @@ type RTLTCPConfig struct {
 	ConnectTimeoutMs int `yaml:"connect_timeout_ms"`
 }
 
+// PlutoPlusConfig describes one Pluto Plus endpoint.
+type PlutoPlusConfig struct {
+	// Addr is the host:port pair exposed by the Pluto endpoint.
+	Addr string `yaml:"addr"`
+	// Serial is the virtual serial reported by /api/v1/devices.
+	// Empty generates one from Addr.
+	Serial string `yaml:"serial"`
+	// Role hints assignment: control|voice|auto.
+	Role string `yaml:"role"`
+	// PPM applies frequency correction through SetPPM after open.
+	PPM int `yaml:"ppm"`
+	// Gain follows DeviceConfig.Gain semantics.
+	Gain string `yaml:"gain"`
+	// BiasTee toggles bias tee on backends that support command 0x0e.
+	BiasTee bool `yaml:"bias_tee"`
+	// ConnectTimeoutMs caps dial + header-read timeout. Zero uses
+	// driver default.
+	ConnectTimeoutMs int `yaml:"connect_timeout_ms"`
+}
+
 type DeviceConfig struct {
 	Serial string `yaml:"serial"`
 	Role   string `yaml:"role"`
@@ -465,25 +518,22 @@ type DeviceConfig struct {
 
 	// Channels is the list of repeater carriers a wideband dongle
 	// should monitor inside its IQ band. Each entry binds a
-	// frequency to a configured trunking.systems[].name. Ignored
-	// for non-wideband roles.
+	// frequency to a configured trunking.systems[].name; v1 only
+	// supports DMR Tier II conventional. Ignored for non-wideband
+	// roles.
 	Channels []DeviceChannelConfig `yaml:"channels"`
-
-	// VoiceTaps is the number of per-grant DDC tuners the daemon
-	// allocates from this wideband dongle's IQ stream so trunked
-	// voice grants can be followed without retuning a separate
-	// `role: voice` SDR. Each tap subscribes to the dongle's
-	// iqtap broker on demand and emits 48 kHz IQ centred on the
-	// grant frequency.
-	//
-	// Defaults to 0 (no virtual voice taps; voice grants route to
-	// the physical voice pool). Set to 2-4 on a wideband dongle
-	// hosting a trunked CC tap (DMR T3, P25 Phase 1, P25 Phase 2)
-	// so one SDR can cover the full system end-to-end. Out-of-
-	// window grants surface ErrOutOfBand and fall back to a
-	// physical voice SDR when one is configured. Capped at 8 to
-	// keep CPU bounded.
+	// VoiceTaps allocates per-grant virtual DDC taps on this wideband
+	// device so voice grants can be followed without a separate
+	// physical voice SDR. 0 disables; allowed range is 0..8.
 	VoiceTaps int `yaml:"voice_taps"`
+
+	// IQCorrect enables blind I/Q-imbalance correction on this device's
+	// raw IQ before decimation (issue #402). Off by default. An
+	// uncorrected RTL-SDR I/Q imbalance distorts the demodulated symbol
+	// eye (worst at the on-channel DC the control decoder's DDC sits on);
+	// validate the benefit with `gophertrunk replay -iq-correct -diag`
+	// on a capture from this device before enabling it here.
+	IQCorrect bool `yaml:"iq_correct"`
 }
 
 // DeviceChannelConfig is one repeater carrier carried by a
@@ -516,15 +566,7 @@ type SystemConfig struct {
 	Protocol        string   `yaml:"protocol"`
 	ControlChannels []uint32 `yaml:"control_channels"`
 	TalkgroupFile   string   `yaml:"talkgroup_file"`
-	// RIDAliasFile is the optional path to a per-system CSV or JSON
-	// catalogue of radio-ID (subscriber unit) aliases — the per-RID
-	// equivalent of TalkgroupFile. CSV format: a Decimal/DEC/ID column
-	// plus optional Alias/AlphaTag, Description, Tag, Group, Owner,
-	// Priority, Lockout, Watch, Icon columns. JSON format: an array
-	// of {id, alias, description, ...} objects. Empty leaves the RID
-	// catalogue blank for this system (live observations still
-	// surface via the affiliation tracker).
-	RIDAliasFile string `yaml:"rid_alias_file"`
+	RIDAliasFile    string   `yaml:"rid_alias_file"`
 
 	// TETRAColourCode is the 30-bit extended colour code the TETRA
 	// scrambler uses to seed its LFSR (ETSI EN 300 392-2 §8.2.5).
@@ -575,12 +617,8 @@ type SystemConfig struct {
 	// (the linear / LSM path — complex RRC + Gardner + differential
 	// QPSK; required for simulcast P25 deployments whose control
 	// channel transmits Linear Simulcast Modulation rather than
-	// straight C4FM, see issue #275 and TIA-102.BAAA). Applies to
-	// both the control channel decoder and the per-call voice
-	// chain — without the voice-chain side a simulcast site would
-	// lock the CC fine but never decode an LDU on a granted voice
-	// call (issue #356 follow-up). Ignored for non-P25-Phase-1
-	// protocols.
+	// straight C4FM, see issue #275 and TIA-102.BAAA). Ignored for
+	// non-P25-Phase-1 protocols.
 	P25Phase1DemodMode string `yaml:"p25_phase1_demod_mode"`
 	// P25Phase2TrellisMode enables the 4-state ½-rate trellis FEC
 	// decoder on the P25 Phase 2 MAC PDU window. Recognised values:
@@ -978,6 +1016,23 @@ func (c Config) Validate() error {
 		}
 		seenSerials[r.Serial] = i
 	}
+	for i, p := range c.SDR.PlutoPlus {
+		if p.Addr == "" {
+			return fmt.Errorf("sdr.pluto_plus[%d]: addr is required (host:port)", i)
+		}
+		switch p.Role {
+		case "", "control", "voice", "auto":
+		default:
+			return fmt.Errorf("sdr.pluto_plus[%d]: role must be control|voice|auto", i)
+		}
+		if p.Serial == "" {
+			continue
+		}
+		if prev, dup := seenSerials[p.Serial]; dup {
+			return fmt.Errorf("sdr.pluto_plus[%d]: serial %q collides with existing SDR serial at index %d", i, p.Serial, prev)
+		}
+		seenSerials[p.Serial] = i
+	}
 	if c.Trunking.CallTimeoutMs < 0 {
 		return fmt.Errorf("trunking.call_timeout_ms: %d ms must be ≥ 0", c.Trunking.CallTimeoutMs)
 	}
@@ -1099,6 +1154,25 @@ func (c Config) Validate() error {
 			return fmt.Errorf("baseband.replay[%d]: role must be control|voice|auto", i)
 		}
 	}
+	for i, ch := range c.FleetSync.Channels {
+		if !ch.Enabled {
+			continue
+		}
+		if strings.TrimSpace(ch.Serial) == "" {
+			return fmt.Errorf("fleetsync.channels[%d]: serial required", i)
+		}
+		if ch.FrequencyHz == 0 {
+			return fmt.Errorf("fleetsync.channels[%d]: frequency_hz required", i)
+		}
+		switch strings.ToLower(strings.TrimSpace(ch.Version)) {
+		case "", "auto", "fleetsync1", "fleetsync2":
+		default:
+			return fmt.Errorf("fleetsync.channels[%d]: version must be auto|fleetsync1|fleetsync2", i)
+		}
+		if ch.BaudHz != 0 && ch.BaudHz != 1200 {
+			return fmt.Errorf("fleetsync.channels[%d]: baud_hz must be 1200 when set", i)
+		}
+	}
 	return nil
 }
 
@@ -1125,8 +1199,7 @@ func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, system
 		return fmt.Errorf("sdr.devices[%d]: role: wideband requires serial (the daemon binds the channel list to the device by USB serial)", idx)
 	}
 	if d.VoiceTaps < 0 || d.VoiceTaps > 8 {
-		return fmt.Errorf("sdr.devices[%d]: voice_taps %d out of range; 0 disables, 1-8 allocate that many virtual voice DDC taps on the dongle",
-			idx, d.VoiceTaps)
+		return fmt.Errorf("sdr.devices[%d]: voice_taps %d out of range; 0 disables, 1-8 allocate that many virtual voice DDC taps on the dongle", idx, d.VoiceTaps)
 	}
 	if d.CenterFreqHz == 0 {
 		return fmt.Errorf("sdr.devices[%d]: role: wideband requires center_freq_hz", idx)
@@ -1164,13 +1237,9 @@ func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, system
 		case "dmr-tier2", "dmr_tier2", "dmr-t2", "dmrtier2":
 			// Tier II conventional - channel freq is a repeater carrier,
 			// no relationship to system.ControlChannels required.
-		case "dmr", "p25", "p25-phase2", "p25_phase2", "p25p2":
-			// Trunked control-channel protocols — the wideband channel
-			// MUST be one of the system's declared control channels.
-			// Tier III DMR's CSBK chain, P25 Phase 1's TSBK chain, and
-			// P25 Phase 2's H-DQPSK MAC chain all run on a frequency
-			// the system advertises in control_channels; voice grants
-			// hop elsewhere.
+		case "dmr":
+			// Tier III trunked - the wideband channel MUST be one of
+			// the system's declared control channels.
 			matched := false
 			for _, cc := range sys.ControlChannels {
 				if cc == ch.FrequencyHz {
@@ -1181,14 +1250,13 @@ func validateWidebandDevice(idx int, d DeviceConfig, sampleRateHz uint32, system
 			if !matched {
 				return fmt.Errorf(
 					"sdr.devices[%d].channels[%d]: frequency_hz %d does not match any of system %q's "+
-						"control_channels %v (wideband %s channels must sit on a declared control channel)",
-					idx, j, ch.FrequencyHz, ch.System, sys.ControlChannels, sys.Protocol)
+						"control_channels %v (wideband T3 channels must sit on a declared control channel)",
+					idx, j, ch.FrequencyHz, ch.System, sys.ControlChannels)
 			}
 		default:
 			return fmt.Errorf(
-				"sdr.devices[%d].channels[%d]: system %q has protocol %q; wideband currently supports "+
-					"dmr-tier2 (Tier II conventional), dmr (Tier III trunked control channel), "+
-					"p25 (Phase 1 trunked control channel), and p25-phase2 (Phase 2 trunked control channel)",
+				"sdr.devices[%d].channels[%d]: system %q has protocol %q; wideband currently supports dmr-tier2 "+
+					"(Tier II conventional) and dmr (Tier III trunked control channel)",
 				idx, j, ch.System, sys.Protocol)
 		}
 		offset := float64(ch.FrequencyHz) - float64(d.CenterFreqHz)
@@ -1261,6 +1329,22 @@ func (b BroadcastConfig) validate() error {
 		}
 		if f.Password == "" {
 			return fmt.Errorf("broadcast.icecast[%d]: password required", i)
+		}
+	}
+	for i, f := range b.FleetSync.Webhooks {
+		if !f.Enabled {
+			continue
+		}
+		if strings.TrimSpace(f.URL) == "" {
+			return fmt.Errorf("broadcast.fleetsync.webhooks[%d]: url required", i)
+		}
+	}
+	for i, f := range b.FleetSync.Spool {
+		if !f.Enabled {
+			continue
+		}
+		if strings.TrimSpace(f.Dir) == "" {
+			return fmt.Errorf("broadcast.fleetsync.spool[%d]: dir required", i)
 		}
 	}
 	return nil

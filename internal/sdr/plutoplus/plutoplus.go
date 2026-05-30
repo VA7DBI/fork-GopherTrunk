@@ -1,91 +1,272 @@
-// Package plutoplus provides a scaffold sdr.Driver for Pluto Plus SDR
-// hardware. The wire protocol and sample path are intentionally stubbed
-// so the driver can be linked, discovered, and tested while hardware
-// support is developed.
+// Package plutoplus implements an sdr.Driver for Pluto Plus receivers
+// exposed over a TCP IQ endpoint compatible with the rtl_tcp wire shape
+// (12-byte RTL0 header + command channel + u8 IQ stream).
 package plutoplus
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"sync"
+	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 )
 
 const driverName = "plutoplus"
 
-var errStreamNotImplemented = errors.New("plutoplus: StreamIQ not implemented")
+var magic = [4]byte{'R', 'T', 'L', '0'}
 
-// Descriptor describes one discovered Pluto Plus radio.
-type Descriptor struct {
-	Serial       string
-	Manufacturer string
-	Product      string
-}
+const (
+	cmdSetFreq         uint8 = 0x01
+	cmdSetSampleRate   uint8 = 0x02
+	cmdSetGainMode     uint8 = 0x03
+	cmdSetGain         uint8 = 0x04
+	cmdSetFreqCorrPPM  uint8 = 0x05
+	cmdSetBiasTee      uint8 = 0x0e
+	defaultProductName       = "Pluto Plus"
+)
 
-// Enumerator abstracts hardware discovery for tests and future
-// platform-specific enumerators.
-type Enumerator interface {
-	Enumerate() ([]Descriptor, error)
+const DefaultConnectTimeout = 3 * time.Second
+
+// Spec declares one Pluto Plus endpoint.
+type Spec struct {
+	Addr           string
+	Serial         string
+	Role           string
+	ConnectTimeout time.Duration
 }
 
 // Driver implements sdr.Driver for Pluto Plus.
 type Driver struct {
-	enum Enumerator
+	specs []Spec
+	log   *slog.Logger
 }
 
-// New constructs a Pluto Plus driver. A nil enumerator intentionally
-// yields an empty inventory until hardware probing is implemented.
-func New(enum Enumerator) *Driver {
-	return &Driver{enum: enum}
+func New(specs []Spec, log *slog.Logger) *Driver {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Driver{specs: specs, log: log}
 }
 
 func (d *Driver) Name() string { return driverName }
 
 func (d *Driver) Enumerate() ([]sdr.Info, error) {
-	if d.enum == nil {
-		return nil, nil
-	}
-	descs, err := d.enum.Enumerate()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]sdr.Info, 0, len(descs))
-	for i, desc := range descs {
+	out := make([]sdr.Info, 0, len(d.specs))
+	for i, spec := range d.specs {
+		if spec.Addr == "" {
+			continue
+		}
 		out = append(out, sdr.Info{
 			Driver:       driverName,
 			Index:        i,
-			Serial:       desc.Serial,
-			Manufacturer: desc.Manufacturer,
-			Product:      desc.Product,
-			TunerName:    "ADI Pluto Plus (stub)",
+			Serial:       serialFor(spec, i),
+			Manufacturer: "Analog Devices",
+			Product:      defaultProductName,
+			TunerName:    "AD936x",
+			Gains:        standardGainLadder(),
 		})
 	}
 	return out, nil
 }
 
 func (d *Driver) Open(idx int) (sdr.Device, error) {
-	infos, err := d.Enumerate()
-	if err != nil {
-		return nil, err
-	}
-	if idx < 0 || idx >= len(infos) {
+	if idx < 0 || idx >= len(d.specs) {
 		return nil, fmt.Errorf("plutoplus: index %d out of range", idx)
 	}
-	return &device{info: infos[idx]}, nil
+	spec := d.specs[idx]
+	if spec.Addr == "" {
+		return nil, fmt.Errorf("plutoplus: spec[%d] missing addr", idx)
+	}
+	timeout := spec.ConnectTimeout
+	if timeout <= 0 {
+		timeout = DefaultConnectTimeout
+	}
+	conn, err := net.DialTimeout("tcp", spec.Addr, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("plutoplus: dial %s: %w", spec.Addr, err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("plutoplus: set read deadline: %w", err)
+	}
+	var hdr [12]byte
+	if _, err := io.ReadFull(conn, hdr[:]); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("plutoplus: read header: %w", err)
+	}
+	if hdr[0] != magic[0] || hdr[1] != magic[1] || hdr[2] != magic[2] || hdr[3] != magic[3] {
+		conn.Close()
+		return nil, fmt.Errorf("plutoplus: %s: server header magic = %q, want %q", spec.Addr, hdr[:4], magic[:])
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+
+	info := sdr.Info{
+		Driver:       driverName,
+		Index:        idx,
+		Serial:       serialFor(spec, idx),
+		Manufacturer: "Analog Devices",
+		Product:      defaultProductName,
+		TunerName:    "AD936x",
+		Gains:        standardGainLadder(),
+	}
+	d.log.Info("plutoplus: connected", "addr", spec.Addr, "serial", info.Serial)
+	return &device{addr: spec.Addr, info: info, conn: conn, log: d.log}, nil
 }
 
 type device struct {
+	addr string
 	info sdr.Info
+	log  *slog.Logger
+
+	mu     sync.Mutex
+	conn   net.Conn
+	closed bool
 }
 
-func (d *device) Info() sdr.Info                    { return d.info }
-func (d *device) SetCenterFreq(uint32) error        { return nil }
-func (d *device) SetSampleRate(uint32) error        { return nil }
-func (d *device) SetGain(int) error                 { return nil }
-func (d *device) SetPPM(int) error                  { return nil }
-func (d *device) SetBiasTee(bool) error             { return nil }
-func (d *device) StreamIQ(context.Context) (<-chan []complex64, error) {
-	return nil, errStreamNotImplemented
+func (d *device) Info() sdr.Info { return d.info }
+
+func (d *device) SetCenterFreq(hz uint32) error { return d.sendCmd(cmdSetFreq, hz) }
+func (d *device) SetSampleRate(hz uint32) error { return d.sendCmd(cmdSetSampleRate, hz) }
+
+func (d *device) SetGain(tenthDB int) error {
+	if tenthDB < 0 {
+		return d.sendCmd(cmdSetGainMode, 0)
+	}
+	if err := d.sendCmd(cmdSetGainMode, 1); err != nil {
+		return err
+	}
+	return d.sendCmd(cmdSetGain, uint32(tenthDB))
 }
-func (d *device) Close() error { return nil }
+
+func (d *device) SetPPM(ppm int) error {
+	return d.sendCmd(cmdSetFreqCorrPPM, uint32(int32(ppm)))
+}
+
+func (d *device) SetBiasTee(enable bool) error {
+	var v uint32
+	if enable {
+		v = 1
+	}
+	return d.sendCmd(cmdSetBiasTee, v)
+}
+
+func (d *device) sendCmd(op uint8, param uint32) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed || d.conn == nil {
+		return fmt.Errorf("plutoplus: device closed")
+	}
+	var pkt [5]byte
+	pkt[0] = op
+	pkt[1] = byte(param >> 24)
+	pkt[2] = byte(param >> 16)
+	pkt[3] = byte(param >> 8)
+	pkt[4] = byte(param)
+	_ = d.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if _, err := d.conn.Write(pkt[:]); err != nil {
+		return fmt.Errorf("plutoplus: send cmd 0x%02x: %w", op, err)
+	}
+	_ = d.conn.SetWriteDeadline(time.Time{})
+	return nil
+}
+
+func (d *device) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil
+	}
+	d.closed = true
+	if d.conn != nil {
+		return d.conn.Close()
+	}
+	return nil
+}
+
+func (d *device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
+	d.mu.Lock()
+	if d.closed || d.conn == nil {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("plutoplus: device closed")
+	}
+	conn := d.conn
+	d.mu.Unlock()
+
+	const chunkSamples = 8192
+	out := make(chan []complex64, 8)
+	go func() {
+		defer close(out)
+		buf := make([]byte, chunkSamples*2)
+		for {
+			_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+			n, err := io.ReadFull(conn, buf)
+			if err != nil {
+				if err != io.EOF && err != io.ErrUnexpectedEOF {
+					d.log.Debug("plutoplus: stream read", "addr", d.addr, "err", err)
+				}
+				if n == 0 {
+					return
+				}
+			}
+			if n > 0 {
+				samples := convertU8(buf[:n])
+				select {
+				case <-ctx.Done():
+					return
+				case out <- samples:
+				}
+			}
+			if err != nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+		}
+	}()
+	return out, nil
+}
+
+func convertU8(buf []byte) []complex64 {
+	n := len(buf) / 2
+	out := make([]complex64, n)
+	for i := 0; i < n; i++ {
+		iv := float32(buf[2*i]) - 127.5
+		qv := float32(buf[2*i+1]) - 127.5
+		out[i] = complex(iv/127.5, qv/127.5)
+	}
+	return out
+}
+
+func serialFor(spec Spec, idx int) string {
+	if spec.Serial != "" {
+		return spec.Serial
+	}
+	return fmt.Sprintf("plutoplus-%s-%02d", sanitizeAddr(spec.Addr), idx)
+}
+
+func sanitizeAddr(addr string) string {
+	out := make([]byte, 0, len(addr))
+	for i := 0; i < len(addr); i++ {
+		c := addr[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			out = append(out, c)
+		case c == '-' || c == '_':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+	return string(out)
+}
+
+func standardGainLadder() []int {
+	return []int{0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364, 372, 386, 402, 421, 434, 439, 445, 480, 496}
+}

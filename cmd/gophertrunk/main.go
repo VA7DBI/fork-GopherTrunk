@@ -22,6 +22,7 @@ import (
 	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/airspy"
 	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/airspyhf"
 	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/hackrf"
+	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/plutoplus"
 	_ "github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr/purego"
 	"github.com/MattCheramie/GopherTrunk/internal/version"
 
@@ -246,7 +247,7 @@ func runDaemon(args []string) {
 	case <-d.Ready():
 	case err := <-runErr:
 		if err != nil && !errors.Is(err, context.Canceled) {
-			fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
+			fmt.Fprintf(os.Stderr, "daemon startup failed before ready: %v\n", err)
 			os.Exit(1)
 		}
 		return

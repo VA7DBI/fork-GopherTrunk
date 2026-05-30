@@ -2,106 +2,230 @@ package plutoplus
 
 import (
 	"context"
-	"errors"
+	"encoding/binary"
+	"io"
+	"net"
+	"sync"
 	"testing"
+	"time"
 )
 
-type stubEnumerator struct {
-	descs []Descriptor
-	err   error
+type fakeServer struct {
+	t  *testing.T
+	ln net.Listener
+
+	mu   sync.Mutex
+	cmds []cmdRecord
+	feed chan []byte
+	conn net.Conn
 }
 
-func (s stubEnumerator) Enumerate() ([]Descriptor, error) {
-	if s.err != nil {
-		return nil, s.err
+type cmdRecord struct {
+	Op    uint8
+	Param uint32
+}
+
+func newFakeServer(t *testing.T) *fakeServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
 	}
-	return s.descs, nil
+	s := &fakeServer{t: t, ln: ln, feed: make(chan []byte, 32)}
+	go s.run()
+	t.Cleanup(s.close)
+	return s
+}
+
+func (s *fakeServer) Addr() string { return s.ln.Addr().String() }
+
+func (s *fakeServer) Feed(b []byte) { s.feed <- b }
+
+func (s *fakeServer) Commands() []cmdRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]cmdRecord, len(s.cmds))
+	copy(out, s.cmds)
+	return out
+}
+
+func (s *fakeServer) close() {
+	_ = s.ln.Close()
+	s.mu.Lock()
+	if s.conn != nil {
+		_ = s.conn.Close()
+	}
+	s.mu.Unlock()
+}
+
+func (s *fakeServer) run() {
+	conn, err := s.ln.Accept()
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	s.conn = conn
+	s.mu.Unlock()
+
+	var hdr [12]byte
+	copy(hdr[:4], magic[:])
+	binary.BigEndian.PutUint32(hdr[4:8], 5)
+	binary.BigEndian.PutUint32(hdr[8:12], 29)
+	if _, err := conn.Write(hdr[:]); err != nil {
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 5)
+		for {
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				return
+			}
+			s.mu.Lock()
+			s.cmds = append(s.cmds, cmdRecord{Op: buf[0], Param: binary.BigEndian.Uint32(buf[1:])})
+			s.mu.Unlock()
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		case b, ok := <-s.feed:
+			if !ok {
+				_ = conn.Close()
+				return
+			}
+			if _, err := conn.Write(b); err != nil {
+				return
+			}
+		}
+	}
 }
 
 func TestName(t *testing.T) {
-	if got := New(nil).Name(); got != driverName {
+	if got := New(nil, nil).Name(); got != driverName {
 		t.Fatalf("Name() = %q, want %q", got, driverName)
 	}
 }
 
-func TestEnumerateNilEnumeratorIsEmpty(t *testing.T) {
-	infos, err := New(nil).Enumerate()
+func TestEnumerateConfiguredSpecs(t *testing.T) {
+	infos, err := New([]Spec{{Addr: "127.0.0.1:1234", Serial: "PLUTO-1"}}, nil).Enumerate()
 	if err != nil {
-		t.Fatalf("Enumerate() err = %v", err)
-	}
-	if len(infos) != 0 {
-		t.Fatalf("Enumerate() len = %d, want 0", len(infos))
-	}
-}
-
-func TestEnumerateMapsDescriptors(t *testing.T) {
-	infos, err := New(stubEnumerator{descs: []Descriptor{{
-		Serial:       "PLUTO-001",
-		Manufacturer: "Analog Devices",
-		Product:      "Pluto Plus",
-	}}}).Enumerate()
-	if err != nil {
-		t.Fatalf("Enumerate() err = %v", err)
+		t.Fatalf("Enumerate: %v", err)
 	}
 	if len(infos) != 1 {
-		t.Fatalf("Enumerate() len = %d, want 1", len(infos))
+		t.Fatalf("len(infos) = %d, want 1", len(infos))
 	}
-	if infos[0].Driver != driverName || infos[0].Index != 0 || infos[0].Serial != "PLUTO-001" {
-		t.Fatalf("Enumerate() info = %+v", infos[0])
-	}
-	if infos[0].TunerName != "ADI Pluto Plus (stub)" {
-		t.Fatalf("Enumerate() tuner = %q, want ADI Pluto Plus (stub)", infos[0].TunerName)
+	if infos[0].Driver != driverName || infos[0].Serial != "PLUTO-1" {
+		t.Fatalf("info = %+v", infos[0])
 	}
 }
 
-func TestEnumeratePropagatesErrors(t *testing.T) {
-	wantErr := errors.New("probe failed")
-	_, err := New(stubEnumerator{err: wantErr}).Enumerate()
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("Enumerate() err = %v, want %v", err, wantErr)
-	}
-}
-
-func TestOpenIndexBounds(t *testing.T) {
-	_, err := New(stubEnumerator{}).Open(0)
-	if err == nil {
-		t.Fatal("Open(0) expected error for empty inventory")
-	}
-}
-
-func TestOpenReturnsStubDevice(t *testing.T) {
-	drv := New(stubEnumerator{descs: []Descriptor{{
-		Serial:       "PLUTO-001",
-		Manufacturer: "Analog Devices",
-		Product:      "Pluto Plus",
-	}}})
-	dev, err := drv.Open(0)
+func TestOpenAndClose(t *testing.T) {
+	srv := newFakeServer(t)
+	d := New([]Spec{{Addr: srv.Addr(), Serial: "PLUTO-001"}}, nil)
+	dev, err := d.Open(0)
 	if err != nil {
-		t.Fatalf("Open(0) err = %v", err)
+		t.Fatalf("Open: %v", err)
 	}
-	info := dev.Info()
-	if info.Driver != driverName || info.Serial != "PLUTO-001" {
-		t.Fatalf("Open(0) info = %+v", info)
-	}
-	if err := dev.SetCenterFreq(162550000); err != nil {
-		t.Fatalf("SetCenterFreq() err = %v", err)
-	}
-	if err := dev.SetSampleRate(2400000); err != nil {
-		t.Fatalf("SetSampleRate() err = %v", err)
-	}
-	if err := dev.SetGain(-1); err != nil {
-		t.Fatalf("SetGain() err = %v", err)
-	}
-	if err := dev.SetPPM(0); err != nil {
-		t.Fatalf("SetPPM() err = %v", err)
-	}
-	if err := dev.SetBiasTee(false); err != nil {
-		t.Fatalf("SetBiasTee() err = %v", err)
-	}
-	if _, err := dev.StreamIQ(context.Background()); !errors.Is(err, errStreamNotImplemented) {
-		t.Fatalf("StreamIQ() err = %v, want %v", err, errStreamNotImplemented)
+	if dev.Info().Serial != "PLUTO-001" {
+		t.Fatalf("Info().Serial = %q", dev.Info().Serial)
 	}
 	if err := dev.Close(); err != nil {
-		t.Fatalf("Close() err = %v", err)
+		t.Fatalf("Close: %v", err)
 	}
+}
+
+func TestCommands(t *testing.T) {
+	srv := newFakeServer(t)
+	d := New([]Spec{{Addr: srv.Addr(), Serial: "PLUTO-001"}}, nil)
+	dev, err := d.Open(0)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer dev.Close()
+
+	if err := dev.SetCenterFreq(851012500); err != nil {
+		t.Fatalf("SetCenterFreq: %v", err)
+	}
+	if err := dev.SetSampleRate(2048000); err != nil {
+		t.Fatalf("SetSampleRate: %v", err)
+	}
+	if err := dev.SetGain(320); err != nil {
+		t.Fatalf("SetGain(manual): %v", err)
+	}
+	if err := dev.SetGain(-1); err != nil {
+		t.Fatalf("SetGain(auto): %v", err)
+	}
+	if err := dev.SetPPM(10); err != nil {
+		t.Fatalf("SetPPM: %v", err)
+	}
+	if err := dev.SetBiasTee(true); err != nil {
+		t.Fatalf("SetBiasTee: %v", err)
+	}
+
+	waitFor(t, 500*time.Millisecond, func() bool { return len(srv.Commands()) >= 7 })
+	got := srv.Commands()
+	want := []cmdRecord{
+		{cmdSetFreq, 851012500},
+		{cmdSetSampleRate, 2048000},
+		{cmdSetGainMode, 1},
+		{cmdSetGain, 320},
+		{cmdSetGainMode, 0},
+		{cmdSetFreqCorrPPM, uint32(int32(10))},
+		{cmdSetBiasTee, 1},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("cmd[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestStreamIQ(t *testing.T) {
+	srv := newFakeServer(t)
+	d := New([]Spec{{Addr: srv.Addr(), Serial: "PLUTO-001"}}, nil)
+	dev, err := d.Open(0)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer dev.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := dev.StreamIQ(ctx)
+	if err != nil {
+		t.Fatalf("StreamIQ: %v", err)
+	}
+
+	body := make([]byte, 8192*2)
+	for i := 0; i < len(body); i += 2 {
+		body[i] = 127
+		body[i+1] = 128
+	}
+	srv.Feed(body)
+
+	select {
+	case v := <-ch:
+		if len(v) != 8192 {
+			t.Fatalf("len(samples) = %d, want 8192", len(v))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no IQ chunk received")
+	}
+}
+
+func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within %s", timeout)
 }
