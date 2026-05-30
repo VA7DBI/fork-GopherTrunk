@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,11 +32,21 @@ const (
 
 const DefaultConnectTimeout = 3 * time.Second
 
+const (
+	TransportTCP = "tcp"
+	TransportUSB = "usb"
+	// Pluto boards connected over USB commonly expose a USB-Ethernet
+	// interface at 192.168.2.1. The Pluto Plus endpoint process can
+	// listen on 1234 with an rtl_tcp-compatible wire shape.
+	DefaultUSBAddr = "192.168.2.1:1234"
+)
+
 // Spec declares one Pluto Plus endpoint.
 type Spec struct {
 	Addr           string
 	Serial         string
 	Role           string
+	Transport      string
 	ConnectTimeout time.Duration
 }
 
@@ -57,7 +68,8 @@ func (d *Driver) Name() string { return driverName }
 func (d *Driver) Enumerate() ([]sdr.Info, error) {
 	out := make([]sdr.Info, 0, len(d.specs))
 	for i, spec := range d.specs {
-		if spec.Addr == "" {
+		addr, err := resolveAddr(spec)
+		if err != nil {
 			continue
 		}
 		out = append(out, sdr.Info{
@@ -65,10 +77,11 @@ func (d *Driver) Enumerate() ([]sdr.Info, error) {
 			Index:        i,
 			Serial:       serialFor(spec, i),
 			Manufacturer: "Analog Devices",
-			Product:      defaultProductName,
+			Product:      productName(spec),
 			TunerName:    "AD936x",
 			Gains:        standardGainLadder(),
 		})
+		d.log.Debug("plutoplus: enumerate", "transport", normalizeTransport(spec.Transport), "addr", addr)
 	}
 	return out, nil
 }
@@ -78,16 +91,17 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 		return nil, fmt.Errorf("plutoplus: index %d out of range", idx)
 	}
 	spec := d.specs[idx]
-	if spec.Addr == "" {
-		return nil, fmt.Errorf("plutoplus: spec[%d] missing addr", idx)
+	addr, err := resolveAddr(spec)
+	if err != nil {
+		return nil, fmt.Errorf("plutoplus: spec[%d]: %w", idx, err)
 	}
 	timeout := spec.ConnectTimeout
 	if timeout <= 0 {
 		timeout = DefaultConnectTimeout
 	}
-	conn, err := net.DialTimeout("tcp", spec.Addr, timeout)
+	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
-		return nil, fmt.Errorf("plutoplus: dial %s: %w", spec.Addr, err)
+		return nil, fmt.Errorf("plutoplus: dial %s: %w", addr, err)
 	}
 	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		conn.Close()
@@ -100,7 +114,7 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 	}
 	if hdr[0] != magic[0] || hdr[1] != magic[1] || hdr[2] != magic[2] || hdr[3] != magic[3] {
 		conn.Close()
-		return nil, fmt.Errorf("plutoplus: %s: server header magic = %q, want %q", spec.Addr, hdr[:4], magic[:])
+		return nil, fmt.Errorf("plutoplus: %s: server header magic = %q, want %q", addr, hdr[:4], magic[:])
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 
@@ -109,12 +123,12 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 		Index:        idx,
 		Serial:       serialFor(spec, idx),
 		Manufacturer: "Analog Devices",
-		Product:      defaultProductName,
+		Product:      productName(spec),
 		TunerName:    "AD936x",
 		Gains:        standardGainLadder(),
 	}
-	d.log.Info("plutoplus: connected", "addr", spec.Addr, "serial", info.Serial)
-	return &device{addr: spec.Addr, info: info, conn: conn, log: d.log}, nil
+	d.log.Info("plutoplus: connected", "transport", normalizeTransport(spec.Transport), "addr", addr, "serial", info.Serial)
+	return &device{addr: addr, info: info, conn: conn, log: d.log}, nil
 }
 
 type device struct {
@@ -248,7 +262,45 @@ func serialFor(spec Spec, idx int) string {
 	if spec.Serial != "" {
 		return spec.Serial
 	}
-	return fmt.Sprintf("plutoplus-%s-%02d", sanitizeAddr(spec.Addr), idx)
+	addr, err := resolveAddr(spec)
+	if err != nil {
+		return fmt.Sprintf("plutoplus-%s-%02d", normalizeTransport(spec.Transport), idx)
+	}
+	return fmt.Sprintf("plutoplus-%s-%02d", sanitizeAddr(addr), idx)
+}
+
+func normalizeTransport(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return TransportTCP
+	}
+	return s
+}
+
+func resolveAddr(spec Spec) (string, error) {
+	t := normalizeTransport(spec.Transport)
+	addr := strings.TrimSpace(spec.Addr)
+	switch t {
+	case TransportTCP:
+		if addr == "" {
+			return "", fmt.Errorf("addr is required for transport %q", TransportTCP)
+		}
+		return addr, nil
+	case TransportUSB:
+		if addr == "" {
+			return DefaultUSBAddr, nil
+		}
+		return addr, nil
+	default:
+		return "", fmt.Errorf("unsupported transport %q (want %q or %q)", t, TransportTCP, TransportUSB)
+	}
+}
+
+func productName(spec Spec) string {
+	if normalizeTransport(spec.Transport) == TransportUSB {
+		return defaultProductName + " USB"
+	}
+	return defaultProductName
 }
 
 func sanitizeAddr(addr string) string {

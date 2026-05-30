@@ -525,7 +525,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 		if len(cfg.SDR.PlutoPlus) > 0 {
 			pspecs := make([]plutoplus.Spec, 0, len(cfg.SDR.PlutoPlus))
 			for _, p := range cfg.SDR.PlutoPlus {
-				if p.Addr == "" {
+				if strings.TrimSpace(strings.ToLower(p.Transport)) != plutoplus.TransportUSB && p.Addr == "" {
 					log.Warn("daemon: pluto_plus entry missing addr; skipping")
 					continue
 				}
@@ -533,6 +533,7 @@ func NewDaemonWithPath(cfg config.Config, cfgPath string, version string, log *s
 					Addr:           p.Addr,
 					Serial:         p.Serial,
 					Role:           p.Role,
+					Transport:      p.Transport,
 					ConnectTimeout: time.Duration(p.ConnectTimeoutMs) * time.Millisecond,
 				})
 				if p.Serial != "" {

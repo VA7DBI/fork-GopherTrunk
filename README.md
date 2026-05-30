@@ -142,8 +142,10 @@ Silicon and Intel. Full per-OS recipes at
   ALSA / WASAPI / CoreAudio.
 - **Pure-Go SDR drivers** — RTL-SDR, HackRF, Airspy R2 / Mini,
   Airspy HF+ family, plus Pluto Plus endpoint mode (`sdr.pluto_plus`).
-  The Pluto path expects a TCP IQ backend that speaks an
-  rtl_tcp-compatible header + command stream. USB transport on Linux (USBDEVFS), Windows
+  The Pluto path supports `transport: usb` (defaulting to
+  `192.168.2.1:1234`) or `transport: tcp` with an explicit
+  endpoint, both using an rtl_tcp-compatible header + command stream.
+  USB transport on Linux (USBDEVFS), Windows
   (WinUSB), macOS (IOKit). USB-disconnect self-healing recovers
   dongles that drop off the bus and re-enumerate without
   restarting the daemon. See

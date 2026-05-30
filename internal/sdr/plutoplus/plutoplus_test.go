@@ -124,6 +124,35 @@ func TestEnumerateConfiguredSpecs(t *testing.T) {
 	}
 }
 
+func TestEnumerateUSBDefaultAddr(t *testing.T) {
+	infos, err := New([]Spec{{Transport: TransportUSB, Serial: "PLUTO-USB-1"}}, nil).Enumerate()
+	if err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("len(infos) = %d, want 1", len(infos))
+	}
+	if infos[0].Product != defaultProductName+" USB" {
+		t.Fatalf("product = %q, want %q", infos[0].Product, defaultProductName+" USB")
+	}
+}
+
+func TestResolveAddrUSBDefault(t *testing.T) {
+	got, err := resolveAddr(Spec{Transport: TransportUSB})
+	if err != nil {
+		t.Fatalf("resolveAddr: %v", err)
+	}
+	if got != DefaultUSBAddr {
+		t.Fatalf("resolveAddr usb default = %q, want %q", got, DefaultUSBAddr)
+	}
+}
+
+func TestResolveAddrInvalidTransport(t *testing.T) {
+	if _, err := resolveAddr(Spec{Transport: "bluetooth", Addr: "x"}); err == nil {
+		t.Fatal("resolveAddr invalid transport: want error")
+	}
+}
+
 func TestOpenAndClose(t *testing.T) {
 	srv := newFakeServer(t)
 	d := New([]Spec{{Addr: srv.Addr(), Serial: "PLUTO-001"}}, nil)
@@ -133,6 +162,21 @@ func TestOpenAndClose(t *testing.T) {
 	}
 	if dev.Info().Serial != "PLUTO-001" {
 		t.Fatalf("Info().Serial = %q", dev.Info().Serial)
+	}
+	if err := dev.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestOpenUSBTransportWithExplicitAddr(t *testing.T) {
+	srv := newFakeServer(t)
+	d := New([]Spec{{Transport: TransportUSB, Addr: srv.Addr(), Serial: "PLUTO-USB-001"}}, nil)
+	dev, err := d.Open(0)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if dev.Info().Product != defaultProductName+" USB" {
+		t.Fatalf("Info().Product = %q, want %q", dev.Info().Product, defaultProductName+" USB")
 	}
 	if err := dev.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

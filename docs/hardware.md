@@ -22,7 +22,7 @@ transport (USBDEVFS on Linux, IOKit on macOS, WinUSB on Windows).
 | **Airspy R2 / Airspy Mini** | `airspy` | `0x1d50:0x60a1` | Wire-protocol-complete; on-air validation against attached hardware is the documented follow-up. |
 | **Airspy HF+ Discovery / HF+ Dual Port / legacy HF+** | `airspyhf` | `0x03eb:0x800c` | Wire-protocol-complete; HF (9 kHz – 31 MHz) + VHF (60 – 260 MHz). On-air validation against attached hardware is the documented follow-up. |
 | **rtl_tcp remote** (any librtlsdr-shipped server) | `rtltcp` | TCP | Remote RTL-SDR mounted over the network. See [Remote rtl_tcp SDRs](#remote-rtl_tcp-sdrs). |
-| **Pluto Plus SDR** | `plutoplus` | TCP endpoint | Functional in endpoint mode: configure `sdr.pluto_plus` with host:port to stream IQ + control over an rtl_tcp-compatible wire shape. |
+| **Pluto Plus SDR** | `plutoplus` | USB or TCP endpoint | Functional in endpoint mode: configure `sdr.pluto_plus` for `transport: usb` (default endpoint `192.168.2.1:1234`) or explicit `transport: tcp` + `addr`. |
 
 The HackRF and Airspy / Airspy HF+ drivers speak the documented
 libhackrf, libairspy, and libairspyhf USB vendor protocols directly
@@ -32,10 +32,11 @@ real-time decode of HackRF int8 IQ and Airspy / HF+ INT16_IQ into
 `complex64`). Their wire protocols are exercised by unit tests
 against `usb.MockTransport`. SDRPlay, USRP and BladeRF require
 vendor C libraries and are out of scope for the zero-CGO build.
-Pluto Plus support currently targets TCP endpoint mode first: the
-driver consumes an rtl_tcp-compatible header/command/IQ stream so
-operators can run the radio remotely and still use the native pool,
-hints, and watchdog wiring.
+Pluto Plus support currently targets endpoint mode first: the driver
+consumes an rtl_tcp-compatible header/command/IQ stream over either
+USB-network mode (`transport: usb`, defaulting to `192.168.2.1:1234`)
+or a custom TCP endpoint (`transport: tcp`, explicit `addr`). This
+keeps pool, hints, and watchdog wiring identical to other SDR backends.
 
 At enumeration time each driver reports the canonical model name
 rather than echoing whatever the USB descriptor happens to carry:

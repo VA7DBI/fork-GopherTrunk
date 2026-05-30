@@ -461,6 +461,11 @@ type RTLTCPConfig struct {
 
 // PlutoPlusConfig describes one Pluto Plus endpoint.
 type PlutoPlusConfig struct {
+	// Transport selects how the daemon reaches Pluto:
+	//   - "tcp" (default): Addr is required.
+	//   - "usb": Addr optional; empty defaults to 192.168.2.1:1234
+	//            (the common Pluto-over-USB network endpoint).
+	Transport string `yaml:"transport"`
 	// Addr is the host:port pair exposed by the Pluto endpoint.
 	Addr string `yaml:"addr"`
 	// Serial is the virtual serial reported by /api/v1/devices.
@@ -1017,8 +1022,20 @@ func (c Config) Validate() error {
 		seenSerials[r.Serial] = i
 	}
 	for i, p := range c.SDR.PlutoPlus {
-		if p.Addr == "" {
-			return fmt.Errorf("sdr.pluto_plus[%d]: addr is required (host:port)", i)
+		t := strings.ToLower(strings.TrimSpace(p.Transport))
+		if t == "" {
+			t = "tcp"
+		}
+		switch t {
+		case "tcp":
+			if p.Addr == "" {
+				return fmt.Errorf("sdr.pluto_plus[%d]: addr is required (host:port) when transport=tcp", i)
+			}
+		case "usb":
+			// addr is optional in usb mode; runtime defaults to
+			// 192.168.2.1:1234 unless overridden.
+		default:
+			return fmt.Errorf("sdr.pluto_plus[%d]: transport must be tcp|usb", i)
 		}
 		switch p.Role {
 		case "", "control", "voice", "auto":
