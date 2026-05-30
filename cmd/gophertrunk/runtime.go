@@ -42,6 +42,8 @@ var vocoderProtocolMap = map[string]string{
 	"mpt1327":    "—",
 }
 
+const plutoRecentWindow = 10 * time.Minute
+
 func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 	cfg := r.cfg
 	dto := api.RuntimeDTO{
@@ -84,6 +86,9 @@ func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 		VocoderMap:     vocoderProtocolMap,
 	}
 	pm := plutoplus.RuntimeMetricsSnapshot()
+	healthClass, recentFailure := classifyPlutoHealth(pm, time.Now().UTC())
+	dominantStage, _ := dominantPlutoFailureStage(pm)
+	breakdown := plutoFailureBreakdown(pm)
 	dto.PlutoRuntime = api.PlutoRuntimeDTO{
 		Reconnects:        pm.Reconnects,
 		ReconnectFailures: pm.ReconnectFailures,
@@ -93,6 +98,11 @@ func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 		StreamFailures:    pm.StreamFailures,
 		UnknownFailures:   pm.UnknownFailures,
 		LastFailureAt:     pm.LastFailureAt,
+		HealthClass:       healthClass,
+		RecentFailure:     recentFailure,
+		DominantStage:     dominantStage,
+		FailureBreakdown:  breakdown,
+		RemediationHint:   plutoRemediationHint(dominantStage, recentFailure),
 	}
 	if cfg.Recordings.Equalizer.StepSize != 0 {
 		dto.RecordingEQStepSize = formatFloat(float64(cfg.Recordings.Equalizer.StepSize))
@@ -164,4 +174,98 @@ func formatFloat(v float64) string {
 		s = fmt.Sprintf("%g", v)
 	}
 	return s
+}
+
+func classifyPlutoHealth(pm plutoplus.RuntimeMetrics, now time.Time) (string, bool) {
+	failures := plutoFailureTotal(pm)
+	recent := plutoFailuresRecent(pm, now)
+	switch {
+	case failures >= 5 && recent:
+		return "unstable", true
+	case (failures > 0 && recent) || (pm.Reconnects >= 3 && recent):
+		return "degraded", true
+	case failures > 0:
+		return "historical", false
+	default:
+		return "stable", false
+	}
+}
+
+func plutoFailuresRecent(pm plutoplus.RuntimeMetrics, now time.Time) bool {
+	if pm.LastFailureAt.IsZero() {
+		return plutoFailureTotal(pm) > 0
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if pm.LastFailureAt.After(now) {
+		return true
+	}
+	return now.Sub(pm.LastFailureAt) <= plutoRecentWindow
+}
+
+func plutoFailureTotal(pm plutoplus.RuntimeMetrics) uint64 {
+	return pm.ReconnectFailures + pm.DialFailures + pm.HandshakeFailures + pm.CommandFailures + pm.StreamFailures + pm.UnknownFailures
+}
+
+func dominantPlutoFailureStage(pm plutoplus.RuntimeMetrics) (string, uint64) {
+	maxStage := ""
+	maxCount := uint64(0)
+	stages := []struct {
+		name  string
+		count uint64
+	}{
+		{name: "dial", count: pm.DialFailures},
+		{name: "handshake", count: pm.HandshakeFailures},
+		{name: "command", count: pm.CommandFailures},
+		{name: "stream", count: pm.StreamFailures},
+		{name: "unknown", count: pm.UnknownFailures},
+	}
+	for _, s := range stages {
+		if s.count > maxCount {
+			maxCount = s.count
+			maxStage = s.name
+		}
+	}
+	return maxStage, maxCount
+}
+
+func plutoFailureBreakdown(pm plutoplus.RuntimeMetrics) string {
+	parts := make([]string, 0, 5)
+	if pm.DialFailures > 0 {
+		parts = append(parts, fmt.Sprintf("dial %d", pm.DialFailures))
+	}
+	if pm.HandshakeFailures > 0 {
+		parts = append(parts, fmt.Sprintf("handshake %d", pm.HandshakeFailures))
+	}
+	if pm.CommandFailures > 0 {
+		parts = append(parts, fmt.Sprintf("command %d", pm.CommandFailures))
+	}
+	if pm.StreamFailures > 0 {
+		parts = append(parts, fmt.Sprintf("stream %d", pm.StreamFailures))
+	}
+	if pm.UnknownFailures > 0 {
+		parts = append(parts, fmt.Sprintf("unknown %d", pm.UnknownFailures))
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+func plutoRemediationHint(stage string, recent bool) string {
+	if !recent {
+		return ""
+	}
+	switch stage {
+	case "dial":
+		return "check Pluto endpoint address/USB transport and device power"
+	case "handshake":
+		return "verify RTL-TCP compatibility and firmware behavior on connect"
+	case "command":
+		return "inspect tuner command sequence and Pluto command responses"
+	case "stream":
+		return "check USB/network stability and host performance under load"
+	case "unknown":
+		return "inspect daemon logs for plutoplus transport error details"
+	default:
+		return ""
+	}
 }

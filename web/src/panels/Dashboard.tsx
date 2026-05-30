@@ -3,8 +3,6 @@ import { api } from "../api/client";
 import type { PlutoRuntimeDTO, RuntimeDTO } from "../api/types";
 import { selectClientConfig, useShared } from "../store/shared";
 
-const PLUTO_RECENT_WINDOW_MS = 10 * 60 * 1000;
-
 // Dashboard: top-line counts + a peek at the last few events. The
 // fuller dashboard (with charts) is a follow-up PR; this one
 // proves the live-update wiring works end-to-end.
@@ -97,8 +95,8 @@ export function Dashboard() {
         <section className="panel p-4">
           <div className="flex items-center gap-2 mb-2">
             <h3 className="panel-title">Pluto Plus health</h3>
-            <span className={plutoSeverity(runtime?.pluto_runtime).className}>
-              {plutoSeverity(runtime?.pluto_runtime).label}
+            <span className={plutoClassBadge(runtime?.pluto_runtime?.health_class).className}>
+              {plutoClassBadge(runtime?.pluto_runtime?.health_class).label}
             </span>
           </div>
           <p className="text-sm">
@@ -106,12 +104,12 @@ export function Dashboard() {
             {"  ·  "}
             Failures <span className="font-mono">{plutoFailureTotal(runtime?.pluto_runtime)}</span>
           </p>
-          {plutoFailureBreakdown(runtime?.pluto_runtime) && (
-            <p className="text-xs text-muted mt-1">{plutoFailureBreakdown(runtime?.pluto_runtime)}</p>
+          {runtime?.pluto_runtime?.failure_breakdown && (
+            <p className="text-xs text-muted mt-1">{runtime.pluto_runtime.failure_breakdown}</p>
           )}
-          {plutoRemediationHint(runtime?.pluto_runtime) && (
+          {runtime?.pluto_runtime?.remediation_hint && (
             <p className="text-xs text-muted mt-1">
-              hint: {plutoRemediationHint(runtime?.pluto_runtime)}
+              hint: {runtime.pluto_runtime.remediation_hint}
             </p>
           )}
         </section>
@@ -189,80 +187,20 @@ function plutoFailureTotal(pluto?: PlutoRuntimeDTO): number {
   );
 }
 
-function plutoFailureBreakdown(pluto?: PlutoRuntimeDTO): string {
-  if (!pluto) return "";
-  const parts: string[] = [];
-  if ((pluto.dial_failures ?? 0) > 0) parts.push(`dial ${pluto.dial_failures}`);
-  if ((pluto.handshake_failures ?? 0) > 0) parts.push(`handshake ${pluto.handshake_failures}`);
-  if ((pluto.command_failures ?? 0) > 0) parts.push(`command ${pluto.command_failures}`);
-  if ((pluto.stream_failures ?? 0) > 0) parts.push(`stream ${pluto.stream_failures}`);
-  if ((pluto.unknown_failures ?? 0) > 0) parts.push(`unknown ${pluto.unknown_failures}`);
-  return parts.join("  ·  ");
-}
-
-function plutoSeverity(pluto?: PlutoRuntimeDTO): { label: string; className: string } {
-  const failures = plutoFailureTotal(pluto);
-  const recent = plutoFailuresRecent(pluto);
-  switch (true) {
-    case failures >= 5 && recent:
+function plutoClassBadge(className?: string): { label: string; className: string } {
+  switch (className) {
+    case "unstable":
       return { label: "unstable", className: "pill-err" };
-    case (failures > 0 && recent) || ((pluto?.reconnects ?? 0) >= 3 && recent):
+    case "degraded":
       return { label: "degraded", className: "pill-warn" };
-    case failures > 0:
+    case "historical":
       return { label: "historical", className: "pill-ok" };
-    default:
+    case "stable":
+    case undefined:
       return { label: "stable", className: "pill-ok" };
-  }
-}
-
-function plutoRemediationHint(pluto?: PlutoRuntimeDTO): string {
-  if (!plutoFailuresRecent(pluto)) return "";
-  const [stage, count] = plutoDominantFailure(pluto);
-  if (count === 0) return "";
-  switch (stage) {
-    case "dial":
-      return "check Pluto endpoint address/USB transport and device power";
-    case "handshake":
-      return "verify RTL-TCP compatibility and firmware behavior on connect";
-    case "command":
-      return "inspect tuner command sequence and Pluto command responses";
-    case "stream":
-      return "check USB/network stability and host performance under load";
     default:
-      return "inspect daemon logs for plutoplus transport error details";
+      return { label: className, className: "pill-ok" };
   }
-}
-
-function plutoDominantFailure(pluto?: PlutoRuntimeDTO): [string, number] {
-  const stages: Array<[string, number]> = [
-    ["dial", pluto?.dial_failures ?? 0],
-    ["handshake", pluto?.handshake_failures ?? 0],
-    ["command", pluto?.command_failures ?? 0],
-    ["stream", pluto?.stream_failures ?? 0],
-    ["unknown", pluto?.unknown_failures ?? 0],
-  ];
-  let maxStage = "";
-  let maxCount = 0;
-  for (const [stage, count] of stages) {
-    if (count > maxCount) {
-      maxStage = stage;
-      maxCount = count;
-    }
-  }
-  return [maxStage, maxCount];
-}
-
-function plutoFailuresRecent(pluto?: PlutoRuntimeDTO): boolean {
-  if (!pluto) return false;
-  const lastFailureAt = pluto.last_failure_at;
-  if (!lastFailureAt) {
-    return plutoFailureTotal(pluto) > 0;
-  }
-  const parsed = Date.parse(lastFailureAt);
-  if (Number.isNaN(parsed)) {
-    return plutoFailureTotal(pluto) > 0;
-  }
-  return Date.now() - parsed <= PLUTO_RECENT_WINDOW_MS;
 }
 
 function StatCard({

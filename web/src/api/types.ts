@@ -227,6 +227,11 @@ export interface PlutoRuntimeDTO {
   stream_failures?: number;
   unknown_failures?: number;
   last_failure_at?: string;
+  health_class?: string;
+  recent_failure?: boolean;
+  dominant_failure_stage?: string;
+  failure_breakdown?: string;
+  remediation_hint?: string;
 }
 
 // SettingsPatch mirrors the daemon's PATCH /api/v1/settings body.

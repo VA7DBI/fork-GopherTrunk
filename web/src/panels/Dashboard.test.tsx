@@ -49,6 +49,9 @@ describe("Dashboard Pluto health", () => {
 				dial_failures: 2,
 				handshake_failures: 1,
 				stream_failures: 4,
+				health_class: "unstable",
+				failure_breakdown: "dial 2  ·  handshake 1  ·  stream 4",
+				remediation_hint: "check USB/network stability and host performance under load",
 			},
 		});
 
@@ -65,13 +68,12 @@ describe("Dashboard Pluto health", () => {
 	});
 
 	it("classifies stale Pluto failures as historical and suppresses remediation hint", async () => {
-		const stale = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
 		vi.mocked(api.runtime).mockResolvedValue({
 			sdr_backends: ["plutoplus"],
 			pluto_runtime: {
 				reconnects: 5,
 				dial_failures: 9,
-				last_failure_at: stale,
+				health_class: "historical",
 			},
 		});
 

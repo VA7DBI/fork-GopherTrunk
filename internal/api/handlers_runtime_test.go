@@ -60,6 +60,11 @@ func TestHandleRuntime_ServesDTO(t *testing.T) {
 			StreamFailures:    11,
 			UnknownFailures:   13,
 			LastFailureAt:     time.Unix(1717001234, 0).UTC(),
+			HealthClass:       "unstable",
+			RecentFailure:     true,
+			DominantStage:     "unknown",
+			FailureBreakdown:  "dial 5  ·  handshake 1  ·  command 7  ·  stream 11  ·  unknown 13",
+			RemediationHint:   "inspect daemon logs for plutoplus transport error details",
 		},
 	}}
 	s, err := NewServer(ServerOptions{Addr: "127.0.0.1:0", Bus: bus, Runtime: fake})

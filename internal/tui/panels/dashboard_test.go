@@ -3,7 +3,6 @@ package panels
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/tui/client"
 	"github.com/MattCheramie/GopherTrunk/internal/tui/state"
@@ -16,10 +15,13 @@ func TestDashboardPanel_HealthBodyRendersPlutoSummary(t *testing.T) {
 		Runtime: client.RuntimeDTO{
 			SDRBackends: []string{"plutoplus"},
 			PlutoRuntime: client.PlutoRuntimeDTO{
-				Reconnects:        4,
-				DialFailures:      2,
+				Reconnects:       4,
+				DialFailures:     2,
 				HandshakeFailures: 1,
-				StreamFailures:    3,
+				StreamFailures:   3,
+				HealthClass:      "unstable",
+				FailureBreakdown: "dial 2  ·  handshake 1  ·  stream 3",
+				RemediationHint:  "check USB/network stability and host performance under load",
 			},
 		},
 	}
@@ -39,16 +41,16 @@ func TestDashboardPanel_HealthBodyRendersPlutoSummary(t *testing.T) {
 	}
 }
 
-func TestDashboardPanel_HealthBodyMarksStalePlutoFailuresHistorical(t *testing.T) {
+func TestDashboardPanel_HealthBodyRendersHistoricalPlutoWithoutHint(t *testing.T) {
 	p := NewDashboard()
 	s := &state.SharedState{
 		Health: client.Health{Status: "ok"},
 		Runtime: client.RuntimeDTO{
 			SDRBackends: []string{"plutoplus"},
 			PlutoRuntime: client.PlutoRuntimeDTO{
-				Reconnects:    10,
-				DialFailures:  7,
-				LastFailureAt: time.Now().UTC().Add(-2 * time.Hour),
+				Reconnects:   10,
+				DialFailures: 7,
+				HealthClass:  "historical",
 			},
 		},
 	}
