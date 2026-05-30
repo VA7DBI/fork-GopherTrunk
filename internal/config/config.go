@@ -529,6 +529,14 @@ type DeviceConfig struct {
 	// physical voice SDR when one is configured. Capped at 8 to
 	// keep CPU bounded.
 	VoiceTaps int `yaml:"voice_taps"`
+
+	// IQCorrect enables blind I/Q-imbalance correction on this device's
+	// raw IQ before decimation (issue #402). Off by default. An
+	// uncorrected RTL-SDR I/Q imbalance distorts the demodulated symbol
+	// eye (worst at the on-channel DC the control decoder's DDC sits on);
+	// validate the benefit with `gophertrunk replay -iq-correct -diag`
+	// on a capture from this device before enabling it here.
+	IQCorrect bool `yaml:"iq_correct"`
 }
 
 // DeviceChannelConfig is one repeater carrier carried by a
