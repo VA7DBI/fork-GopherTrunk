@@ -234,12 +234,15 @@ FLAGS:`)
 		// raw matched-output-unit value behind it.
 		//
 		// slicer_levels are the adaptive slicer's tracked −3/−1/+1/+3
-		// levels (issue #402). On a clean symmetric eye they sit near
-		// ±agc_target·{3/2, 1/2}; an asymmetric site shows one rail
-		// stretched, and the slicer's midpoint thresholds follow it.
+		// levels; slicer_thresholds are the actual decision boundaries
+		// (neg-outer/zero/pos-outer) the slicer decides on (issue #402: the
+		// OP asked to see the thresholds, not just the levels — on a spread
+		// eye the variance-aware boundary sits below the level midpoint).
+		// Both read zero on the fixed-slicer path (no -adaptive-slicer).
 		lv := rx.SlicerLevels()
+		th := rx.SlicerThresholds()
 		fmt.Fprintf(os.Stderr,
-			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f  dda_active=%t  dda_rearms=%d  slicer_levels=[%.4f %.4f %.4f %.4f]\n",
+			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f  dda_active=%t  dda_rearms=%d  slicer_levels=[%.4f %.4f %.4f %.4f]  slicer_thresholds=[%.4f %.4f %.4f]\n",
 			at,
 			rx.AFCBiasRadPerSample(),
 			rx.AFCOffsetHz(),
@@ -250,7 +253,8 @@ FLAGS:`)
 			rx.MMClockSPS(),
 			rx.DDAActive(),
 			rx.DDARearms(),
-			lv[0], lv[1], lv[2], lv[3])
+			lv[0], lv[1], lv[2], lv[3],
+			th[0], th[1], th[2])
 	}
 
 	const chunkSamples = 8192

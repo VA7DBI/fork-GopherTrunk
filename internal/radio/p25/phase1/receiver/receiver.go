@@ -675,6 +675,20 @@ func (r *Receiver) SlicerLevels() [4]float64 {
 	return [4]float64{float64(lv[0]), float64(lv[1]), float64(lv[2]), float64(lv[3])}
 }
 
+// SlicerThresholds returns the adaptive slicer's three live decision
+// boundaries (negative-outer, zero, positive-outer) — the values the slicer
+// actually decides on, which on an asymmetric/spread eye differ from the
+// midpoints of the tracked levels (issue #402: the OP asked to see the
+// per-second thresholds, not just the levels). Returns the zero array on the
+// CQPSK path or when no adaptive slicer is allocated (the fixed-slicer path).
+func (r *Receiver) SlicerThresholds() [3]float64 {
+	if r.slicer == nil {
+		return [3]float64{}
+	}
+	th := r.slicer.Thresholds()
+	return [3]float64{float64(th[0]), float64(th[1]), float64(th[2])}
+}
+
 // MMClockMu returns the Mueller-Müller symbol clock's current
 // sub-sample phase accumulator (in [-1, sps]). At steady state on a
 // noise-free input mu cycles deterministically through the symbol
