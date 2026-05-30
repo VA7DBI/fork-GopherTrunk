@@ -57,6 +57,13 @@ type fakeServer struct {
 	conn net.Conn
 }
 
+type reconnectServer struct {
+	t        *testing.T
+	ln       net.Listener
+	payloads chan []byte
+	stop     chan struct{}
+}
+
 type cmdRecord struct {
 	Op    uint8
 	Param uint32
@@ -139,6 +146,61 @@ func (s *fakeServer) run() {
 				return
 			}
 		}
+	}
+}
+
+func newReconnectServer(t *testing.T) *reconnectServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	s := &reconnectServer{t: t, ln: ln, payloads: make(chan []byte, 16), stop: make(chan struct{})}
+	go s.run()
+	t.Cleanup(s.close)
+	return s
+}
+
+func (s *reconnectServer) Addr() string { return s.ln.Addr().String() }
+
+func (s *reconnectServer) Enqueue(payload []byte) {
+	s.payloads <- payload
+}
+
+func (s *reconnectServer) close() {
+	close(s.stop)
+	_ = s.ln.Close()
+}
+
+func (s *reconnectServer) run() {
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			select {
+			case <-s.stop:
+				return
+			default:
+				return
+			}
+		}
+
+		go func(c net.Conn) {
+			defer c.Close()
+			var hdr [12]byte
+			copy(hdr[:4], magic[:])
+			binary.BigEndian.PutUint32(hdr[4:8], 5)
+			binary.BigEndian.PutUint32(hdr[8:12], 29)
+			if _, err := c.Write(hdr[:]); err != nil {
+				return
+			}
+			select {
+			case <-s.stop:
+				return
+			case payload := <-s.payloads:
+				_, _ = c.Write(payload)
+				return
+			}
+		}(conn)
 	}
 }
 
@@ -327,6 +389,48 @@ func TestStreamIQ(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no IQ chunk received")
+	}
+}
+
+func TestStreamIQReconnectsOnEOF(t *testing.T) {
+	srv := newReconnectServer(t)
+	d := New([]Spec{{Addr: srv.Addr(), Serial: "PLUTO-001"}}, nil)
+	dev, err := d.Open(0)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer dev.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := dev.StreamIQ(ctx)
+	if err != nil {
+		t.Fatalf("StreamIQ: %v", err)
+	}
+
+	mk := func(iq byte) []byte {
+		b := make([]byte, 8192*2)
+		for i := 0; i < len(b); i += 2 {
+			b[i] = iq
+			b[i+1] = 128
+		}
+		return b
+	}
+	srv.Enqueue(mk(127))
+	srv.Enqueue(mk(126))
+
+	first := <-ch
+	if len(first) != 8192 {
+		t.Fatalf("first len = %d, want 8192", len(first))
+	}
+
+	select {
+	case second := <-ch:
+		if len(second) != 8192 {
+			t.Fatalf("second len = %d, want 8192", len(second))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("second chunk not received after reconnect")
 	}
 }
 

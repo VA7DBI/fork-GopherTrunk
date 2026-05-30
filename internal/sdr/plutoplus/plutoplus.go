@@ -33,6 +33,8 @@ const (
 
 const DefaultConnectTimeout = 3 * time.Second
 const autoProbeTimeout = 250 * time.Millisecond
+const reconnectInitialBackoff = 250 * time.Millisecond
+const reconnectMaxBackoff = 2 * time.Second
 
 type Stage string
 
@@ -188,7 +190,7 @@ func (d *Driver) openSpec(idx int, spec Spec) (sdr.Device, error) {
 		Gains:        standardGainLadder(),
 	}
 	d.log.Info("plutoplus: connected", "transport", normalizeTransport(spec.Transport), "addr", addr, "serial", info.Serial)
-	return &device{addr: addr, info: info, conn: conn, log: d.log}, nil
+	return &device{addr: addr, info: info, conn: conn, connectTimeout: timeout, log: d.log}, nil
 }
 
 func dialAndHandshake(addr string, timeout time.Duration) (net.Conn, error) {
@@ -230,6 +232,8 @@ type device struct {
 	addr string
 	info sdr.Info
 	log  *slog.Logger
+
+	connectTimeout time.Duration
 
 	mu     sync.Mutex
 	conn   net.Conn
@@ -302,7 +306,6 @@ func (d *device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 		d.mu.Unlock()
 		return nil, fmt.Errorf("plutoplus: device closed")
 	}
-	conn := d.conn
 	d.mu.Unlock()
 
 	const chunkSamples = 8192
@@ -311,14 +314,19 @@ func (d *device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 		defer close(out)
 		buf := make([]byte, chunkSamples*2)
 		for {
+			d.mu.Lock()
+			if d.closed || d.conn == nil {
+				d.mu.Unlock()
+				return
+			}
+			conn := d.conn
+			d.mu.Unlock()
+
 			_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 			n, err := io.ReadFull(conn, buf)
 			if err != nil {
 				if err != io.EOF && err != io.ErrUnexpectedEOF {
 					d.log.Debug("plutoplus: stream read", "addr", d.addr, "err", (&TransportError{Stage: StageStream, Addr: d.addr, Op: "read-iq", Err: err}).Error())
-				}
-				if n == 0 {
-					return
 				}
 			}
 			if n > 0 {
@@ -330,7 +338,14 @@ func (d *device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 				}
 			}
 			if err != nil {
-				return
+				if ctx.Err() != nil {
+					return
+				}
+				if rerr := d.reconnect(ctx); rerr != nil {
+					d.log.Warn("plutoplus: stream reconnect failed", "addr", d.addr, "err", rerr)
+					return
+				}
+				continue
 			}
 			select {
 			case <-ctx.Done():
@@ -340,6 +355,50 @@ func (d *device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 		}
 	}()
 	return out, nil
+}
+
+func (d *device) reconnect(ctx context.Context) error {
+	backoff := reconnectInitialBackoff
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		conn, err := dialAndHandshake(d.addr, d.connectTimeout)
+		if err == nil {
+			d.mu.Lock()
+			if d.closed {
+				d.mu.Unlock()
+				_ = conn.Close()
+				return fmt.Errorf("plutoplus: device closed")
+			}
+			prev := d.conn
+			d.conn = conn
+			d.mu.Unlock()
+			if prev != nil {
+				_ = prev.Close()
+			}
+			d.log.Info("plutoplus: stream reconnected", "addr", d.addr)
+			return nil
+		}
+
+		d.log.Warn("plutoplus: reconnect attempt failed", "addr", d.addr, "backoff", backoff.String(), "err", err)
+		t := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			if !t.Stop() {
+				<-t.C
+			}
+			return ctx.Err()
+		case <-t.C:
+		}
+		backoff *= 2
+		if backoff > reconnectMaxBackoff {
+			backoff = reconnectMaxBackoff
+		}
+	}
 }
 
 func convertU8(buf []byte) []complex64 {
