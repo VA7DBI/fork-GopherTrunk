@@ -194,6 +194,7 @@ func New(bus *events.Bus, pool Snapshotter, version string) (*Metrics, error) {
 		m.decodeErrors,
 		m.sdrAttached,
 		m.versionInfo,
+		newPlutoCollector(),
 	}
 	if pool != nil {
 		m.sdrSnap = newSDRSnapshotCollector(pool)

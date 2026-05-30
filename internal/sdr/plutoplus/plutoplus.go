@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"strings"
 	"sync"
 	"time"
@@ -91,6 +92,40 @@ const (
 // interface at 192.168.2.1. The Pluto Plus endpoint process can
 // listen on 1234 with an rtl_tcp-compatible wire shape.
 var DefaultUSBAddr = "192.168.2.1:1234"
+
+var (
+	metricReconnects        atomic.Uint64
+	metricReconnectFailures atomic.Uint64
+	metricDialFailures      atomic.Uint64
+	metricHandshakeFailures atomic.Uint64
+	metricCommandFailures   atomic.Uint64
+	metricStreamFailures    atomic.Uint64
+	metricUnknownFailures   atomic.Uint64
+)
+
+// RuntimeMetrics is a snapshot of Pluto runtime health counters.
+type RuntimeMetrics struct {
+	Reconnects        uint64
+	ReconnectFailures uint64
+	DialFailures      uint64
+	HandshakeFailures uint64
+	CommandFailures   uint64
+	StreamFailures    uint64
+	UnknownFailures   uint64
+}
+
+// RuntimeMetricsSnapshot returns process-wide Pluto health counters.
+func RuntimeMetricsSnapshot() RuntimeMetrics {
+	return RuntimeMetrics{
+		Reconnects:        metricReconnects.Load(),
+		ReconnectFailures: metricReconnectFailures.Load(),
+		DialFailures:      metricDialFailures.Load(),
+		HandshakeFailures: metricHandshakeFailures.Load(),
+		CommandFailures:   metricCommandFailures.Load(),
+		StreamFailures:    metricStreamFailures.Load(),
+		UnknownFailures:   metricUnknownFailures.Load(),
+	}
+}
 
 // Spec declares one Pluto Plus endpoint.
 type Spec struct {
@@ -185,6 +220,7 @@ func (d *Driver) openSpec(idx int, spec Spec) (sdr.Device, error) {
 	}
 	conn, err := dialAndHandshake(addr, timeout)
 	if err != nil {
+		recordFailureStage(err)
 		d.log.Warn("plutoplus: open failed", "transport", normalizeTransport(spec.Transport), "addr", addr, "err", err)
 		return nil, err
 	}
@@ -290,6 +326,7 @@ func (d *device) sendCmd(op uint8, param uint32) error {
 	pkt[4] = byte(param)
 	_ = d.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	if _, err := d.conn.Write(pkt[:]); err != nil {
+		recordFailureStage(&TransportError{Stage: StageCommand, Addr: d.addr, Op: fmt.Sprintf("cmd-0x%02x", op), Err: err})
 		return &TransportError{Stage: StageCommand, Addr: d.addr, Op: fmt.Sprintf("cmd-0x%02x", op), Err: err}
 	}
 	_ = d.conn.SetWriteDeadline(time.Time{})
@@ -335,6 +372,7 @@ func (d *device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 			n, err := io.ReadFull(conn, buf)
 			if err != nil {
 				if err != io.EOF && err != io.ErrUnexpectedEOF {
+					recordFailureStage(&TransportError{Stage: StageStream, Addr: d.addr, Op: "read-iq", Err: err})
 					d.log.Debug("plutoplus: stream read", "addr", d.addr, "err", (&TransportError{Stage: StageStream, Addr: d.addr, Op: "read-iq", Err: err}).Error())
 				}
 			}
@@ -389,10 +427,13 @@ func (d *device) reconnect(ctx context.Context) error {
 			if prev != nil {
 				_ = prev.Close()
 			}
+			metricReconnects.Add(1)
 			d.log.Info("plutoplus: stream reconnected", "addr", d.addr)
 			return nil
 		}
 
+		recordFailureStage(err)
+		metricReconnectFailures.Add(1)
 		d.log.Warn("plutoplus: reconnect attempt failed", "addr", d.addr, "backoff", backoff.String(), "err", err)
 		t := time.NewTimer(backoff)
 		select {
@@ -407,6 +448,26 @@ func (d *device) reconnect(ctx context.Context) error {
 		if backoff > reconnectMaxBackoff {
 			backoff = reconnectMaxBackoff
 		}
+	}
+}
+
+func recordFailureStage(err error) {
+	stage, ok := ErrorStage(err)
+	if !ok {
+		metricUnknownFailures.Add(1)
+		return
+	}
+	switch stage {
+	case StageDial:
+		metricDialFailures.Add(1)
+	case StageHandshake:
+		metricHandshakeFailures.Add(1)
+	case StageCommand:
+		metricCommandFailures.Add(1)
+	case StageStream:
+		metricStreamFailures.Add(1)
+	default:
+		metricUnknownFailures.Add(1)
 	}
 }
 

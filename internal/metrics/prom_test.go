@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/events"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/plutoplus"
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -176,6 +177,30 @@ func TestRecordIQPowerDbFS(t *testing.T) {
 	m.RecordIQPowerDbFS("", -40.0)
 	if got := testutil.ToFloat64(m.iqPowerDbFS.WithLabelValues("unknown")); got != -40.0 {
 		t.Errorf("iq power unknown = %v, want -40.0", got)
+	}
+}
+
+func TestPlutoCollectorExportsSeries(t *testing.T) {
+	// Trigger at least one dial-stage failure so the collector has
+	// non-zero data to export.
+	_, _ = plutoplus.New([]plutoplus.Spec{{Addr: "127.0.0.1:1", Serial: "PLUTO-METRICS"}}, nil).Open(0)
+
+	m, _ := New(nil, nil, "test")
+	defer m.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rr := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rr, req)
+	body := rr.Body.String()
+
+	if !strings.Contains(body, "gophertrunk_plutoplus_reconnects_total") {
+		t.Fatalf("metrics body missing gophertrunk_plutoplus_reconnects_total")
+	}
+	if !strings.Contains(body, "gophertrunk_plutoplus_reconnect_failures_total") {
+		t.Fatalf("metrics body missing gophertrunk_plutoplus_reconnect_failures_total")
+	}
+	if !strings.Contains(body, "gophertrunk_plutoplus_failures_total{stage=\"dial\"}") {
+		t.Fatalf("metrics body missing gophertrunk_plutoplus_failures_total dial stage")
 	}
 }
 
