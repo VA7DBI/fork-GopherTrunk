@@ -7,7 +7,8 @@ nav_group: Install
 
 # Hardware Setup
 
-GopherTrunk ships with pure-Go drivers for three SDR families — no
+GopherTrunk ships with pure-Go drivers for three production SDR
+families plus a Pluto Plus scaffold driver — no
 `librtlsdr`, `libhackrf`, `libairspy`, `libusb`, or C toolchain on
 the build host. All three drivers share the same pure-Go USB
 transport (USBDEVFS on Linux, IOKit on macOS, WinUSB on Windows).
@@ -21,6 +22,7 @@ transport (USBDEVFS on Linux, IOKit on macOS, WinUSB on Windows).
 | **Airspy R2 / Airspy Mini** | `airspy` | `0x1d50:0x60a1` | Wire-protocol-complete; on-air validation against attached hardware is the documented follow-up. |
 | **Airspy HF+ Discovery / HF+ Dual Port / legacy HF+** | `airspyhf` | `0x03eb:0x800c` | Wire-protocol-complete; HF (9 kHz – 31 MHz) + VHF (60 – 260 MHz). On-air validation against attached hardware is the documented follow-up. |
 | **rtl_tcp remote** (any librtlsdr-shipped server) | `rtltcp` | TCP | Remote RTL-SDR mounted over the network. See [Remote rtl_tcp SDRs](#remote-rtl_tcp-sdrs). |
+| **Pluto Plus SDR** | `plutoplus` | USB / network (TBD) | Stub only: driver is linked and registered, but hardware probing and IQ streaming are not implemented yet. |
 
 The HackRF and Airspy / Airspy HF+ drivers speak the documented
 libhackrf, libairspy, and libairspyhf USB vendor protocols directly
@@ -30,6 +32,8 @@ real-time decode of HackRF int8 IQ and Airspy / HF+ INT16_IQ into
 `complex64`). Their wire protocols are exercised by unit tests
 against `usb.MockTransport`. SDRPlay, USRP and BladeRF require
 vendor C libraries and are out of scope for the zero-CGO build.
+Pluto Plus support is scaffolded in-tree to reserve the driver name
+and test surface while the transport implementation is developed.
 
 At enumeration time each driver reports the canonical model name
 rather than echoing whatever the USB descriptor happens to carry:

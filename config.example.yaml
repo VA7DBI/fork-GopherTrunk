@@ -111,6 +111,8 @@ retention:
 
 sdr:
   sample_rate: 2_400_000
+  # Pluto Plus SDR support is currently a scaffold driver only
+  # (`plutoplus`): no hardware probing or IQ streaming yet.
   # watchdog_interval_ms: periodic USB-disconnect watchdog cadence
   # (default 30000 = 30 s). Catches dongles that vanish from the bus
   # while idle and re-acquires them by serial on reappear so the next

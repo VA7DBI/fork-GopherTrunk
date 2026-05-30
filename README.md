@@ -5,7 +5,7 @@
 <h1 align="center">GopherTrunk</h1>
 
 <p align="center">
-  <strong>Pure-Go digital-trunking radio scanner engine for RTL-SDR · HackRF · Airspy · Airspy HF+.</strong><br>
+  <strong>Pure-Go digital-trunking radio scanner engine for RTL-SDR · HackRF · Airspy · Airspy HF+ · Pluto Plus (stub).</strong><br>
   P25 · DMR · TETRA · NXDN · Motorola Type II · EDACS · LTR · MPT 1327 · dPMR · D-STAR · YSF.<br>
   Zero CGO, single static binary, headless daemon + Bubbletea TUI cockpit + browser web console.
 </p>
@@ -26,7 +26,8 @@
 GopherTrunk is a software-defined-radio scanner that follows digital
 trunked-radio voice calls and decodes them to audio. It runs on a
 pool of RTL-SDR (every osmocom tuner), HackRF (One / Jawbreaker /
-Rad1o), Airspy R2 / Mini, and Airspy HF+ dongles, has no C
+Rad1o), Airspy R2 / Mini, Airspy HF+ dongles, and a Pluto Plus
+driver scaffold, has no C
 dependencies at build or runtime (no `librtlsdr` / `libhackrf` /
 `libairspy` / `libairspyhf` / `libusb` / `libasound2` /
 `libmp3lame`), and ships as a single ~10 MB static binary for Linux,
@@ -140,7 +141,8 @@ Silicon and Intel. Full per-OS recipes at
   Per-call WAV + raw-frame sidecars; live PCM playback via direct
   ALSA / WASAPI / CoreAudio.
 - **Pure-Go SDR drivers** — RTL-SDR, HackRF, Airspy R2 / Mini,
-  Airspy HF+ family. USB transport on Linux (USBDEVFS), Windows
+  Airspy HF+ family, plus a Pluto Plus scaffold driver (enumeration
+  and streaming are intentionally stubbed). USB transport on Linux (USBDEVFS), Windows
   (WinUSB), macOS (IOKit). USB-disconnect self-healing recovers
   dongles that drop off the bus and re-enumerate without
   restarting the daemon. See
