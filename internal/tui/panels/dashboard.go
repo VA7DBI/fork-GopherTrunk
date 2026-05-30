@@ -127,8 +127,11 @@ func (p *DashboardPanel) healthBody(s *state.SharedState) string {
 	}
 	if plutoDashboardVisible(s.Runtime) {
 		pr := s.Runtime.PlutoRuntime
+		severity, label, style := plutoDashboardSeverity(pr)
+		_ = severity
+		lines = append(lines, "Pluto Plus: "+style.Render(label))
 		lines = append(lines, dashDim.Render(
-			fmt.Sprintf("Pluto Plus: reconnects %d  failures %d", pr.Reconnects, plutoFailureTotal(pr)),
+			fmt.Sprintf("  reconnects %d  failures %d", pr.Reconnects, plutoFailureTotal(pr)),
 		))
 		if details := plutoFailureBreakdown(pr); details != "" {
 			lines = append(lines, dashDim.Render("  "+details))
@@ -176,6 +179,18 @@ func plutoFailureBreakdown(pr client.PlutoRuntimeDTO) string {
 		parts = append(parts, fmt.Sprintf("unknown %d", pr.UnknownFailures))
 	}
 	return strings.Join(parts, "  ·  ")
+}
+
+func plutoDashboardSeverity(pr client.PlutoRuntimeDTO) (string, string, lipgloss.Style) {
+	failures := plutoFailureTotal(pr)
+	switch {
+	case failures >= 5:
+		return "err", "unstable", dashErr
+	case failures > 0 || pr.Reconnects >= 3:
+		return "warn", "degraded", dashWarn
+	default:
+		return "ok", "stable", dashOK
+	}
 }
 
 func (p *DashboardPanel) activeBody(s *state.SharedState) string {

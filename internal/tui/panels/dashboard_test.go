@@ -25,7 +25,8 @@ func TestDashboardPanel_HealthBodyRendersPlutoSummary(t *testing.T) {
 
 	view := p.healthBody(s)
 	for _, want := range []string{
-		"Pluto Plus: reconnects 4  failures 6",
+		"Pluto Plus: unstable",
+		"reconnects 4  failures 6",
 		"dial 2",
 		"handshake 1",
 		"stream 3",

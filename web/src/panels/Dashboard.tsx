@@ -93,7 +93,12 @@ export function Dashboard() {
 
       {showPlutoDashboard(runtime) && (
         <section className="panel p-4">
-          <h3 className="panel-title mb-2">Pluto Plus health</h3>
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="panel-title">Pluto Plus health</h3>
+            <span className={plutoSeverity(runtime?.pluto_runtime).className}>
+              {plutoSeverity(runtime?.pluto_runtime).label}
+            </span>
+          </div>
           <p className="text-sm">
             Reconnects <span className="font-mono">{runtime?.pluto_runtime?.reconnects ?? 0}</span>
             {"  ·  "}
@@ -186,6 +191,18 @@ function plutoFailureBreakdown(pluto?: PlutoRuntimeDTO): string {
   if ((pluto.stream_failures ?? 0) > 0) parts.push(`stream ${pluto.stream_failures}`);
   if ((pluto.unknown_failures ?? 0) > 0) parts.push(`unknown ${pluto.unknown_failures}`);
   return parts.join("  ·  ");
+}
+
+function plutoSeverity(pluto?: PlutoRuntimeDTO): { label: string; className: string } {
+  const failures = plutoFailureTotal(pluto);
+  switch (true) {
+    case failures >= 5:
+      return { label: "unstable", className: "pill-err" };
+    case failures > 0 || (pluto?.reconnects ?? 0) >= 3:
+      return { label: "degraded", className: "pill-warn" };
+    default:
+      return { label: "stable", className: "pill-ok" };
+  }
 }
 
 function StatCard({

@@ -57,6 +57,7 @@ describe("Dashboard Pluto health", () => {
 		expect(await screen.findByText("Pluto Plus health")).toBeInTheDocument();
 		expect(screen.getByText(/Reconnects/i)).toBeInTheDocument();
 		expect(screen.getByText(/Failures/i)).toBeInTheDocument();
+		expect(screen.getByText("unstable")).toBeInTheDocument();
 		expect(screen.getByText(/dial 2/)).toBeInTheDocument();
 		expect(screen.getByText(/handshake 1/)).toBeInTheDocument();
 		expect(screen.getByText(/stream 4/)).toBeInTheDocument();
