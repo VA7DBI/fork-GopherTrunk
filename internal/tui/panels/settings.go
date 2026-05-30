@@ -374,9 +374,31 @@ func (p *SettingsPanel) renderTab(width int, s *state.SharedState) string {
 		if len(r.SDRBackends) > 0 {
 			out += "\n\n" + dashHeader.Render("Linked backends") + "\n  " + strings.Join(r.SDRBackends, ", ")
 		}
+		pr := r.PlutoRuntime
+		if hasSDRBackend(r.SDRBackends, "plutoplus") || pr.Reconnects > 0 || pr.ReconnectFailures > 0 || pr.DialFailures > 0 || pr.HandshakeFailures > 0 || pr.CommandFailures > 0 || pr.StreamFailures > 0 || pr.UnknownFailures > 0 {
+			out += "\n\n" + dashHeader.Render("Pluto Plus runtime health")
+			out += "\n" + rows([][2]string{
+				{"Reconnects", fmt.Sprintf("%d", pr.Reconnects)},
+				{"Reconnect failures", fmt.Sprintf("%d", pr.ReconnectFailures)},
+				{"Dial failures", fmt.Sprintf("%d", pr.DialFailures)},
+				{"Handshake failures", fmt.Sprintf("%d", pr.HandshakeFailures)},
+				{"Command failures", fmt.Sprintf("%d", pr.CommandFailures)},
+				{"Stream failures", fmt.Sprintf("%d", pr.StreamFailures)},
+				{"Unknown failures", fmt.Sprintf("%d", pr.UnknownFailures)},
+			})
+		}
 		return out
 	}
 	return ""
+}
+
+func hasSDRBackend(backends []string, name string) bool {
+	for _, b := range backends {
+		if strings.EqualFold(strings.TrimSpace(b), name) {
+			return true
+		}
+	}
+	return false
 }
 
 func settingsColumns(w int) []table.Column {

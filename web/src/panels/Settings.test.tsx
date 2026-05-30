@@ -242,4 +242,25 @@ describe("Settings inline-edit (Live config)", () => {
     const formatRow = rows.find((r) => r.textContent?.startsWith("Log format"))!;
     expect(formatRow.textContent).toMatch(/\[restart\]/);
   });
+
+  it("renders Pluto Plus runtime health when counters are present", async () => {
+    vi.mocked(api.runtime).mockResolvedValue({
+      config_path: "/etc/gophertrunk/config.yaml",
+      pluto_runtime: {
+        reconnects: 4,
+        reconnect_failures: 1,
+        dial_failures: 2,
+        handshake_failures: 3,
+        command_failures: 0,
+        stream_failures: 5,
+        unknown_failures: 6,
+      },
+    });
+
+    render(<Settings />);
+
+    expect(await screen.findByText("Pluto Plus runtime health")).toBeInTheDocument();
+    expect(screen.getByText("Reconnects")).toBeInTheDocument();
+    expect(screen.getByText("4")).toBeInTheDocument();
+  });
 });

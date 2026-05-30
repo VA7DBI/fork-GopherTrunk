@@ -288,6 +288,25 @@ type RuntimeDTO struct {
 	// collected during NewDaemon. The Dashboard pins them as a
 	// one-shot banner.
 	StartupWarnings []string `json:"startup_warnings,omitempty"`
+	PlutoRuntime      PlutoRuntimeDTO `json:"pluto_runtime"`
+	// LastFatal* surfaces the most recent essential-component
+	// failure metadata from /api/v1/runtime.
+	LastFatalError     string    `json:"last_fatal_error,omitempty"`
+	LastFatalComponent string    `json:"last_fatal_component,omitempty"`
+	LastFatalAt        time.Time `json:"last_fatal_at,omitempty"`
+	LastFatalClass     string    `json:"last_fatal_class,omitempty"`
+	LastFatalHint      string    `json:"last_fatal_hint,omitempty"`
+}
+
+// PlutoRuntimeDTO mirrors api.PlutoRuntimeDTO.
+type PlutoRuntimeDTO struct {
+	Reconnects        uint64 `json:"reconnects"`
+	ReconnectFailures uint64 `json:"reconnect_failures"`
+	DialFailures      uint64 `json:"dial_failures"`
+	HandshakeFailures uint64 `json:"handshake_failures"`
+	CommandFailures   uint64 `json:"command_failures"`
+	StreamFailures    uint64 `json:"stream_failures"`
+	UnknownFailures   uint64 `json:"unknown_failures"`
 }
 
 // ToneProfileDTO mirrors api.ToneProfileDTO.

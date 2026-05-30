@@ -264,6 +264,8 @@ function LiveConfigSection() {
   }
 
   const fields = liveConfigFields();
+  const pluto = runtime.pluto_runtime;
+  const showPluto = !!pluto;
 
   async function save(spec: FieldSpec, raw: string) {
     setError(null);
@@ -305,6 +307,27 @@ function LiveConfigSection() {
           className="text-sm panel bg-err/15 border-err/40 text-err p-3"
         >
           {error}
+        </div>
+      )}
+      {showPluto && (
+        <div className="panel bg-panel/40 border-panel p-3">
+          <h4 className="text-sm font-semibold mb-2">Pluto Plus runtime health</h4>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+            <span className="text-muted">Reconnects</span>
+            <code className="font-mono">{String(pluto.reconnects ?? 0)}</code>
+            <span className="text-muted">Reconnect failures</span>
+            <code className="font-mono">{String(pluto.reconnect_failures ?? 0)}</code>
+            <span className="text-muted">Dial failures</span>
+            <code className="font-mono">{String(pluto.dial_failures ?? 0)}</code>
+            <span className="text-muted">Handshake failures</span>
+            <code className="font-mono">{String(pluto.handshake_failures ?? 0)}</code>
+            <span className="text-muted">Command failures</span>
+            <code className="font-mono">{String(pluto.command_failures ?? 0)}</code>
+            <span className="text-muted">Stream failures</span>
+            <code className="font-mono">{String(pluto.stream_failures ?? 0)}</code>
+            <span className="text-muted">Unknown failures</span>
+            <code className="font-mono">{String(pluto.unknown_failures ?? 0)}</code>
+          </div>
         </div>
       )}
       <table className="text-sm w-full">

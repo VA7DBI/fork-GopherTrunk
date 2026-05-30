@@ -212,9 +212,20 @@ export interface RuntimeDTO {
   // collected during NewDaemon. The Dashboard pins them until the
   // operator dismisses them.
   startup_warnings?: string[];
+  pluto_runtime?: PlutoRuntimeDTO;
   // RuntimeDTO is large and changes shape as the daemon grows. Read
   // unknown fields lazily.
   [key: string]: unknown;
+}
+
+export interface PlutoRuntimeDTO {
+  reconnects?: number;
+  reconnect_failures?: number;
+  dial_failures?: number;
+  handshake_failures?: number;
+  command_failures?: number;
+  stream_failures?: number;
+  unknown_failures?: number;
 }
 
 // SettingsPatch mirrors the daemon's PATCH /api/v1/settings body.
