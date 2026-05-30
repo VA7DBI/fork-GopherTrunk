@@ -130,7 +130,11 @@ type plutoDoctorRow struct {
 }
 
 func printPlutoDoctor(configPath string) {
-	specs := doctorPlutoSpecs(configPath)
+	cfg, ok := doctorLoadConfig(configPath)
+	if !ok {
+		return
+	}
+	specs := doctorPlutoSpecs(cfg)
 	if len(specs) == 0 {
 		return
 	}
@@ -196,16 +200,47 @@ func printPlutoDoctor(configPath string) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.Transport, r.Endpoint, r.Serial, r.Status, r.Stage, r.Hint)
 	}
 	tw.Flush()
+
+	pm := plutoplus.RuntimeMetricsSnapshot()
+	thresholds := resolvePlutoHealthThresholds(cfg)
+	healthClass, recentFailure := classifyPlutoHealth(pm, time.Now().UTC(), thresholds)
+	dominantStage, _ := dominantPlutoFailureStage(pm)
+	breakdown := plutoFailureBreakdown(pm)
+	hint := plutoRemediationHint(dominantStage, recentFailure)
+	if dominantStage == "" {
+		dominantStage = "-"
+	}
+	if breakdown == "" {
+		breakdown = "-"
+	}
+	if hint == "" {
+		hint = "-"
+	}
+
+	fmt.Println("")
+	fmt.Println("PLUTO RUNTIME HEALTH")
+	fmt.Printf("  health_class: %s\n", healthClass)
+	fmt.Printf("  recent_failure: %t\n", recentFailure)
+	fmt.Printf("  dominant_failure_stage: %s\n", dominantStage)
+	fmt.Printf("  failure_breakdown: %s\n", breakdown)
+	fmt.Printf("  remediation_hint: %s\n", hint)
 }
 
-func doctorPlutoSpecs(configPath string) []plutoplus.Spec {
+func doctorLoadConfig(configPath string) (*config.Config, bool) {
 	if strings.TrimSpace(configPath) == "" {
-		return []plutoplus.Spec{{Transport: plutoplus.TransportUSB}}
+		return nil, true
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sdr doctor: could not load config %q: %v\n", configPath, err)
-		return nil
+		return nil, false
+	}
+	return &cfg, true
+}
+
+func doctorPlutoSpecs(cfg *config.Config) []plutoplus.Spec {
+	if cfg == nil {
+		return []plutoplus.Spec{{Transport: plutoplus.TransportUSB}}
 	}
 	if len(cfg.SDR.PlutoPlus) == 0 {
 		return []plutoplus.Spec{{Transport: plutoplus.TransportUSB}}
