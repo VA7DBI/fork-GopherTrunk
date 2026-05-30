@@ -145,6 +145,8 @@ Silicon and Intel. Full per-OS recipes at
   The Pluto path supports `transport: usb` (defaulting to
   `192.168.2.1:1234`) or `transport: tcp` with an explicit
   endpoint, both using an rtl_tcp-compatible header + command stream.
+  With no explicit `sdr.pluto_plus` entries, `gophertrunk sdr list`
+  probes the default USB endpoint and shows Pluto only when present.
   USB transport on Linux (USBDEVFS), Windows
   (WinUSB), macOS (IOKit). USB-disconnect self-healing recovers
   dongles that drop off the bus and re-enumerate without

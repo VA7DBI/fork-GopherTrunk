@@ -31,15 +31,17 @@ const (
 )
 
 const DefaultConnectTimeout = 3 * time.Second
+const autoProbeTimeout = 250 * time.Millisecond
 
 const (
 	TransportTCP = "tcp"
 	TransportUSB = "usb"
-	// Pluto boards connected over USB commonly expose a USB-Ethernet
-	// interface at 192.168.2.1. The Pluto Plus endpoint process can
-	// listen on 1234 with an rtl_tcp-compatible wire shape.
-	DefaultUSBAddr = "192.168.2.1:1234"
 )
+
+// Pluto boards connected over USB commonly expose a USB-Ethernet
+// interface at 192.168.2.1. The Pluto Plus endpoint process can
+// listen on 1234 with an rtl_tcp-compatible wire shape.
+var DefaultUSBAddr = "192.168.2.1:1234"
 
 // Spec declares one Pluto Plus endpoint.
 type Spec struct {
@@ -66,6 +68,28 @@ func New(specs []Spec, log *slog.Logger) *Driver {
 func (d *Driver) Name() string { return driverName }
 
 func (d *Driver) Enumerate() ([]sdr.Info, error) {
+	if len(d.specs) == 0 {
+		spec := Spec{Transport: TransportUSB}
+		addr, err := resolveAddr(spec)
+		if err != nil {
+			return nil, nil
+		}
+		if err := probeEndpoint(addr, autoProbeTimeout); err != nil {
+			// USB Pluto is optional; absence should look like "no device"
+			// instead of surfacing as a noisy enumerate error.
+			return nil, nil
+		}
+		return []sdr.Info{{
+			Driver:       driverName,
+			Index:        0,
+			Serial:       serialFor(spec, 0),
+			Manufacturer: "Analog Devices",
+			Product:      productName(spec),
+			TunerName:    "AD936x",
+			Gains:        standardGainLadder(),
+		}}, nil
+	}
+
 	out := make([]sdr.Info, 0, len(d.specs))
 	for i, spec := range d.specs {
 		addr, err := resolveAddr(spec)
@@ -87,10 +111,21 @@ func (d *Driver) Enumerate() ([]sdr.Info, error) {
 }
 
 func (d *Driver) Open(idx int) (sdr.Device, error) {
+	if len(d.specs) == 0 {
+		if idx != 0 {
+			return nil, fmt.Errorf("plutoplus: index %d out of range", idx)
+		}
+		spec := Spec{Transport: TransportUSB}
+		return d.openSpec(0, spec)
+	}
+
 	if idx < 0 || idx >= len(d.specs) {
 		return nil, fmt.Errorf("plutoplus: index %d out of range", idx)
 	}
-	spec := d.specs[idx]
+	return d.openSpec(idx, d.specs[idx])
+}
+
+func (d *Driver) openSpec(idx int, spec Spec) (sdr.Device, error) {
 	addr, err := resolveAddr(spec)
 	if err != nil {
 		return nil, fmt.Errorf("plutoplus: spec[%d]: %w", idx, err)
@@ -99,6 +134,25 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 	if timeout <= 0 {
 		timeout = DefaultConnectTimeout
 	}
+	conn, err := dialAndHandshake(addr, timeout)
+	if err != nil {
+		return nil, err
+	}
+
+	info := sdr.Info{
+		Driver:       driverName,
+		Index:        idx,
+		Serial:       serialFor(spec, idx),
+		Manufacturer: "Analog Devices",
+		Product:      productName(spec),
+		TunerName:    "AD936x",
+		Gains:        standardGainLadder(),
+	}
+	d.log.Info("plutoplus: connected", "transport", normalizeTransport(spec.Transport), "addr", addr, "serial", info.Serial)
+	return &device{addr: addr, info: info, conn: conn, log: d.log}, nil
+}
+
+func dialAndHandshake(addr string, timeout time.Duration) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("plutoplus: dial %s: %w", addr, err)
@@ -117,18 +171,15 @@ func (d *Driver) Open(idx int) (sdr.Device, error) {
 		return nil, fmt.Errorf("plutoplus: %s: server header magic = %q, want %q", addr, hdr[:4], magic[:])
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+	return conn, nil
+}
 
-	info := sdr.Info{
-		Driver:       driverName,
-		Index:        idx,
-		Serial:       serialFor(spec, idx),
-		Manufacturer: "Analog Devices",
-		Product:      productName(spec),
-		TunerName:    "AD936x",
-		Gains:        standardGainLadder(),
+func probeEndpoint(addr string, timeout time.Duration) error {
+	conn, err := dialAndHandshake(addr, timeout)
+	if err != nil {
+		return err
 	}
-	d.log.Info("plutoplus: connected", "transport", normalizeTransport(spec.Transport), "addr", addr, "serial", info.Serial)
-	return &device{addr: addr, info: info, conn: conn, log: d.log}, nil
+	return conn.Close()
 }
 
 type device struct {

@@ -111,6 +111,16 @@ func TestName(t *testing.T) {
 	}
 }
 
+func TestEnumerateNoSpecsAbsentPlutoIsSilent(t *testing.T) {
+	infos, err := New(nil, nil).Enumerate()
+	if err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+	if len(infos) != 0 {
+		t.Fatalf("len(infos) = %d, want 0", len(infos))
+	}
+}
+
 func TestEnumerateConfiguredSpecs(t *testing.T) {
 	infos, err := New([]Spec{{Addr: "127.0.0.1:1234", Serial: "PLUTO-1"}}, nil).Enumerate()
 	if err != nil {
@@ -181,6 +191,27 @@ func TestOpenUSBTransportWithExplicitAddr(t *testing.T) {
 	if err := dev.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
+}
+
+func TestOpenNoSpecsUsesImplicitUSB(t *testing.T) {
+	srv := newFakeServer(t)
+	withDefaultUSBAddr(t, srv.Addr())
+	d := New(nil, nil)
+	dev, err := d.Open(0)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if dev.Info().Product != defaultProductName+" USB" {
+		t.Fatalf("Info().Product = %q, want %q", dev.Info().Product, defaultProductName+" USB")
+	}
+	_ = dev.Close()
+}
+
+func withDefaultUSBAddr(t *testing.T, addr string) {
+	t.Helper()
+	prev := DefaultUSBAddr
+	DefaultUSBAddr = addr
+	t.Cleanup(func() { DefaultUSBAddr = prev })
 }
 
 func TestCommands(t *testing.T) {

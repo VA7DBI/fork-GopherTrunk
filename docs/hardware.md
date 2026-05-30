@@ -37,6 +37,9 @@ consumes an rtl_tcp-compatible header/command/IQ stream over either
 USB-network mode (`transport: usb`, defaulting to `192.168.2.1:1234`)
 or a custom TCP endpoint (`transport: tcp`, explicit `addr`). This
 keeps pool, hints, and watchdog wiring identical to other SDR backends.
+When no `sdr.pluto_plus` entries are configured, `gophertrunk sdr list`
+also probes the default USB endpoint (`192.168.2.1:1234`) and shows a
+Pluto row only when the handshake succeeds.
 
 At enumeration time each driver reports the canonical model name
 rather than echoing whatever the USB descriptor happens to carry:

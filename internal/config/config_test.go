@@ -32,6 +32,14 @@ sdr:
     - serial: "00000001"
       role: control
       ppm: -2
+fleetsync:
+  channels:
+    - enabled: true
+      name: test-fs
+      serial: "00000002"
+      frequency_hz: 451812500
+      version: auto
+      baud_hz: 1200
 trunking:
   systems:
     - name: TestSystem
@@ -53,6 +61,12 @@ trunking:
 	}
 	if len(cfg.Trunking.Systems) != 1 || cfg.Trunking.Systems[0].Protocol != "p25" {
 		t.Errorf("systems = %+v", cfg.Trunking.Systems)
+	}
+	if len(cfg.FleetSync.Channels) != 1 {
+		t.Fatalf("fleetync.channels = %d, want 1", len(cfg.FleetSync.Channels))
+	}
+	if got := cfg.FleetSync.Channels[0].Version; got != "auto" {
+		t.Errorf("fleetync.channels[0].version = %q, want auto", got)
 	}
 }
 
@@ -80,6 +94,15 @@ func TestValidate(t *testing.T) {
 		{"duplicate sdr serial", Config{SDR: SDRConfig{Devices: []DeviceConfig{{Serial: "00000006", Role: "control"}, {Serial: "00000006", Role: "voice"}}}}, true},
 		{"distinct sdr serials ok", Config{SDR: SDRConfig{Devices: []DeviceConfig{{Serial: "00000001", Role: "control"}, {Serial: "00000002", Role: "voice"}}}}, false},
 		{"empty sdr serials ok", Config{SDR: SDRConfig{Devices: []DeviceConfig{{Role: "control"}, {Role: "voice"}}}}, false},
+		{"pluto_plus usb no addr ok", Config{SDR: SDRConfig{PlutoPlus: []PlutoPlusConfig{{
+			Transport: "usb", Serial: "PLUTO-USB-001", Role: "control",
+		}}}}, false},
+		{"pluto_plus tcp missing addr", Config{SDR: SDRConfig{PlutoPlus: []PlutoPlusConfig{{
+			Transport: "tcp", Serial: "PLUTO-TCP-001", Role: "control",
+		}}}}, true},
+		{"pluto_plus bad transport", Config{SDR: SDRConfig{PlutoPlus: []PlutoPlusConfig{{
+			Transport: "serial", Addr: "127.0.0.1:1234", Serial: "PLUTO-001", Role: "control",
+		}}}}, true},
 		{"oversized key", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr", EncryptionKeys: []EncryptionKeyConfig{{KeyID: 1, Algorithm: "rc4", Key: strings.Repeat("ab", 33)}}}}}}, true},
 		// p25_band_plan: the operator's escape hatch for sites that
 		// never broadcast IDEN_UP for some channel ID (issue #345).
@@ -286,6 +309,58 @@ func TestValidate(t *testing.T) {
 				},
 			}}},
 			Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr-tier2"}}},
+		}, true},
+		{"fleetsync channel ok", Config{
+			FleetSync: FleetSyncConfig{Channels: []FleetSyncChannelConfig{{
+				Enabled:     true,
+				Serial:      "00000002",
+				FrequencyHz: 451_812_500,
+				Version:     "auto",
+				BaudHz:      1200,
+			}},
+			},
+		}, false},
+		{"fleetsync missing serial", Config{
+			FleetSync: FleetSyncConfig{Channels: []FleetSyncChannelConfig{{
+				Enabled:     true,
+				FrequencyHz: 451_812_500,
+			}},
+			},
+		}, true},
+		{"fleetsync invalid version", Config{
+			FleetSync: FleetSyncConfig{Channels: []FleetSyncChannelConfig{{
+				Enabled:     true,
+				Serial:      "00000002",
+				FrequencyHz: 451_812_500,
+				Version:     "fs3",
+			}},
+			},
+		}, true},
+		{"fleetsync invalid baud", Config{
+			FleetSync: FleetSyncConfig{Channels: []FleetSyncChannelConfig{{
+				Enabled:     true,
+				Serial:      "00000002",
+				FrequencyHz: 451_812_500,
+				Version:     "fleetsync1",
+				BaudHz:      2400,
+			}},
+			},
+		}, true},
+		{"fleetsync webhook ok", Config{
+			Broadcast: BroadcastConfig{FleetSync: FleetSyncBroadcastConfig{Webhooks: []FleetSyncWebhookFeedConfig{{
+				Enabled: true,
+				URL:     "http://127.0.0.1:9999/fleetsync",
+			}}}},
+		}, false},
+		{"fleetsync webhook missing url", Config{
+			Broadcast: BroadcastConfig{FleetSync: FleetSyncBroadcastConfig{Webhooks: []FleetSyncWebhookFeedConfig{{
+				Enabled: true,
+			}}}},
+		}, true},
+		{"fleetsync spool missing dir", Config{
+			Broadcast: BroadcastConfig{FleetSync: FleetSyncBroadcastConfig{Spool: []FleetSyncSpoolFeedConfig{{
+				Enabled: true,
+			}}}},
 		}, true},
 	}
 	for _, tc := range cases {
