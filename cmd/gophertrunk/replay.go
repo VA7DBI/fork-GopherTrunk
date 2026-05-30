@@ -16,6 +16,7 @@ import (
 	p25phase1 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
 	p25phase1rx "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1/receiver"
 	"github.com/MattCheramie/GopherTrunk/internal/scanner/ccdecoder"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
@@ -67,6 +68,14 @@ func runReplay(args []string) {
 	// for A/B experimentation on a capture without turning it on in
 	// production. C4FM only.
 	enableDDA := fs.Bool("dda", false, "enable the experimental decision-directed AFC on the C4FM path (off by default; see issue #402)")
+	// Issue #402: the adaptive C4FM slicer is off by default (the fixed
+	// slicer outperformed it on the original capture's closed/asymmetric
+	// eye). This knob enables it for A/B experimentation. C4FM only.
+	enableAdaptiveSlicer := fs.Bool("adaptive-slicer", false, "enable the adaptive C4FM slicer on the C4FM path (off by default; see issue #402)")
+	// Issue #402: blind I/Q-imbalance correction on the raw IQ before the DDC.
+	// Off by default; the chain audit found an uncorrected RTL-SDR imbalance is
+	// the leading explanation for the asymmetric demodulated eye on MMR Site 9.
+	iqCorrect := fs.Bool("iq-correct", false, "apply blind I/Q-imbalance correction to the raw IQ before decimation (off by default; see issue #402)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `gophertrunk replay — decode a raw IQ capture file offline.
 
@@ -165,8 +174,8 @@ FLAGS:`)
 	// pipeline does, so the replay log line is directly comparable
 	// to a daemon's startup line — and a non-default span (the
 	// bisect knob) is visible without re-reading the command.
-	fmt.Fprintf(os.Stderr, "replay: p25/phase1 configured  demod=%s  rotations=%v  nid_search_span=%d  nid_accept_errs=%d  nid_marginal_max=%d\n",
-		*demod, rotations, *nidSearchSpan, p25phase1.NIDAcceptErrs, p25phase1.NIDMarginalMaxErrs)
+	fmt.Fprintf(os.Stderr, "replay: p25/phase1 configured  demod=%s  rotations=%v  nid_search_span=%d  nid_accept_errs=%d  nid_marginal_max=%d  dda=%t  adaptive_slicer=%t  iq_correct=%t\n",
+		*demod, rotations, *nidSearchSpan, p25phase1.NIDAcceptErrs, p25phase1.NIDMarginalMaxErrs, *enableDDA, *enableAdaptiveSlicer, *iqCorrect)
 	if ddc != nil {
 		fmt.Fprintf(os.Stderr, "replay: ddc enabled  sdr_rate_hz=%g  pipeline_rate_hz=%g\n",
 			*sampleRate, receiverRate)
@@ -180,11 +189,17 @@ FLAGS:`)
 	if *diag {
 		diagAcc = &iqDiag{}
 	}
+	// Blind I/Q-imbalance correction on the raw IQ (issue #402), opt-in.
+	var iqCorrector *rtlsdr.IQImbalanceCorrector
+	if *iqCorrect {
+		iqCorrector = rtlsdr.NewIQImbalanceCorrector()
+	}
 	rxOpts := p25phase1rx.Options{
 		SampleRateHz:              receiverRate,
 		DeviationHz:               1800.0,
 		DemodMode:                 demodMode,
 		EnableDecisionDirectedAFC: *enableDDA,
+		EnableAdaptiveC4FMSlicer:  *enableAdaptiveSlicer,
 		DibitSink: func(dibits []uint8, baseIdx int) {
 			dibitCount += int64(len(dibits))
 			if diagAcc != nil {
@@ -229,12 +244,15 @@ FLAGS:`)
 		// raw matched-output-unit value behind it.
 		//
 		// slicer_levels are the adaptive slicer's tracked −3/−1/+1/+3
-		// levels (issue #402). On a clean symmetric eye they sit near
-		// ±agc_target·{3/2, 1/2}; an asymmetric site shows one rail
-		// stretched, and the slicer's midpoint thresholds follow it.
+		// levels; slicer_thresholds are the actual decision boundaries
+		// (neg-outer/zero/pos-outer) the slicer decides on (issue #402: the
+		// OP asked to see the thresholds, not just the levels — on a spread
+		// eye the variance-aware boundary sits below the level midpoint).
+		// Both read zero on the fixed-slicer path (no -adaptive-slicer).
 		lv := rx.SlicerLevels()
+		th := rx.SlicerThresholds()
 		fmt.Fprintf(os.Stderr,
-			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f  dda_active=%t  dda_rearms=%d  slicer_levels=[%.4f %.4f %.4f %.4f]\n",
+			"replay: receiver state  t=%.2fs  afc_bias_rad_per_sample=%.6g  afc_hz_est=%.3f  agc_level=%.6g  agc_target=%.6g  agc_gain=%.4g  mm_mu=%.4f  mm_sps=%.2f  dda_active=%t  dda_rearms=%d  slicer_levels=[%.4f %.4f %.4f %.4f]  slicer_thresholds=[%.4f %.4f %.4f]\n",
 			at,
 			rx.AFCBiasRadPerSample(),
 			rx.AFCOffsetHz(),
@@ -245,7 +263,8 @@ FLAGS:`)
 			rx.MMClockSPS(),
 			rx.DDAActive(),
 			rx.DDARearms(),
-			lv[0], lv[1], lv[2], lv[3])
+			lv[0], lv[1], lv[2], lv[3],
+			th[0], th[1], th[2])
 	}
 
 	const chunkSamples = 8192
@@ -266,6 +285,14 @@ FLAGS:`)
 			}
 			decode(buf[:pairs*pairBytes], samples[:pairs])
 			feed := samples[:pairs]
+			// Measure the raw I/Q imbalance for the diag report, then (opt-in)
+			// correct it — both on the raw IQ, before the DDC (issue #402).
+			if diagAcc != nil {
+				diagAcc.observeIQ(feed)
+			}
+			if iqCorrector != nil {
+				iqCorrector.Process(feed)
+			}
 			if ddc != nil {
 				ddcOut = ddc.Process(ddcOut, feed)
 				feed = ddcOut

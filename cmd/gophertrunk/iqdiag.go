@@ -8,6 +8,7 @@ import (
 
 	"github.com/MattCheramie/GopherTrunk/internal/radio/framing"
 	p25phase1 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/rtlsdr"
 )
 
 // iqDiag accumulates the full dibit stream a replay produced and prints
@@ -48,6 +49,37 @@ type iqDiag struct {
 	// far outside the slicer's threshold, every sample collapses
 	// to ±3 and the dibit histogram skews to {1, 3} only.
 	soft []float32
+	// iqStats accumulates the raw-IQ second-order moments (issue #402),
+	// from which the report derives the front-end I/Q gain/phase imbalance
+	// — the leading suspect for the asymmetric demodulated eye.
+	iqStats rtlsdr.IQImbalanceStats
+}
+
+// distStats returns the mean, standard deviation, and 10th/50th/90th
+// percentiles of v (sorts a copy; v is left unmodified). Zero values for an
+// empty slice.
+func distStats(v []float64) (mean, std, p10, p50, p90 float64) {
+	if len(v) == 0 {
+		return 0, 0, 0, 0, 0
+	}
+	var sum float64
+	for _, x := range v {
+		sum += x
+	}
+	mean = sum / float64(len(v))
+	var sq float64
+	for _, x := range v {
+		d := x - mean
+		sq += d * d
+	}
+	std = math.Sqrt(sq / float64(len(v)))
+	s := append([]float64(nil), v...)
+	sort.Float64s(s)
+	pct := func(p float64) float64 {
+		idx := int(p * float64(len(s)-1))
+		return s[idx]
+	}
+	return mean, std, pct(0.10), pct(0.50), pct(0.90)
 }
 
 // observe appends a chunk of dibits to the rolling buffer the EOF
@@ -55,6 +87,12 @@ type iqDiag struct {
 // is set.
 func (d *iqDiag) observe(dibits []uint8) {
 	d.dibits = append(d.dibits, dibits...)
+}
+
+// observeIQ folds a chunk of raw (pre-DDC) IQ into the I/Q-imbalance
+// moments. Called from the read loop in replay.go when -diag is set.
+func (d *iqDiag) observeIQ(raw []complex64) {
+	d.iqStats.Observe(raw)
 }
 
 // observeSoft appends pre-slicer per-symbol soft samples to the
@@ -190,24 +228,36 @@ func (d *iqDiag) printReport(w io.Writer) {
 			// dibit → label and slice index. Mapping per
 			// phase1.SymbolToDibit: 0:+1, 1:+3, 2:-1, 3:-3.
 			labels := [4]string{"+1", "+3", "-1", "-3"}
-			var csum [4]float64
-			var cnt [4]int
+			var vals [4][]float64
 			for i, s := range d.soft {
 				db := d.dibits[i] & 3
-				csum[db] += float64(s)
-				cnt[db]++
+				vals[db] = append(vals[db], float64(s))
 			}
-			fmt.Fprintln(w, "diag: per-decided-symbol soft centroids (clean eye: ±outer ≈ 3×±inner, symmetric):")
-			// Print in eye order -3,-1,+1,+3 for readability.
-			for _, db := range [4]uint8{3, 2, 0, 1} {
-				mean := 0.0
-				if cnt[db] > 0 {
-					mean = csum[db] / float64(cnt[db])
-				}
-				fmt.Fprintf(w, "diag:   %s (dibit %d): n=%7d (%5.2f%%)  centroid=%+.6f\n",
-					labels[db], db, cnt[db], 100*float64(cnt[db])/float64(len(d.soft)), mean)
+			// Per-rail centroid AND spread (std + 10/50/90 percentiles). The
+			// spread is the #402 discriminator: a rail whose centroid looks
+			// fine but whose p10..p90 is very wide is *spread* (e.g. the +3
+			// outer population landing low), which is why a threshold derived
+			// from the centroid mis-slices it — distinct from a tight cluster.
+			fmt.Fprintln(w, "diag: per-decided-symbol soft distribution (clean eye: ±outer ≈ 3×±inner, symmetric, tight):")
+			for _, db := range [4]uint8{3, 2, 0, 1} { // eye order -3,-1,+1,+3
+				v := vals[db]
+				mean, std, p10, p50, p90 := distStats(v)
+				fmt.Fprintf(w, "diag:   %s (dibit %d): n=%7d (%5.2f%%)  centroid=%+.6f  std=%.6f  p10/50/90=%+.4f/%+.4f/%+.4f\n",
+					labels[db], db, len(v), 100*float64(len(v))/float64(len(d.soft)), mean, std, p10, p50, p90)
 			}
 		}
+	}
+
+	// I/Q imbalance on the raw (pre-DDC) IQ (issue #402). The RX chain is
+	// provably symmetric, so an asymmetric eye must come from the IQ samples;
+	// an uncorrected front-end I/Q imbalance (worst at the on-channel DC the
+	// DDC sits on) is the leading suspect. A clean front-end is balanced
+	// (≈0 dB gain, ≈0° phase) with image rejection ≳ 40 dB. Re-run with
+	// -iq-correct to A/B.
+	if d.iqStats.Count() > 0 {
+		bal := d.iqStats.Balancer()
+		fmt.Fprintf(w, "diag: raw IQ imbalance: gain=%+.3f dB  phase=%+.3f°  image_rejection=%.1f dB  (correction GainQ=%.4f Phase=%+.4f rad)\n",
+			d.iqStats.GainImbalanceDB(), d.iqStats.PhaseImbalanceDeg(), d.iqStats.ImageRejectionDB(), bal.GainQ, bal.Phase)
 	}
 
 	// Dibit value histogram — should be ~25% per bin on a clean C4FM
