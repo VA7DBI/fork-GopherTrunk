@@ -136,6 +136,9 @@ func (p *DashboardPanel) healthBody(s *state.SharedState) string {
 		if details := plutoFailureBreakdown(pr); details != "" {
 			lines = append(lines, dashDim.Render("  "+details))
 		}
+		if hint := plutoRemediationHint(pr); hint != "" {
+			lines = append(lines, dashDim.Render("  hint: "+hint))
+		}
 	}
 	if s.Runtime.LastFatalError != "" {
 		label := "Last fatal"
@@ -191,6 +194,47 @@ func plutoDashboardSeverity(pr client.PlutoRuntimeDTO) (string, string, lipgloss
 	default:
 		return "ok", "stable", dashOK
 	}
+}
+
+func plutoRemediationHint(pr client.PlutoRuntimeDTO) string {
+	stage, count := plutoDominantFailure(pr)
+	if count == 0 {
+		return ""
+	}
+	switch stage {
+	case "dial":
+		return "check Pluto endpoint address/USB transport and device power"
+	case "handshake":
+		return "verify RTL-TCP compatibility and firmware behavior on connect"
+	case "command":
+		return "inspect tuner command sequence and Pluto command responses"
+	case "stream":
+		return "check USB/network stability and host performance under load"
+	default:
+		return "inspect daemon logs for plutoplus transport error details"
+	}
+}
+
+func plutoDominantFailure(pr client.PlutoRuntimeDTO) (string, uint64) {
+	maxStage := ""
+	maxCount := uint64(0)
+	stages := []struct {
+		name  string
+		count uint64
+	}{
+		{name: "dial", count: pr.DialFailures},
+		{name: "handshake", count: pr.HandshakeFailures},
+		{name: "command", count: pr.CommandFailures},
+		{name: "stream", count: pr.StreamFailures},
+		{name: "unknown", count: pr.UnknownFailures},
+	}
+	for _, s := range stages {
+		if s.count > maxCount {
+			maxCount = s.count
+			maxStage = s.name
+		}
+	}
+	return maxStage, maxCount
 }
 
 func (p *DashboardPanel) activeBody(s *state.SharedState) string {

@@ -30,6 +30,7 @@ func TestDashboardPanel_HealthBodyRendersPlutoSummary(t *testing.T) {
 		"dial 2",
 		"handshake 1",
 		"stream 3",
+		"hint: check USB/network stability and host performance under load",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("healthBody missing %q in:\n%s", want, view)

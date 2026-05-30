@@ -107,6 +107,11 @@ export function Dashboard() {
           {plutoFailureBreakdown(runtime?.pluto_runtime) && (
             <p className="text-xs text-muted mt-1">{plutoFailureBreakdown(runtime?.pluto_runtime)}</p>
           )}
+          {plutoRemediationHint(runtime?.pluto_runtime) && (
+            <p className="text-xs text-muted mt-1">
+              hint: {plutoRemediationHint(runtime?.pluto_runtime)}
+            </p>
+          )}
         </section>
       )}
 
@@ -203,6 +208,42 @@ function plutoSeverity(pluto?: PlutoRuntimeDTO): { label: string; className: str
     default:
       return { label: "stable", className: "pill-ok" };
   }
+}
+
+function plutoRemediationHint(pluto?: PlutoRuntimeDTO): string {
+  const [stage, count] = plutoDominantFailure(pluto);
+  if (count === 0) return "";
+  switch (stage) {
+    case "dial":
+      return "check Pluto endpoint address/USB transport and device power";
+    case "handshake":
+      return "verify RTL-TCP compatibility and firmware behavior on connect";
+    case "command":
+      return "inspect tuner command sequence and Pluto command responses";
+    case "stream":
+      return "check USB/network stability and host performance under load";
+    default:
+      return "inspect daemon logs for plutoplus transport error details";
+  }
+}
+
+function plutoDominantFailure(pluto?: PlutoRuntimeDTO): [string, number] {
+  const stages: Array<[string, number]> = [
+    ["dial", pluto?.dial_failures ?? 0],
+    ["handshake", pluto?.handshake_failures ?? 0],
+    ["command", pluto?.command_failures ?? 0],
+    ["stream", pluto?.stream_failures ?? 0],
+    ["unknown", pluto?.unknown_failures ?? 0],
+  ];
+  let maxStage = "";
+  let maxCount = 0;
+  for (const [stage, count] of stages) {
+    if (count > maxCount) {
+      maxStage = stage;
+      maxCount = count;
+    }
+  }
+  return [maxStage, maxCount];
 }
 
 function StatCard({

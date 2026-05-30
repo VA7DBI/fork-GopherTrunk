@@ -61,5 +61,6 @@ describe("Dashboard Pluto health", () => {
 		expect(screen.getByText(/dial 2/)).toBeInTheDocument();
 		expect(screen.getByText(/handshake 1/)).toBeInTheDocument();
 		expect(screen.getByText(/stream 4/)).toBeInTheDocument();
+		expect(screen.getByText(/hint: check USB\/network stability and host performance under load/i)).toBeInTheDocument();
 	});
 });
