@@ -123,7 +123,9 @@ sdr:
     - serial: "00000001"   # match `gophertrunk sdr list`; first-found wins when blank
       role: control        # control | voice | auto
       ppm: 0               # 0 is fine for TCXO-equipped units like the NESDR Smart v5
-      gain: "auto"         # "auto" or a tenths-of-dB string ("496" = 49.6 dB)
+      gain: "auto"         # TENTHS of a dB — NOT dB. "496" = 49.6 dB. SDRTrunk/
+                           # OP25/gqrx users: multiply your dB figure by 10
+                           # (32 dB → "320"). "auto" (AGC) is the safe default.
       bias_tee: false      # enable the 5V bias-tee output for an external LNA
     - serial: "00000002"
       role: voice
@@ -250,6 +252,87 @@ sdr:
 #         dir: "/var/lib/gophertrunk/fleetsync-export"
 #         sources:
 #           - "City Utilities FleetSync"
+
+# ais:
+#   channels:
+#     - serial: "marine-antenna"      # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 161_975_000     # AIS channel 87B (or 162_025_000 = 88B)
+#       drop_bad_fcs: false           # true to silently drop CRC-failed
+#                                     #  messages instead of publishing
+#                                     #  them with FCSOK=false
+#       drop_non_position: false      # true to drop static-data / base-
+#                                     #  station / channel-management
+#                                     #  messages and keep only vessel
+#                                     #  position reports
+
+# MDC1200 Motorola FFSK signaling. Each entry pins one SDR to a
+# conventional analog VHF / UHF voice channel and decodes the
+# in-band data bursts Motorola radios key at the head (and tail) of
+# a transmission. Pipeline: FM demod → FFSK discriminator (CCIR
+# tones, mark 1200 Hz / space 1800 Hz, 1200 baud) → symbol-timing
+# recovery → NRZ slicer → 40-bit sync framer → op/arg/unit-ID
+# parser with CRC check. Decoded bursts publish on
+# events.KindMDC1200Message; storage.MDC1200Log persists them to the
+# mdc1200_log SQLite table, the REST endpoint at
+# /api/v1/mdc1200/messages returns the most recent N, and the
+# /mdc1200 web panel renders them live (unit IDs, PTT ANI, emergency
+# / status / radio-check signaling).
+#
+# mdc1200:
+#   channels:
+#     - serial: "vhf-antenna"         # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 154_000_000     # conventional analog voice channel
+#                                     #  carrying Motorola signaling
+#       drop_bad_crc: false           # true to silently drop CRC-failed
+#                                     #  bursts instead of publishing them
+#                                     #  with crc_ok=false
+
+# DSC marine distress / safety / routine calls. Each entry pins one
+# SDR to a DSC channel and decodes the calls. Pipeline: FM demod →
+# FFSK discriminator (DSC tones, mark 1300 Hz / space 2100 Hz,
+# 1200 baud) → symbol-timing recovery → direct-FSK slicer →
+# BCH(10,7) character sync → ITU-R M.493 sequence parser. Decoded
+# sequences publish on events.KindDSCMessage; storage.DSCLog
+# persists them to the dsc_log SQLite table, the REST endpoint at
+# /api/v1/dsc/messages returns the most recent N, and the /dsc web
+# panel renders them live (distress alerts, MMSIs, positions).
+#
+# dsc:
+#   channels:
+#     - serial: "marine-antenna"      # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp)
+#       frequency_hz: 156_525_000     # marine VHF channel 70 (or one of
+#                                     #  the HF DSC channels: 2_187_500,
+#                                     #  8_414_500, 12_577_000, 16_804_500)
+#       drop_bad_fcs: false           # true to silently drop sequences
+#                                     #  with a BCH-failed character instead
+#                                     #  of publishing them flagged
+
+# ADS-B / aviation. Two ways to feed the aircraft panel; mix freely,
+# their frames merge into one stream.
+#
+#  1. beast_upstreams — consume a separately-running dump1090 / readsb /
+#     BeastSplitter / commercial hub over the BEAST TCP protocol. Most
+#     existing 1090 MHz chains already run one against a dedicated
+#     RTL-SDR (with a 1090 MHz filter + LNA).
+#  2. channels — native PPM demod: pin one of GopherTrunk's own SDRs to
+#     1090 MHz and decode Mode-S straight off the air, no external
+#     decoder. A 1090 MHz SAW filter + LNA ahead of the SDR is strongly
+#     recommended, and the SDR must sample at >= 2 Msps (the receiver
+#     resamples to 2 Msps internally).
+#
+# adsb:
+#   beast_upstreams:
+#     - addr: "127.0.0.1:30005"       # dump1090 / readsb default BEAST port
+#       name: "local-dump1090"        # logged on every reconnect
+#     - addr: "antenna-pi.lan:30005"  # remote pi-at-the-antenna setup
+#       name: "rooftop"
+#   channels:
+#     - serial: "1090-antenna"        # SDR serial (must be in sdr.devices
+#                                     #  or sdr.rtl_tcp), sampling >= 2 Msps
+#       frequency_hz: 1_090_000_000   # 1090 MHz (the default when omitted)
 
 trunking:
   # call_timeout_ms: inactivity window after which the engine's

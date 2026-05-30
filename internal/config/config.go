@@ -28,6 +28,39 @@ type Config struct {
 	Baseband   BasebandConfig   `yaml:"baseband"`
 	Paging     PagingConfig     `yaml:"paging"`
 	FleetSync  FleetSyncConfig  `yaml:"fleetsync"`
+	APRS       APRSConfig       `yaml:"aprs"`
+	AIS        AISConfig        `yaml:"ais"`
+	DSC        DSCConfig        `yaml:"dsc"`
+	MDC1200    MDC1200Config    `yaml:"mdc1200"`
+	ADSB       ADSBConfig       `yaml:"adsb"`
+}
+
+// ADSBConfig configures the ADS-B aircraft-tracking input. The
+// native 1 Msps PPM DSP frontend is planned; for now the BEAST
+// upstream lets operators consume Mode-S frames from a separately-
+// running dump1090 / readsb / BeastSplitter / commercial hub. Most
+// 1090 MHz receiver chains already run dump1090 on a dedicated
+// RTL-SDR + 1090 MHz filter + LNA; pointing GopherTrunk at it
+// is a one-line config away.
+type ADSBConfig struct {
+	BeastUpstreams []ADSBBeastConfig   `yaml:"beast_upstreams"`
+	Channels       []ADSBChannelConfig `yaml:"channels"`
+}
+
+// ADSBChannelConfig describes one SDR pinned to 1090 MHz for the
+// native PPM Mode-S receiver — the alternative to a BEAST upstream for
+// operators who want GopherTrunk to own the whole 1090 MHz chain
+// rather than running a separate dump1090 / readsb. Serial picks the
+// SDR; the daemon tunes it to FrequencyHz (default 1090 MHz) and runs
+// the PPM demodulator against its full IQ stream. A 1090 MHz SAW
+// filter + LNA ahead of the SDR is strongly recommended — Mode-S is a
+// weak, bursty signal. The SDR must sample at ≥ 2 Msps; the receiver
+// resamples to 2 Msps internally. Decoded frames merge into the same
+// events.KindAircraftReport stream the BEAST upstreams feed, so the
+// /aircraft panel and storage are shared.
+type ADSBChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"` // defaults to 1090 MHz when zero
 }
 
 // FleetSyncConfig configures Kenwood FleetSync decoders (FleetSync I
@@ -194,6 +227,53 @@ type IcecastFeedConfig struct {
 	Password   string   `yaml:"password"`
 	StreamName string   `yaml:"stream_name"`
 	Systems    []string `yaml:"systems"`
+}
+
+type ADSBBeastConfig struct {
+	Addr string `yaml:"addr"`
+	Name string `yaml:"name"`
+}
+
+type APRSConfig struct {
+	Channels []APRSChannelConfig `yaml:"channels"`
+}
+
+type APRSChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadFCS  bool   `yaml:"drop_bad_fcs"`
+	DropNonUI   bool   `yaml:"drop_non_ui"`
+}
+
+type AISConfig struct {
+	Channels []AISChannelConfig `yaml:"channels"`
+}
+
+type AISChannelConfig struct {
+	Serial          string `yaml:"serial"`
+	FrequencyHz     uint32 `yaml:"frequency_hz"`
+	DropBadFCS      bool   `yaml:"drop_bad_fcs"`
+	DropNonPosition bool   `yaml:"drop_non_position"`
+}
+
+type DSCConfig struct {
+	Channels []DSCChannelConfig `yaml:"channels"`
+}
+
+type DSCChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadFCS  bool   `yaml:"drop_bad_fcs"`
+}
+
+type MDC1200Config struct {
+	Channels []MDC1200ChannelConfig `yaml:"channels"`
+}
+
+type MDC1200ChannelConfig struct {
+	Serial      string `yaml:"serial"`
+	FrequencyHz uint32 `yaml:"frequency_hz"`
+	DropBadCRC  bool   `yaml:"drop_bad_crc"`
 }
 
 // AudioConfig controls live audio playback to the host's speakers.
@@ -421,6 +501,14 @@ type DeviceConfig struct {
 	// device so voice grants can be followed without a separate
 	// physical voice SDR. 0 disables; allowed range is 0..8.
 	VoiceTaps int `yaml:"voice_taps"`
+
+	// IQCorrect enables blind I/Q-imbalance correction on this device's
+	// raw IQ before decimation (issue #402). Off by default. An
+	// uncorrected RTL-SDR I/Q imbalance distorts the demodulated symbol
+	// eye (worst at the on-channel DC the control decoder's DDC sits on);
+	// validate the benefit with `gophertrunk replay -iq-correct -diag`
+	// on a capture from this device before enabling it here.
+	IQCorrect bool `yaml:"iq_correct"`
 }
 
 // DeviceChannelConfig is one repeater carrier carried by a
