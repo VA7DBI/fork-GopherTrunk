@@ -82,6 +82,127 @@ func distStats(v []float64) (mean, std, p10, p50, p90 float64) {
 	return mean, std, pct(0.10), pct(0.50), pct(0.90)
 }
 
+// printTrueSymbolEye measures the TRUE outer-rail eye from the FSW hits and
+// localizes the mechanism of the #402 outer-rail spread.
+//
+// Every symbol of the P25 frame-sync word is an outer (±3) symbol and is
+// known, so at each FSW hit the 24 aligned soft samples are attributed to
+// their *known* symbol regardless of how the slicer decided them — an
+// uncontaminated outer-rail distribution (the per-decided-symbol block above
+// conflates true spread with slicer misclassification). Each sample is then
+// split by transition context: whether its true symbol equals the previous
+// FSW symbol (steady) or is a ±6 swing (post-transition). The comparison
+// names the cause:
+//
+//   - post-transition std ≫ steady std → ISI / symbol-timing (steep
+//     transitions are where off-centre sampling and channel ISI bite),
+//   - roughly equal, symmetric → amplitude-intrinsic (FM clicks / SNR, or a
+//     TX nonlinearity) — not an ISI/equalizer fix,
+//   - post-transition skewed (mean ≫ median) → overshoot / ringing.
+//
+// winner is the rotation that aligns the demod's dibits to the canonical
+// FrameSyncWord; the expected natural-frame symbol therefore un-rotates it.
+// Hits with up to `tolerance` mis-sliced dibits are included on purpose —
+// those mis-sliced outer symbols are exactly the heavy-tail outliers we want
+// to see.
+func (d *iqDiag) printTrueSymbolEye(w io.Writer, winner int, positions []int) {
+	all, steady, trans, ok := d.trueSymbolEye(winner, positions)
+	if !ok {
+		return
+	}
+
+	labels := [2]string{"+3", "-3"}
+	fmt.Fprintf(w, "diag: true-symbol outer-rail eye (from %d FSW hits; symbols known, slicer-independent):\n", len(positions))
+	var skew [2]float64
+	for b := 0; b < 2; b++ {
+		mean, std, p10, p50, p90 := distStats(all[b])
+		skew[b] = mean - p50
+		fmt.Fprintf(w, "diag:   true %s: n=%d  mean=%+.4f  std=%.4f  p10/50/90=%+.4f/%+.4f/%+.4f  skew(mean−median)=%+.4f\n",
+			labels[b], len(all[b]), mean, std, p10, p50, p90, skew[b])
+	}
+	var ratio [2]float64
+	for b := 0; b < 2; b++ {
+		_, ss, _, _, _ := distStats(steady[b])
+		_, ts, _, _, _ := distStats(trans[b])
+		ratio[b] = ratioOrInf(ts, ss)
+		fmt.Fprintf(w, "diag:   %s spread: steady std=%.4f (n=%d)  post-transition std=%.4f (n=%d)  ratio=%.2f\n",
+			labels[b], ss, len(steady[b]), ts, len(trans[b]), ratio[b])
+	}
+
+	// Advisory verdict. Thresholds are coarse — the numbers above are the
+	// evidence; this just points at the next move.
+	maxRatio := ratio[0]
+	if ratio[1] > maxRatio {
+		maxRatio = ratio[1]
+	}
+	maxSkew := skew[0]
+	if math.Abs(skew[1]) > math.Abs(maxSkew) {
+		maxSkew = skew[1]
+	}
+	switch {
+	case maxRatio >= 1.5:
+		fmt.Fprintln(w, "diag:   → outer spread is transition-driven (post-transition ≫ steady): ISI / symbol-timing — chase the Mueller-Müller clock or an equalizer.")
+	case math.Abs(maxSkew) >= 0.05:
+		fmt.Fprintln(w, "diag:   → outer spread is skewed but transition-independent: overshoot / TX nonlinearity — not a timing/ISI fix.")
+	default:
+		fmt.Fprintln(w, "diag:   → outer spread is symmetric and transition-independent: amplitude-intrinsic (FM clicks / SNR) — not fixable in the symbol domain.")
+	}
+}
+
+// trueSymbolEye attributes the soft samples at each FSW hit to their known
+// outer symbol (+3 → bucket 0, −3 → bucket 1), overall and split by transition
+// context (steady = true symbol equals the previous FSW symbol; trans = a ±6
+// swing). Returns ok=false when the soft/dibit buffers aren't aligned or there
+// are no hits. Factored out of printTrueSymbolEye for testing.
+func (d *iqDiag) trueSymbolEye(winner int, positions []int) (all, steady, trans [2][]float64, ok bool) {
+	if len(d.soft) != len(d.dibits) || len(positions) == 0 {
+		return all, steady, trans, false
+	}
+	const fswLen = 24
+	dibitToSymbol := [4]int8{1, 3, -1, -3} // dibit 0,1,2,3 → +1,+3,-1,-3
+	// expected[kk] is the natural-frame symbol of FSW position kk: undo the
+	// winning rotation applied to the demod's dibits.
+	var expected [fswLen]int8
+	for kk := 0; kk < fswLen; kk++ {
+		nd := (p25phase1.FrameSyncWord[kk] + 4 - uint8(winner&3)) & 3
+		expected[kk] = dibitToSymbol[nd]
+	}
+	bucket := func(sym int8) int { // outer +3 → 0, outer −3 → 1
+		if sym > 0 {
+			return 0
+		}
+		return 1
+	}
+	for _, pos := range positions {
+		if pos < 0 || pos+fswLen > len(d.soft) {
+			continue
+		}
+		for kk := 0; kk < fswLen; kk++ {
+			b := bucket(expected[kk])
+			v := float64(d.soft[pos+kk])
+			all[b] = append(all[b], v)
+			if kk > 0 {
+				// Transition is rotation-invariant, so compare canonical FSW.
+				if p25phase1.FrameSyncWord[kk] == p25phase1.FrameSyncWord[kk-1] {
+					steady[b] = append(steady[b], v)
+				} else {
+					trans[b] = append(trans[b], v)
+				}
+			}
+		}
+	}
+	return all, steady, trans, true
+}
+
+// ratioOrInf returns a/b, or 0 when b≈0 (avoids a divide-by-zero in the
+// transition-spread comparison when one group is empty).
+func ratioOrInf(a, b float64) float64 {
+	if b < 1e-9 {
+		return 0
+	}
+	return a / b
+}
+
 // observe appends a chunk of dibits to the rolling buffer the EOF
 // report walks. Called from the DibitSink in replay.go when -diag
 // is set.
@@ -368,6 +489,11 @@ func (d *iqDiag) printReport(w io.Writer) {
 			fmt.Fprintf(w, "diag: inter-hit dibit-deltas: min=%d  median=%d  max=%d  modal=%d  (P25 TSBK frame ≈ 163 on-air dibits, LDU ≈ 864)\n",
 				deltas[0], deltas[len(deltas)/2], deltas[len(deltas)-1], modal)
 		}
+
+		// True-symbol outer-rail eye: the FSW symbols are all known (and all
+		// outer), so this measures the real outer-rail spread free of slicer
+		// misclassification, and localizes its mechanism (issue #402).
+		d.printTrueSymbolEye(w, winner, positions)
 
 		// For each of the first few perfect-distance FSW hits, dump
 		// the FSW + next 32 dibits raw AND run them through the
