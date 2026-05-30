@@ -17,6 +17,12 @@ func TestLoadDefault(t *testing.T) {
 	if cfg.SDR.SampleRate != 2_400_000 {
 		t.Errorf("default sample rate = %d, want 2400000", cfg.SDR.SampleRate)
 	}
+	if cfg.SDR.PlutoHealth.RecentWindow != "10m" {
+		t.Errorf("default pluto recent_window = %q, want 10m", cfg.SDR.PlutoHealth.RecentWindow)
+	}
+	if cfg.SDR.PlutoHealth.UnstableFailures != 5 {
+		t.Errorf("default pluto unstable_failures = %d, want 5", cfg.SDR.PlutoHealth.UnstableFailures)
+	}
 }
 
 func TestLoadYAML(t *testing.T) {
@@ -103,6 +109,18 @@ func TestValidate(t *testing.T) {
 		{"pluto_plus bad transport", Config{SDR: SDRConfig{PlutoPlus: []PlutoPlusConfig{{
 			Transport: "serial", Addr: "127.0.0.1:1234", Serial: "PLUTO-001", Role: "control",
 		}}}}, true},
+		{"pluto_health bad window", Config{SDR: SDRConfig{PlutoHealth: PlutoHealthConfig{
+			RecentWindow: "not-a-duration", UnstableFailures: 5, DegradedFailures: 1, DegradedReconnects: 3,
+		}}}, true},
+		{"pluto_health bad unstable threshold", Config{SDR: SDRConfig{PlutoHealth: PlutoHealthConfig{
+			RecentWindow: "10m", UnstableFailures: 0, DegradedFailures: 1, DegradedReconnects: 3,
+		}}}, true},
+		{"pluto_health bad degraded threshold", Config{SDR: SDRConfig{PlutoHealth: PlutoHealthConfig{
+			RecentWindow: "10m", UnstableFailures: 5, DegradedFailures: 0, DegradedReconnects: 3,
+		}}}, true},
+		{"pluto_health bad reconnect threshold", Config{SDR: SDRConfig{PlutoHealth: PlutoHealthConfig{
+			RecentWindow: "10m", UnstableFailures: 5, DegradedFailures: 1, DegradedReconnects: 0,
+		}}}, true},
 		{"oversized key", Config{Trunking: TrunkingConfig{Systems: []SystemConfig{{Name: "x", Protocol: "dmr", EncryptionKeys: []EncryptionKeyConfig{{KeyID: 1, Algorithm: "rc4", Key: strings.Repeat("ab", 33)}}}}}}, true},
 		// p25_band_plan: the operator's escape hatch for sites that
 		// never broadcast IDEN_UP for some channel ID (issue #345).

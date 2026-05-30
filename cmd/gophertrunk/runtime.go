@@ -42,7 +42,12 @@ var vocoderProtocolMap = map[string]string{
 	"mpt1327":    "—",
 }
 
-const plutoRecentWindow = 10 * time.Minute
+type plutoHealthThresholds struct {
+	RecentWindow      time.Duration
+	UnstableFailures  uint64
+	DegradedFailures  uint64
+	DegradedReconnect uint64
+}
 
 func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 	cfg := r.cfg
@@ -86,7 +91,8 @@ func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 		VocoderMap:     vocoderProtocolMap,
 	}
 	pm := plutoplus.RuntimeMetricsSnapshot()
-	healthClass, recentFailure := classifyPlutoHealth(pm, time.Now().UTC())
+	thresholds := resolvePlutoHealthThresholds(cfg)
+	healthClass, recentFailure := classifyPlutoHealth(pm, time.Now().UTC(), thresholds)
 	dominantStage, _ := dominantPlutoFailureStage(pm)
 	breakdown := plutoFailureBreakdown(pm)
 	dto.PlutoRuntime = api.PlutoRuntimeDTO{
@@ -176,13 +182,13 @@ func formatFloat(v float64) string {
 	return s
 }
 
-func classifyPlutoHealth(pm plutoplus.RuntimeMetrics, now time.Time) (string, bool) {
+func classifyPlutoHealth(pm plutoplus.RuntimeMetrics, now time.Time, thresholds plutoHealthThresholds) (string, bool) {
 	failures := plutoFailureTotal(pm)
-	recent := plutoFailuresRecent(pm, now)
+	recent := plutoFailuresRecent(pm, now, thresholds.RecentWindow)
 	switch {
-	case failures >= 5 && recent:
+	case failures >= thresholds.UnstableFailures && recent:
 		return "unstable", true
-	case (failures > 0 && recent) || (pm.Reconnects >= 3 && recent):
+	case (failures >= thresholds.DegradedFailures && recent) || (pm.Reconnects >= thresholds.DegradedReconnect && recent):
 		return "degraded", true
 	case failures > 0:
 		return "historical", false
@@ -191,7 +197,7 @@ func classifyPlutoHealth(pm plutoplus.RuntimeMetrics, now time.Time) (string, bo
 	}
 }
 
-func plutoFailuresRecent(pm plutoplus.RuntimeMetrics, now time.Time) bool {
+func plutoFailuresRecent(pm plutoplus.RuntimeMetrics, now time.Time, recentWindow time.Duration) bool {
 	if pm.LastFailureAt.IsZero() {
 		return plutoFailureTotal(pm) > 0
 	}
@@ -201,7 +207,33 @@ func plutoFailuresRecent(pm plutoplus.RuntimeMetrics, now time.Time) bool {
 	if pm.LastFailureAt.After(now) {
 		return true
 	}
-	return now.Sub(pm.LastFailureAt) <= plutoRecentWindow
+	return now.Sub(pm.LastFailureAt) <= recentWindow
+}
+
+func resolvePlutoHealthThresholds(cfg *config.Config) plutoHealthThresholds {
+	out := plutoHealthThresholds{
+		RecentWindow:      10 * time.Minute,
+		UnstableFailures:  5,
+		DegradedFailures:  1,
+		DegradedReconnect: 3,
+	}
+	if cfg == nil {
+		return out
+	}
+	ph := cfg.SDR.PlutoHealth
+	if d, err := time.ParseDuration(ph.RecentWindow); err == nil && d > 0 {
+		out.RecentWindow = d
+	}
+	if ph.UnstableFailures > 0 {
+		out.UnstableFailures = uint64(ph.UnstableFailures)
+	}
+	if ph.DegradedFailures > 0 {
+		out.DegradedFailures = uint64(ph.DegradedFailures)
+	}
+	if ph.DegradedReconnects > 0 {
+		out.DegradedReconnect = uint64(ph.DegradedReconnects)
+	}
+	return out
 }
 
 func plutoFailureTotal(pm plutoplus.RuntimeMetrics) uint64 {

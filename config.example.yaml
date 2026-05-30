@@ -111,6 +111,13 @@ retention:
 
 sdr:
   sample_rate: 2_400_000
+  # Runtime health thresholds for Pluto transport counters surfaced
+  # by /api/v1/runtime.
+  pluto_health:
+    recent_window: "10m"
+    unstable_failures: 5
+    degraded_failures: 1
+    degraded_reconnects: 3
   # Pluto Plus endpoint mode (driver: plutoplus). Each entry is a
   # host:port backend that serves IQ + control with an rtl_tcp-
   # compatible wire shape.

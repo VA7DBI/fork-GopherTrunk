@@ -404,6 +404,9 @@ type MessageLogConfig struct {
 type SDRConfig struct {
 	SampleRate uint32         `yaml:"sample_rate"`
 	Devices    []DeviceConfig `yaml:"devices"`
+	// PlutoHealth tunes runtime health classification for Pluto Plus
+	// transport metrics surfaced by /api/v1/runtime.
+	PlutoHealth PlutoHealthConfig `yaml:"pluto_health"`
 	// PlutoPlus lists Pluto Plus endpoints mounted as virtual tuners.
 	// The current transport expects a TCP IQ endpoint that speaks a
 	// rtl_tcp-compatible wire shape (RTL0 header + command channel +
@@ -429,6 +432,23 @@ type SDRConfig struct {
 	// In-stream IQ-death recovery (ccdecoder retry loop, voice
 	// Bind reacquire) is unaffected by this knob.
 	WatchdogIntervalMs int `yaml:"watchdog_interval_ms"`
+}
+
+// PlutoHealthConfig controls how Pluto runtime failure counters map
+// to stable/degraded/unstable classes.
+type PlutoHealthConfig struct {
+	// RecentWindow is the duration window used for "recent" failures,
+	// e.g. "10m".
+	RecentWindow string `yaml:"recent_window"`
+	// UnstableFailures marks health_class=unstable when total failures
+	// in the recent window reach this value.
+	UnstableFailures int `yaml:"unstable_failures"`
+	// DegradedFailures marks health_class=degraded when at least this
+	// many failures occurred in the recent window.
+	DegradedFailures int `yaml:"degraded_failures"`
+	// DegradedReconnects marks health_class=degraded when reconnect
+	// attempts in the recent window reach this value.
+	DegradedReconnects int `yaml:"degraded_reconnects"`
 }
 
 // RTLTCPConfig describes one remote rtl_tcp endpoint to expose as
@@ -943,7 +963,15 @@ type ToneProfileToneConfig struct {
 func Default() Config {
 	return Config{
 		Log: LogConfig{Level: "info", Format: "text"},
-		SDR: SDRConfig{SampleRate: 2_400_000},
+		SDR: SDRConfig{
+			SampleRate: 2_400_000,
+			PlutoHealth: PlutoHealthConfig{
+				RecentWindow:       "10m",
+				UnstableFailures:   5,
+				DegradedFailures:   1,
+				DegradedReconnects: 3,
+			},
+		},
 		// HTTP API on by default so the bundled launcher's TUI /
 		// web paths have something to attach to without an explicit
 		// config edit. Loopback bind keeps the auth-disabled default
@@ -1049,6 +1077,38 @@ func (c Config) Validate() error {
 			return fmt.Errorf("sdr.pluto_plus[%d]: serial %q collides with existing SDR serial at index %d", i, p.Serial, prev)
 		}
 		seenSerials[p.Serial] = i
+	}
+	ph := c.SDR.PlutoHealth
+	recent := strings.TrimSpace(ph.RecentWindow)
+	hasAny := recent != "" || ph.UnstableFailures != 0 || ph.DegradedFailures != 0 || ph.DegradedReconnects != 0
+	if recent != "" {
+		d, err := time.ParseDuration(recent)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("sdr.pluto_health.recent_window: invalid duration %q", ph.RecentWindow)
+		}
+	}
+	if ph.UnstableFailures < 0 {
+		return errors.New("sdr.pluto_health.unstable_failures must be >= 0")
+	}
+	if ph.DegradedFailures < 0 {
+		return errors.New("sdr.pluto_health.degraded_failures must be >= 0")
+	}
+	if ph.DegradedReconnects < 0 {
+		return errors.New("sdr.pluto_health.degraded_reconnects must be >= 0")
+	}
+	if hasAny {
+		if recent == "" {
+			return errors.New("sdr.pluto_health.recent_window is required when pluto_health thresholds are set")
+		}
+		if ph.UnstableFailures == 0 {
+			return errors.New("sdr.pluto_health.unstable_failures must be > 0")
+		}
+		if ph.DegradedFailures == 0 {
+			return errors.New("sdr.pluto_health.degraded_failures must be > 0")
+		}
+		if ph.DegradedReconnects == 0 {
+			return errors.New("sdr.pluto_health.degraded_reconnects must be > 0")
+		}
 	}
 	if c.Trunking.CallTimeoutMs < 0 {
 		return fmt.Errorf("trunking.call_timeout_ms: %d ms must be ≥ 0", c.Trunking.CallTimeoutMs)

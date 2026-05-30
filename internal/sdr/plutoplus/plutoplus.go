@@ -10,9 +10,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"sync/atomic"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MattCheramie/GopherTrunk/internal/sdr"
@@ -133,6 +133,18 @@ func RuntimeMetricsSnapshot() RuntimeMetrics {
 		UnknownFailures:   metricUnknownFailures.Load(),
 		LastFailureAt:     last,
 	}
+}
+
+// ResetRuntimeMetrics clears process-wide Pluto health counters.
+func ResetRuntimeMetrics() {
+	metricReconnects.Store(0)
+	metricReconnectFailures.Store(0)
+	metricDialFailures.Store(0)
+	metricHandshakeFailures.Store(0)
+	metricCommandFailures.Store(0)
+	metricStreamFailures.Store(0)
+	metricUnknownFailures.Store(0)
+	metricLastFailureNanos.Store(0)
 }
 
 // Spec declares one Pluto Plus endpoint.

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/MattCheramie/GopherTrunk/internal/events"
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/plutoplus"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
@@ -76,6 +77,7 @@ func TestMutations_Disabled_ReturnForbidden(t *testing.T) {
 		{"PATCH", "/api/v1/talkgroups/42"},
 		{"POST", "/api/v1/retention/sweep"},
 		{"POST", "/api/v1/devices/abc/tone-reset"},
+		{"POST", "/api/v1/devices/pluto-runtime/tone-reset"},
 	} {
 		req, _ := http.NewRequest(c.method, base+c.path, nil)
 		resp, err := http.DefaultClient.Do(req)
@@ -86,6 +88,34 @@ func TestMutations_Disabled_ReturnForbidden(t *testing.T) {
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("%s %s: status=%d, want 401", c.method, c.path, resp.StatusCode)
 		}
+	}
+}
+
+func TestPlutoRuntimeReset_Invokes(t *testing.T) {
+	bus := events.NewBus(8)
+	defer bus.Close()
+	plutoplus.ResetRuntimeMetrics()
+	t.Cleanup(plutoplus.ResetRuntimeMetrics)
+
+	// Force at least one Pluto failure counter above zero.
+	_, _ = plutoplus.New([]plutoplus.Spec{{Addr: "127.0.0.1:1", Serial: "PLUTO-TEST"}}, nil).Open(0)
+	if got := plutoplus.RuntimeMetricsSnapshot(); got.DialFailures == 0 && got.UnknownFailures == 0 {
+		t.Fatalf("expected non-zero Pluto failure counters before reset, got %+v", got)
+	}
+
+	base, teardown := mkServer(t, ServerOptions{Bus: bus, AllowMutations: true})
+	defer teardown()
+
+	resp, err := http.Post(base+"/api/v1/devices/pluto-runtime/tone-reset", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if got := plutoplus.RuntimeMetricsSnapshot(); got != (plutoplus.RuntimeMetrics{}) {
+		t.Fatalf("pluto metrics not reset: %+v", got)
 	}
 }
 

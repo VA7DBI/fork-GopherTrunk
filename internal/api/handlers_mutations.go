@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/MattCheramie/GopherTrunk/internal/sdr/plutoplus"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
 
@@ -204,12 +205,22 @@ func (s *Server) handleRetentionSweep(w http.ResponseWriter, r *http.Request) {
 //	503 if the daemon doesn't have a tone detector wired
 func (s *Server) handleToneReset(w http.ResponseWriter, r *http.Request) {
 	if s.tones == nil {
-		writeError(w, http.StatusServiceUnavailable, "tone detector not wired")
-		return
+		if r.PathValue("serial") != "pluto-runtime" {
+			writeError(w, http.StatusServiceUnavailable, "tone detector not wired")
+			return
+		}
 	}
 	serial := r.PathValue("serial")
 	if serial == "" {
 		writeError(w, http.StatusBadRequest, "serial required")
+		return
+	}
+	if serial == "pluto-runtime" {
+		plutoplus.ResetRuntimeMetrics()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":            true,
+			"device_serial": serial,
+		})
 		return
 	}
 	s.tones.ResetDevice(serial)
