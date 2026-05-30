@@ -112,7 +112,70 @@ func (p *DashboardPanel) healthBody(s *state.SharedState) string {
 			fmt.Sprintf("SDRs: %d (%d control, %d voice)", len(s.Devices), control, voice),
 		))
 	}
+	if len(s.Runtime.StartupWarnings) > 0 {
+		lines = append(lines, dashErr.Render(fmt.Sprintf("Startup warnings: %d", len(s.Runtime.StartupWarnings))))
+		maxWarnings := len(s.Runtime.StartupWarnings)
+		if maxWarnings > 2 {
+			maxWarnings = 2
+		}
+		for i := 0; i < maxWarnings; i++ {
+			lines = append(lines, dashDim.Render("! "+s.Runtime.StartupWarnings[i]))
+		}
+		if len(s.Runtime.StartupWarnings) > maxWarnings {
+			lines = append(lines, dashDim.Render(fmt.Sprintf("... %d more", len(s.Runtime.StartupWarnings)-maxWarnings)))
+		}
+	}
+	if plutoDashboardVisible(s.Runtime) {
+		pr := s.Runtime.PlutoRuntime
+		lines = append(lines, dashDim.Render(
+			fmt.Sprintf("Pluto Plus: reconnects %d  failures %d", pr.Reconnects, plutoFailureTotal(pr)),
+		))
+		if details := plutoFailureBreakdown(pr); details != "" {
+			lines = append(lines, dashDim.Render("  "+details))
+		}
+	}
+	if s.Runtime.LastFatalError != "" {
+		label := "Last fatal"
+		if s.Runtime.LastFatalClass != "" {
+			label += " (" + s.Runtime.LastFatalClass + ")"
+		}
+		lines = append(lines, dashErr.Render(label))
+		if s.Runtime.LastFatalHint != "" {
+			lines = append(lines, dashDim.Render(s.Runtime.LastFatalHint))
+		}
+	}
 	return strings.Join(lines, "\n")
+}
+
+func plutoDashboardVisible(r client.RuntimeDTO) bool {
+	if hasSDRBackend(r.SDRBackends, "plutoplus") {
+		return true
+	}
+	return r.PlutoRuntime.Reconnects > 0 || plutoFailureTotal(r.PlutoRuntime) > 0
+}
+
+func plutoFailureTotal(pr client.PlutoRuntimeDTO) uint64 {
+	return pr.ReconnectFailures + pr.DialFailures + pr.HandshakeFailures + pr.CommandFailures + pr.StreamFailures + pr.UnknownFailures
+}
+
+func plutoFailureBreakdown(pr client.PlutoRuntimeDTO) string {
+	parts := make([]string, 0, 5)
+	if pr.DialFailures > 0 {
+		parts = append(parts, fmt.Sprintf("dial %d", pr.DialFailures))
+	}
+	if pr.HandshakeFailures > 0 {
+		parts = append(parts, fmt.Sprintf("handshake %d", pr.HandshakeFailures))
+	}
+	if pr.CommandFailures > 0 {
+		parts = append(parts, fmt.Sprintf("command %d", pr.CommandFailures))
+	}
+	if pr.StreamFailures > 0 {
+		parts = append(parts, fmt.Sprintf("stream %d", pr.StreamFailures))
+	}
+	if pr.UnknownFailures > 0 {
+		parts = append(parts, fmt.Sprintf("unknown %d", pr.UnknownFailures))
+	}
+	return strings.Join(parts, "  ·  ")
 }
 
 func (p *DashboardPanel) activeBody(s *state.SharedState) string {

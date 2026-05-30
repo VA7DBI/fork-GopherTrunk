@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import type { PlutoRuntimeDTO, RuntimeDTO } from "../api/types";
 import { selectClientConfig, useShared } from "../store/shared";
 
 // Dashboard: top-line counts + a peek at the last few events. The
@@ -18,22 +19,25 @@ export function Dashboard() {
   const audio = useShared((s) => s.audio);
   const events = useShared((s) => s.events);
   const wsStatus = useShared((s) => s.wsStatus);
+  const [runtime, setRuntime] = useState<RuntimeDTO | null>(null);
 
   useEffect(() => {
     let cancel = false;
     const refresh = async () => {
       try {
-        const [h, calls, devs, aud] = await Promise.allSettled([
+        const [h, calls, devs, aud, rt] = await Promise.allSettled([
           api.health(cfg),
           api.activeCalls(cfg),
           api.devices(cfg),
           api.audio(cfg),
+          api.runtime(cfg),
         ]);
         if (cancel) return;
         if (h.status === "fulfilled") setHealth(h.value);
         if (calls.status === "fulfilled") setActiveCalls(calls.value);
         if (devs.status === "fulfilled") setDevices(devs.value);
         if (aud.status === "fulfilled") setAudio(aud.value);
+        if (rt.status === "fulfilled") setRuntime(rt.value);
       } catch {
         // Silent: errors land on the toast strip from elsewhere.
       }
@@ -87,6 +91,20 @@ export function Dashboard() {
         />
       </div>
 
+      {showPlutoDashboard(runtime) && (
+        <section className="panel p-4">
+          <h3 className="panel-title mb-2">Pluto Plus health</h3>
+          <p className="text-sm">
+            Reconnects <span className="font-mono">{runtime?.pluto_runtime?.reconnects ?? 0}</span>
+            {"  ·  "}
+            Failures <span className="font-mono">{plutoFailureTotal(runtime?.pluto_runtime)}</span>
+          </p>
+          {plutoFailureBreakdown(runtime?.pluto_runtime) && (
+            <p className="text-xs text-muted mt-1">{plutoFailureBreakdown(runtime?.pluto_runtime)}</p>
+          )}
+        </section>
+      )}
+
       <section className="panel p-4">
         <h3 className="panel-title mb-2">Recent events</h3>
         {events.length === 0 ? (
@@ -137,6 +155,37 @@ export function Dashboard() {
       </section>
     </div>
   );
+}
+
+function showPlutoDashboard(runtime: RuntimeDTO | null): boolean {
+  const backends = Array.isArray(runtime?.sdr_backends) ? runtime.sdr_backends : [];
+  if (backends.some((value) => String(value).toLowerCase() === "plutoplus")) {
+    return true;
+  }
+  const pluto = runtime?.pluto_runtime;
+  return (pluto?.reconnects ?? 0) > 0 || plutoFailureTotal(pluto) > 0;
+}
+
+function plutoFailureTotal(pluto?: PlutoRuntimeDTO): number {
+  return (
+    (pluto?.reconnect_failures ?? 0) +
+    (pluto?.dial_failures ?? 0) +
+    (pluto?.handshake_failures ?? 0) +
+    (pluto?.command_failures ?? 0) +
+    (pluto?.stream_failures ?? 0) +
+    (pluto?.unknown_failures ?? 0)
+  );
+}
+
+function plutoFailureBreakdown(pluto?: PlutoRuntimeDTO): string {
+  if (!pluto) return "";
+  const parts: string[] = [];
+  if ((pluto.dial_failures ?? 0) > 0) parts.push(`dial ${pluto.dial_failures}`);
+  if ((pluto.handshake_failures ?? 0) > 0) parts.push(`handshake ${pluto.handshake_failures}`);
+  if ((pluto.command_failures ?? 0) > 0) parts.push(`command ${pluto.command_failures}`);
+  if ((pluto.stream_failures ?? 0) > 0) parts.push(`stream ${pluto.stream_failures}`);
+  if ((pluto.unknown_failures ?? 0) > 0) parts.push(`unknown ${pluto.unknown_failures}`);
+  return parts.join("  ·  ");
 }
 
 function StatCard({
