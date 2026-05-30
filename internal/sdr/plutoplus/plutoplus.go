@@ -5,6 +5,7 @@ package plutoplus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -32,6 +33,43 @@ const (
 
 const DefaultConnectTimeout = 3 * time.Second
 const autoProbeTimeout = 250 * time.Millisecond
+
+type Stage string
+
+const (
+	StageDial      Stage = "dial"
+	StageHandshake Stage = "handshake"
+	StageCommand   Stage = "command"
+	StageStream    Stage = "stream"
+)
+
+// TransportError classifies Pluto endpoint failures by operation stage.
+type TransportError struct {
+	Stage Stage
+	Addr  string
+	Op    string
+	Err   error
+}
+
+func (e *TransportError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Op != "" {
+		return fmt.Sprintf("plutoplus: %s %s (%s): %v", e.Stage, e.Op, e.Addr, e.Err)
+	}
+	return fmt.Sprintf("plutoplus: %s (%s): %v", e.Stage, e.Addr, e.Err)
+}
+
+func (e *TransportError) Unwrap() error { return e.Err }
+
+func isStage(err error, stage Stage) bool {
+	var te *TransportError
+	if !errors.As(err, &te) {
+		return false
+	}
+	return te.Stage == stage
+}
 
 const (
 	TransportTCP = "tcp"
@@ -136,6 +174,7 @@ func (d *Driver) openSpec(idx int, spec Spec) (sdr.Device, error) {
 	}
 	conn, err := dialAndHandshake(addr, timeout)
 	if err != nil {
+		d.log.Warn("plutoplus: open failed", "transport", normalizeTransport(spec.Transport), "addr", addr, "err", err)
 		return nil, err
 	}
 
@@ -155,20 +194,25 @@ func (d *Driver) openSpec(idx int, spec Spec) (sdr.Device, error) {
 func dialAndHandshake(addr string, timeout time.Duration) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
-		return nil, fmt.Errorf("plutoplus: dial %s: %w", addr, err)
+		return nil, &TransportError{Stage: StageDial, Addr: addr, Op: "connect", Err: err}
 	}
 	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("plutoplus: set read deadline: %w", err)
+		return nil, &TransportError{Stage: StageHandshake, Addr: addr, Op: "set-read-deadline", Err: err}
 	}
 	var hdr [12]byte
 	if _, err := io.ReadFull(conn, hdr[:]); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("plutoplus: read header: %w", err)
+		return nil, &TransportError{Stage: StageHandshake, Addr: addr, Op: "read-header", Err: err}
 	}
 	if hdr[0] != magic[0] || hdr[1] != magic[1] || hdr[2] != magic[2] || hdr[3] != magic[3] {
 		conn.Close()
-		return nil, fmt.Errorf("plutoplus: %s: server header magic = %q, want %q", addr, hdr[:4], magic[:])
+		return nil, &TransportError{
+			Stage: StageHandshake,
+			Addr:  addr,
+			Op:    "validate-header-magic",
+			Err:   fmt.Errorf("server header magic = %q, want %q", hdr[:4], magic[:]),
+		}
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 	return conn, nil
@@ -233,7 +277,7 @@ func (d *device) sendCmd(op uint8, param uint32) error {
 	pkt[4] = byte(param)
 	_ = d.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	if _, err := d.conn.Write(pkt[:]); err != nil {
-		return fmt.Errorf("plutoplus: send cmd 0x%02x: %w", op, err)
+		return &TransportError{Stage: StageCommand, Addr: d.addr, Op: fmt.Sprintf("cmd-0x%02x", op), Err: err}
 	}
 	_ = d.conn.SetWriteDeadline(time.Time{})
 	return nil
@@ -271,7 +315,7 @@ func (d *device) StreamIQ(ctx context.Context) (<-chan []complex64, error) {
 			n, err := io.ReadFull(conn, buf)
 			if err != nil {
 				if err != io.EOF && err != io.ErrUnexpectedEOF {
-					d.log.Debug("plutoplus: stream read", "addr", d.addr, "err", err)
+					d.log.Debug("plutoplus: stream read", "addr", d.addr, "err", (&TransportError{Stage: StageStream, Addr: d.addr, Op: "read-iq", Err: err}).Error())
 				}
 				if n == 0 {
 					return

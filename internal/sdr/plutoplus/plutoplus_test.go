@@ -10,6 +10,43 @@ import (
 	"time"
 )
 
+func TestOpenDialErrorIsClassified(t *testing.T) {
+	d := New([]Spec{{Addr: "127.0.0.1:1", Serial: "PLUTO-001"}}, nil)
+	_, err := d.Open(0)
+	if err == nil {
+		t.Fatal("Open: want error")
+	}
+	if !isStage(err, StageDial) {
+		t.Fatalf("Open error stage mismatch: %v", err)
+	}
+}
+
+func TestOpenBadMagicIsHandshakeError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_, _ = c.Write([]byte("BADSIGNATURE!"))
+	}()
+
+	d := New([]Spec{{Addr: ln.Addr().String(), Serial: "PLUTO-001"}}, nil)
+	_, err = d.Open(0)
+	if err == nil {
+		t.Fatal("Open: want error")
+	}
+	if !isStage(err, StageHandshake) {
+		t.Fatalf("Open error stage mismatch: %v", err)
+	}
+}
+
 type fakeServer struct {
 	t  *testing.T
 	ln net.Listener
