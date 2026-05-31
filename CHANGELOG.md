@@ -24,6 +24,17 @@ for tagged releases.
 
 ### Added
 
+- **`replay` channel tuning for off-centre captures** (#402) — the
+  `gophertrunk replay` subcommand can now frequency-shift a recorded
+  wideband IQ file so an off-centre control channel lands at 0 Hz before
+  the demodulator, the way the SDR tuner does on a live device. `-tune-hz`
+  applies a fixed offset; `-auto-tune` estimates the dominant carrier from
+  the start of the file. This lets a captured file whose channel was not at
+  the recording centre (e.g. MMR Site 9, ~+37 kHz off) be replayed the same
+  way it decodes live. Backed by a reusable `dsp.NCO` frequency shifter, a
+  `dsp.EstimateCarrierOffsetHz` carrier estimator, and a tuning-offset mode
+  on the `ccdecoder` down-converter. A channelised slice of the real Site 9
+  control channel ships as a decode regression fixture.
 - **MDC1200 Motorola signaling decode** (#438) — end-to-end pipeline
   for the analog FFSK data burst Motorola radios key at the head /
   tail of a transmission on conventional VHF / UHF voice channels.

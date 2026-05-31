@@ -100,8 +100,9 @@ EXAMPLES:
   gophertrunk replay -in cbd.cfile -format f32 -sample-rate 960000 -demod cqpsk
 
   # Wideband capture whose control channel is off-centre: auto-estimate the
-  # carrier and tune it to 0 Hz before demod (the SDR tuner does this live).
-  gophertrunk replay -in mmr-s9.cfile -format f32 -sample-rate 48000 -demod cqpsk -auto-tune
+  # carrier and tune it to 0 Hz before the down-converter (the SDR tuner does
+  # this live; a recorded file does not). MMR Site 9 sits ~+37 kHz off centre.
+  gophertrunk replay -in mmr-s9.cfile -format f32 -sample-rate 2400000 -demod c4fm -auto-tune
 
 FLAGS:`)
 		fs.PrintDefaults()
