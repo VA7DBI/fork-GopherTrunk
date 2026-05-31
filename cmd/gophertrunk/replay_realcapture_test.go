@@ -24,15 +24,19 @@ import (
 // The capture decodes to real trunking frames (NAC ≈ 0x164–0x167, DUID TSDU,
 // TSBKs that pass CRC), so this asserts genuine decode — not the degenerate
 // NAC=0 collapse an earlier (wrong-sample-rate) revision mistook for a lock.
-// Decode is still imperfect on this site (issue #402: GopherTrunk recovers a
-// fraction of the frames OP25/p25_survey gets at 0% BER, and the NID
+//
+// The ~14 frames in this slice carry roughly three TSBKs each (a TSDU packs
+// up to three blocks per FSW+NID); decoding all of them — not just the first
+// block of each, the pre-#402 behaviour — yields ~41 TSBKs. minTSBK guards
+// that multi-block decode: a regression back to one-block-per-frame would
+// drop to ~14 and trip it. Decode is still imperfect on this site (the NID
 // occasionally lands a few bits off, e.g. 0x164 vs 0x167); the thresholds
-// here are floors that the #402 demod-quality work should raise, not lower.
+// here are floors the remaining #402 demod-quality work should raise.
 func TestReplayMMRSite9DecodesRealP25(t *testing.T) {
 	const (
 		sampleRateHz  = 48_000.0
 		minNIDTrusted = 8
-		minTSBK       = 6
+		minTSBK       = 24
 	)
 
 	path := filepath.Join("testdata", "mmr-s9-cc.cfile")

@@ -7,6 +7,22 @@ for tagged releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **P25 control channel: decode every TSBK in a data unit, not just the
+  first** (#402). A P25 trunking data unit packs up to three 98-dibit
+  TSBK blocks after one FSW + NID, the last flagged LB=1; the
+  control-channel decoder only ever decoded the first, silently dropping
+  the ~2/3 of a busy site's signalling (grants, affiliations, status
+  broadcasts) carried in the second and third blocks. It now decodes
+  every block in the unit, stopping at the last-block flag, and resumes
+  blocks that span receive batches — so the yield is the same whether the
+  dibit stream arrives a frame at a time or in tiny USB transfers. On the
+  MMR Site 9 capture this roughly triples the TSBKs recovered (14 → 41 in
+  ~1 s, all CRC-clean). A non-contiguous dibit stream (a resync or capture
+  gap) now also flushes the partial-frame buffer instead of trying to
+  stitch a frame across the break.
+
 ### Changed
 
 - **Gain-units guardrail.** `sdr.devices[].gain` (and the rtl_tcp
