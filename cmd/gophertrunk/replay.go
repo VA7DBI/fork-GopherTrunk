@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/MattCheramie/GopherTrunk/internal/dsp"
 	"github.com/MattCheramie/GopherTrunk/internal/events"
 	p25phase1 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1"
 	p25phase1rx "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase1/receiver"
@@ -76,6 +77,15 @@ func runReplay(args []string) {
 	// Off by default; the chain audit found an uncorrected RTL-SDR imbalance is
 	// the leading explanation for the asymmetric demodulated eye on MMR Site 9.
 	iqCorrect := fs.Bool("iq-correct", false, "apply blind I/Q-imbalance correction to the raw IQ before decimation (off by default; see issue #402)")
+	// Channel tuning for an off-centre capture. The live pipeline gets a
+	// channel centred at 0 Hz from the SDR tuner; a wideband file replay
+	// must shift the channel down itself. -tune-hz applies a fixed offset;
+	// -auto-tune estimates the dominant carrier from a prefix of the file.
+	// Needed for captures (e.g. MMR Site 9) whose control channel sits a
+	// few hundred Hz off centre — at 4800 baud even ~50 Hz is several
+	// degrees of differential rotation per symbol, enough to break lock.
+	tuneHzFlag := fs.Float64("tune-hz", 0, "frequency-shift the capture so a channel at +tune-hz lands at 0 Hz before demod (0 = no shift)")
+	autoTune := fs.Bool("auto-tune", false, "estimate the dominant carrier offset from the start of the file and tune it to 0 Hz (overrides -tune-hz)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `gophertrunk replay — decode a raw IQ capture file offline.
 
@@ -88,6 +98,10 @@ EXAMPLES:
 
   # GNU Radio float32 cfile of an LSM simulcast site
   gophertrunk replay -in cbd.cfile -format f32 -sample-rate 960000 -demod cqpsk
+
+  # Wideband capture whose control channel is off-centre: auto-estimate the
+  # carrier and tune it to 0 Hz before demod (the SDR tuner does this live).
+  gophertrunk replay -in mmr-s9.cfile -format f32 -sample-rate 48000 -demod cqpsk -auto-tune
 
 FLAGS:`)
 		fs.PrintDefaults()
@@ -126,6 +140,21 @@ FLAGS:`)
 	}
 	defer f.Close()
 
+	// Resolve the tuning offset. -auto-tune estimates the dominant carrier
+	// from a prefix of the file (then rewinds so the prefix is still
+	// decoded); -tune-hz is the manual override. Estimation runs on the
+	// raw IQ, before any decimation, so the offset is in input-rate Hz.
+	tuneHz := *tuneHzFlag
+	if *autoTune {
+		est, err := estimateCaptureCarrierHz(f, decode, bytesPerSample, *sampleRate)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "replay: auto-tune failed: %v\n", err)
+			os.Exit(1)
+		}
+		tuneHz = est
+		fmt.Fprintf(os.Stderr, "replay: auto-tune  carrier_offset_hz=%.1f\n", tuneHz)
+	}
+
 	// Logger at debug so `nid corrected` (with at_boundary), `nid
 	// parse failed` (with diag), and the FSW miss throttle all
 	// surface — the diagnostic value the operator is here for.
@@ -163,10 +192,18 @@ FLAGS:`)
 	// replay as a reproducer. The DDC is only enabled when the demod
 	// is C4FM and the supplied -sample-rate exceeds the production
 	// target — CQPSK and already-channelized captures are unchanged.
+	// Decimate only on the C4FM path when the input exceeds the production
+	// target; CQPSK and already-channelised captures keep their rate. The
+	// tuning shift (if any) applies on either path — it just centres the
+	// channel and never changes the rate.
+	ddcTarget := *sampleRate
+	if demodMode == p25phase1rx.DemodC4FM && *sampleRate > ccdecoder.DDCTargetRateHz {
+		ddcTarget = ccdecoder.DDCTargetRateHz
+	}
 	var ddc *ccdecoder.Downconverter
 	receiverRate := *sampleRate
-	if demodMode == p25phase1rx.DemodC4FM && *sampleRate > ccdecoder.DDCTargetRateHz {
-		ddc = ccdecoder.NewDownconverter(*sampleRate, ccdecoder.DDCTargetRateHz)
+	if tuneHz != 0 || ddcTarget < *sampleRate {
+		ddc = ccdecoder.NewDownconverterWithOffset(*sampleRate, ddcTarget, tuneHz)
 		receiverRate = ddc.OutRateHz()
 	}
 
@@ -454,6 +491,28 @@ func pctOf(num, den int64) string {
 // pickSampleDecoder maps the -format flag to a (decoder, bytes-per-IQ-pair)
 // pair the read loop drives. u8 is the rtl_sdr default; f32 is GNU Radio's
 // interleaved float32 cfile.
+// estimateCaptureCarrierHz reads a prefix of f, estimates the dominant
+// carrier offset across the full band, then rewinds f to the start so the
+// prefix is still decoded by the main read loop. Used by -auto-tune.
+func estimateCaptureCarrierHz(f *os.File, decode func([]byte, []complex64), bytesPerSample int, sampleRateHz float64) (float64, error) {
+	const prefixSamples = 262144
+	buf := make([]byte, prefixSamples*bytesPerSample)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return 0, err
+	}
+	if _, serr := f.Seek(0, io.SeekStart); serr != nil {
+		return 0, serr
+	}
+	pairs := n / bytesPerSample
+	if pairs == 0 {
+		return 0, fmt.Errorf("capture has no samples to estimate from")
+	}
+	iq := make([]complex64, pairs)
+	decode(buf[:pairs*bytesPerSample], iq)
+	return dsp.EstimateCarrierOffsetHz(iq, sampleRateHz, sampleRateHz*0.5), nil
+}
+
 func pickSampleDecoder(format string) (func([]byte, []complex64), int, error) {
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "u8", "":
