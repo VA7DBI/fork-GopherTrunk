@@ -90,7 +90,6 @@ func New(cli *client.Client, opts Options) *Model {
 			panels.NewHunt(),
 			panels.NewSettings(),
 			panels.NewImport(),
-			panels.NewFleetSync(),
 		},
 	}
 	return m

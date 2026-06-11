@@ -17,9 +17,9 @@ func TestPanelKindStringIsStableForEachValue(t *testing.T) {
 		{PanelMetrics, "Metrics"},
 		{PanelDevices, "Devices"},
 		{PanelScanner, "Scanner"},
+		{PanelHunt, "Hunt"},
 		{PanelSettings, "Settings"},
 		{PanelImport, "Import"},
-		{PanelFleetSync, "FleetSync"},
 	}
 	for _, tc := range cases {
 		if got := tc.kind.String(); got != tc.want {
@@ -43,8 +43,8 @@ func TestPanelKindStringFallbackForUnknown(t *testing.T) {
 func TestPanelCountMatchesEnumeratedKinds(t *testing.T) {
 	// Catches a contributor adding a new panel kind without
 	// extending String() or shifting PanelCount.
-	if PanelCount != PanelFleetSync+1 {
-		t.Errorf("PanelCount = %d, want %d (PanelFleetSync+1)", PanelCount, PanelFleetSync+1)
+	if PanelCount != PanelImport+1 {
+		t.Errorf("PanelCount = %d, want %d (PanelImport+1)", PanelCount, PanelImport+1)
 	}
 
 	// Every kind below PanelCount must have a non-fallback string.
