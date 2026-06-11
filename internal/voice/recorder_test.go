@@ -2,6 +2,7 @@ package voice
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -88,6 +89,70 @@ func TestRecorderWritesPerCallWav(t *testing.T) {
 	}
 	if st.Size() < int64(wavHeaderSize+1600*2) {
 		t.Errorf("wav size = %d, want at least %d", st.Size(), wavHeaderSize+1600*2)
+	}
+}
+
+// TestRecorderTimeslotInWavName confirms a DMR Tier III carrier's two
+// concurrent calls (same system + talkgroup, one per TDMA slot, served
+// by two voice devices) land in the same directory as distinct WAVs
+// tagged by slot — so the stamp+src basenames don't collide and each
+// file is self-labelling.
+func TestRecorderTimeslotInWavName(t *testing.T) {
+	r, bus, dir := mkRecorder(t, false)
+	defer r.Close()
+	defer bus.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	started := time.Date(2026, 5, 5, 12, 30, 45, 0, time.UTC)
+	tg := &trunking.TalkGroup{ID: 1234, AlphaTag: "FIRE-DISP", Record: true}
+	// Same TG, same start second, same source — only the slot (and the
+	// serving device) differ. Without the slot tag the basenames collide.
+	for _, c := range []struct {
+		serial string
+		slot   uint8
+	}{{"VOICE-1", 1}, {"VOICE-2", 2}} {
+		cs := trunking.CallStart{
+			Grant: trunking.Grant{
+				System: "TestSystem", Protocol: "dmr-tier3",
+				GroupID: 1234, SourceID: 56789, FrequencyHz: 460_000_000, Timeslot: c.slot,
+			},
+			Talkgroup:    tg,
+			DeviceSerial: c.serial,
+			StartedAt:    started,
+		}
+		bus.Publish(events.Event{Kind: events.KindCallStart, Payload: cs})
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if r.HasSession(c.serial) {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if err := r.WritePCM(c.serial, make([]int16, 1600)); err != nil {
+			t.Fatal(err)
+		}
+		bus.Publish(events.Event{Kind: events.KindCallEnd, Payload: trunking.CallEnd{
+			Grant: cs.Grant, Talkgroup: tg, DeviceSerial: c.serial,
+			StartedAt: started, EndedAt: started.Add(time.Second), Reason: trunking.EndReasonNormal,
+		}})
+		deadline = time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if !r.HasSession(c.serial) {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	for _, slot := range []int{1, 2} {
+		want := filepath.Join(dir, "TestSystem", "FIRE-DISP",
+			fmt.Sprintf("20260505T123045Z_freq460000000_src56789_ts%d.wav", slot))
+		if _, err := os.Stat(want); err != nil {
+			t.Errorf("expected per-slot wav at %s: %v", want, err)
+		}
 	}
 }
 
@@ -664,6 +729,7 @@ func TestDefaultVocoderForProtocolMappings(t *testing.T) {
 	want := map[string]string{
 		"p25":        "imbe",
 		"p25-phase2": "ambe2",
+		"dmr-tier1":  "ambe2-dmr",
 		"dmr-tier2":  "ambe2-dmr",
 		"dmr-tier3":  "ambe2-dmr",
 		"nxdn":       "ambe2",
@@ -677,5 +743,213 @@ func TestDefaultVocoderForProtocolMappings(t *testing.T) {
 		if g := got[k]; g != v {
 			t.Errorf("Default[%q] = %q, want %q", k, g, v)
 		}
+	}
+}
+
+// mkSkipEncRecorder builds a recorder with SkipEncrypted enabled.
+func mkSkipEncRecorder(t *testing.T) (*Recorder, *events.Bus, string) {
+	t.Helper()
+	bus := events.NewBus(8)
+	dir := t.TempDir()
+	r, err := NewRecorder(RecorderOptions{
+		Bus:           bus,
+		OutDir:        dir,
+		SampleRate:    8000,
+		SkipEncrypted: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r, bus, dir
+}
+
+// TestRecorderSkipsEncryptedCallAtStart confirms that with SkipEncrypted
+// set, a CallStart whose grant already flags encryption opens no session
+// and writes no files.
+func TestRecorderSkipsEncryptedCallAtStart(t *testing.T) {
+	r, bus, dir := mkSkipEncRecorder(t)
+	defer r.Close()
+	defer bus.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	cs := trunking.CallStart{
+		Grant: trunking.Grant{
+			System: "S", Protocol: "p25", GroupID: 700, SourceID: 9,
+			Encrypted: true, AlgorithmID: 0x84, KeyID: 1,
+		},
+		Talkgroup:    &trunking.TalkGroup{ID: 700, AlphaTag: "SECURE", Record: true},
+		DeviceSerial: "VOICE-1",
+		StartedAt:    time.Now(),
+	}
+	bus.Publish(events.Event{Kind: events.KindCallStart, Payload: cs})
+
+	// The recorder should (correctly) drop the CallStart — no session ever.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.HasSession("VOICE-1") {
+			t.Fatal("recorder opened a session for an encrypted call")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	assertNoWav(t, dir)
+}
+
+// TestRecorderAbortsMidCallEncryptedSourceUpdate confirms that a call
+// which only reveals its encryption mid-stream (via KindCallSourceUpdate)
+// has its in-progress files closed and deleted and no KindCallComplete
+// is published.
+func TestRecorderAbortsMidCallEncryptedSourceUpdate(t *testing.T) {
+	r, bus, dir := mkSkipEncRecorder(t)
+	defer r.Close()
+	defer bus.Close()
+
+	// Independent subscription to assert no CallComplete escapes.
+	watch := bus.Subscribe()
+	defer watch.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	cs := trunking.CallStart{
+		Grant:        trunking.Grant{System: "S", Protocol: "p25-phase2", GroupID: 701, SourceID: 0},
+		Talkgroup:    &trunking.TalkGroup{ID: 701, AlphaTag: "TAC", Record: true},
+		DeviceSerial: "VOICE-1",
+		StartedAt:    time.Now(),
+	}
+	bus.Publish(events.Event{Kind: events.KindCallStart, Payload: cs})
+	waitSession(t, r, "VOICE-1", true)
+
+	// Lay down some audio so a real file exists on disk.
+	if err := r.WritePCM("VOICE-1", make([]int16, 1600)); err != nil {
+		t.Fatal(err)
+	}
+	if got := wavFiles(t, dir); len(got) != 1 {
+		t.Fatalf("expected 1 wav before abort, got %d", len(got))
+	}
+
+	// Encryption surfaces in-call on the traffic channel.
+	bus.Publish(events.Event{Kind: events.KindCallSourceUpdate, Payload: trunking.CallSourceUpdate{
+		DeviceSerial: "VOICE-1", SourceID: 42, Encrypted: true, At: time.Now(),
+	}})
+	waitSession(t, r, "VOICE-1", false)
+
+	assertNoWav(t, dir)
+
+	// Drain a short window and confirm no CallComplete was published.
+	deadline := time.After(150 * time.Millisecond)
+	for {
+		select {
+		case ev := <-watch.C:
+			if ev.Kind == events.KindCallComplete {
+				t.Fatal("CallComplete published for an aborted encrypted call")
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// TestRecorderAbortsOnEncryptionSync confirms the KindCallEncryption path
+// (P25 Phase 1 LDU2) also aborts when the recovered Algorithm ID is not
+// CLEAR (0x80).
+func TestRecorderAbortsOnEncryptionSync(t *testing.T) {
+	r, bus, dir := mkSkipEncRecorder(t)
+	defer r.Close()
+	defer bus.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	cs := trunking.CallStart{
+		Grant:        trunking.Grant{System: "S", Protocol: "p25", GroupID: 702, SourceID: 5},
+		Talkgroup:    &trunking.TalkGroup{ID: 702, AlphaTag: "OPS", Record: true},
+		DeviceSerial: "VOICE-1",
+		StartedAt:    time.Now(),
+	}
+	bus.Publish(events.Event{Kind: events.KindCallStart, Payload: cs})
+	waitSession(t, r, "VOICE-1", true)
+	if err := r.WritePCM("VOICE-1", make([]int16, 800)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A CLEAR (0x80) sync must NOT abort.
+	bus.Publish(events.Event{Kind: events.KindCallEncryption, Payload: trunking.CallEncryption{
+		DeviceSerial: "VOICE-1", AlgorithmID: 0x80, At: time.Now(),
+	}})
+	time.Sleep(50 * time.Millisecond)
+	if !r.HasSession("VOICE-1") {
+		t.Fatal("CLEAR encryption sync wrongly aborted the recording")
+	}
+
+	// A real algorithm (AES, 0x84) must abort.
+	bus.Publish(events.Event{Kind: events.KindCallEncryption, Payload: trunking.CallEncryption{
+		DeviceSerial: "VOICE-1", AlgorithmID: 0x84, At: time.Now(),
+	}})
+	waitSession(t, r, "VOICE-1", false)
+	assertNoWav(t, dir)
+}
+
+// TestRecorderRecordsEncryptedWhenSkipDisabled is the regression guard:
+// with SkipEncrypted off (the default), an encrypted call records as
+// usual.
+func TestRecorderRecordsEncryptedWhenSkipDisabled(t *testing.T) {
+	r, bus, _ := mkRecorder(t, false) // SkipEncrypted defaults to false
+	defer r.Close()
+	defer bus.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	cs := trunking.CallStart{
+		Grant: trunking.Grant{
+			System: "S", Protocol: "p25", GroupID: 703, SourceID: 7, Encrypted: true,
+		},
+		Talkgroup:    &trunking.TalkGroup{ID: 703, AlphaTag: "ENC", Record: true},
+		DeviceSerial: "VOICE-1",
+		StartedAt:    time.Now(),
+	}
+	bus.Publish(events.Event{Kind: events.KindCallStart, Payload: cs})
+	waitSession(t, r, "VOICE-1", true)
+
+	// Mid-call encryption signalling must be ignored when SkipEncrypted is off.
+	bus.Publish(events.Event{Kind: events.KindCallSourceUpdate, Payload: trunking.CallSourceUpdate{
+		DeviceSerial: "VOICE-1", Encrypted: true, At: time.Now(),
+	}})
+	time.Sleep(50 * time.Millisecond)
+	if !r.HasSession("VOICE-1") {
+		t.Fatal("recorder aborted an encrypted call with SkipEncrypted disabled")
+	}
+}
+
+// wavFiles returns every .wav path under root.
+func wavFiles(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && filepath.Ext(p) == ".wav" {
+			out = append(out, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// assertNoWav fails if any .wav file exists under root.
+func assertNoWav(t *testing.T, root string) {
+	t.Helper()
+	if got := wavFiles(t, root); len(got) != 0 {
+		t.Fatalf("expected no wav files, found %v", got)
 	}
 }

@@ -1,15 +1,22 @@
 VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "")
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+# RR_APP_KEY is the built-in RadioReference app key, injected at link time so it
+# never lives in source. Supply it via the environment (CI secret / local env);
+# when unset the binary ships with no built-in key and RR falls back to
+# env/config, exactly as before. Never echo it.
+RR_APP_KEY ?=
+RR_LDFLAGS := $(if $(RR_APP_KEY),-X github.com/MattCheramie/GopherTrunk/internal/radioreference.DefaultAppKey=$(RR_APP_KEY),)
 LDFLAGS := -X github.com/MattCheramie/GopherTrunk/internal/version.Version=$(VERSION) \
            -X github.com/MattCheramie/GopherTrunk/internal/version.Commit=$(COMMIT) \
-           -X github.com/MattCheramie/GopherTrunk/internal/version.BuildTime=$(BUILD_TIME)
+           -X github.com/MattCheramie/GopherTrunk/internal/version.BuildTime=$(BUILD_TIME) \
+           $(RR_LDFLAGS)
 TAGS    ?=
 
 GO      ?= go
 PKGS    := ./...
 
-.PHONY: all build dist test test-dvsi test-integration integration integration-cc integration-cc-grant integration-cc-nxdn integration-cc-dmr integration-cc-dpmr integration-cc-edacs integration-cc-motorola integration-cc-tetra integration-cc-p25p2 integration-cc-mpt1327 integration-cc-ltr integration-cc-ysf lint tidy vet vulncheck licenses clean run proto cross-build release-archives release-dry-run web-build web-dev web-clean web-test
+.PHONY: all build dist test test-dvsi test-airspy-real test-airspy-real-bias test-airspy-real-diag test-integration integration integration-cc integration-cc-grant integration-cc-nxdn integration-cc-dmr integration-cc-dpmr integration-cc-edacs integration-cc-motorola integration-cc-tetra integration-cc-p25p2 integration-cc-mpt1327 integration-cc-ltr integration-cc-ysf lint tidy vet vulncheck licenses clean run proto cross-build release-archives release-dry-run web-build web-dev web-clean web-test siglab-web-build siglab-web-dev siglab-web-clean siglab-web-test
 
 all: build
 
@@ -27,7 +34,7 @@ build:
 # with the daemon. Use this when you want a single binary that serves
 # the web UI at `/`. Pure-Go contributors who don't need the UI can
 # keep using `make build`.
-dist: web-build build
+dist: web-build siglab-web-build configbuilder-web-build build
 
 test:
 	$(GO) test -tags "$(TAGS)" -race -count=1 $(PKGS)
@@ -41,6 +48,24 @@ test:
 # conformance all exercise in CI without a real DVSI USB-3000.
 test-dvsi:
 	$(GO) test -tags "dvsi $(TAGS)" -race -count=1 ./internal/voice/dvsi/...
+
+# test-airspy-real runs an opt-in real-hardware probe against an attached
+# Airspy R2/Mini. The test package skips unless GOPHERTRUNK_AIRSPY_REAL=1 is
+# set; this target sets it automatically so accidental invocations fail fast
+# when no device is present.
+test-airspy-real:
+	GOPHERTRUNK_AIRSPY_REAL=1 $(GO) test -tags "$(TAGS)" -race -count=1 -run TestRealHardware_ ./internal/sdr/airspy
+
+# test-airspy-real-bias is the same real-hardware suite plus explicit
+# bias-tee toggle validation. Use only when a safe load is connected.
+test-airspy-real-bias:
+	GOPHERTRUNK_AIRSPY_REAL=1 GOPHERTRUNK_AIRSPY_REAL_BIAS_TEE=1 $(GO) test -tags "$(TAGS)" -race -count=1 -run TestRealHardware_ ./internal/sdr/airspy
+
+# test-airspy-real-diag runs a lower-level raw WinUSB/USB control-transfer
+# probe in addition to the driver-level real hardware tests, useful for
+# isolating where open-time failures occur.
+test-airspy-real-diag:
+	GOPHERTRUNK_AIRSPY_REAL=1 GOPHERTRUNK_AIRSPY_REAL_DIAG=1 $(GO) test -tags "$(TAGS)" -race -count=1 -run TestRealHardware_ ./internal/sdr/airspy
 
 # integration boots the wired daemon (no real SDR) end-to-end and asserts
 # the engine + recorder + call log + metrics + API agree on a synthetic
@@ -300,6 +325,59 @@ web-test:
 	@command -v npm >/dev/null || { echo "npm not installed; see web/README.md"; exit 1; }
 	cd web && npm install --no-audit --no-fund
 	cd web && npm test
+
+# --- Signal Lab standalone SPA (web/siglab) -------------------------------
+# The offline signal-analysis console. Built into web/siglab/dist and embedded
+# via web/siglab/embed.go; served by `gophertrunk siglab serve` and the daemon.
+# Heavy viz libs (Plotly, TensorFlow.js) are code-split and lazy-loaded.
+
+# siglab-web-build produces the shippable bundle in web/siglab/dist/.
+siglab-web-build:
+	@command -v npm >/dev/null || { echo "npm not installed; see web/siglab/README.md"; exit 1; }
+	cd web/siglab && npm ci --no-audit --no-fund
+	cd web/siglab && npm run build
+
+# siglab-web-dev runs the Vite dev server (proxies /api to 127.0.0.1:8099,
+# the default `siglab serve` address).
+siglab-web-dev:
+	@command -v npm >/dev/null || { echo "npm not installed; see web/siglab/README.md"; exit 1; }
+	cd web/siglab && npm install --no-audit --no-fund
+	cd web/siglab && npm run dev
+
+siglab-web-clean:
+	rm -rf web/siglab/dist web/siglab/node_modules web/siglab/dev-dist
+
+siglab-web-test:
+	@command -v npm >/dev/null || { echo "npm not installed; see web/siglab/README.md"; exit 1; }
+	cd web/siglab && npm install --no-audit --no-fund
+	cd web/siglab && npm test
+
+# --- Config Builder standalone SPA (web/configbuilder) --------------------
+# The web Config Builder/Editor. Built into web/configbuilder/dist and
+# embedded via web/configbuilder/embed.go; served by `gophertrunk config
+# serve` and the daemon at /config/.
+
+# configbuilder-web-build produces the shippable bundle in
+# web/configbuilder/dist/.
+configbuilder-web-build:
+	@command -v npm >/dev/null || { echo "npm not installed; see web/configbuilder/README.md"; exit 1; }
+	cd web/configbuilder && npm ci --no-audit --no-fund
+	cd web/configbuilder && npm run build
+
+# configbuilder-web-dev runs the Vite dev server (proxies /api to
+# 127.0.0.1:8077, the default `config serve` address).
+configbuilder-web-dev:
+	@command -v npm >/dev/null || { echo "npm not installed; see web/configbuilder/README.md"; exit 1; }
+	cd web/configbuilder && npm install --no-audit --no-fund
+	cd web/configbuilder && npm run dev
+
+configbuilder-web-clean:
+	rm -rf web/configbuilder/dist web/configbuilder/node_modules web/configbuilder/dev-dist
+
+configbuilder-web-test:
+	@command -v npm >/dev/null || { echo "npm not installed; see web/configbuilder/README.md"; exit 1; }
+	cd web/configbuilder && npm install --no-audit --no-fund
+	cd web/configbuilder && npm test
 
 
 # Regenerate Go bindings under internal/api/pb/v1 from proto/*.proto.

@@ -75,6 +75,7 @@ type GrantDTO struct {
 	FrequencyHz   uint32 `json:"frequency_hz"`
 	ChannelID     uint8  `json:"channel_id,omitempty"`
 	ChannelNumber uint16 `json:"channel_number,omitempty"`
+	Timeslot      uint8  `json:"timeslot,omitempty"`
 	Encrypted     bool   `json:"encrypted,omitempty"`
 	Emergency     bool   `json:"emergency,omitempty"`
 	DataCall      bool   `json:"data_call,omitempty"`
@@ -134,6 +135,34 @@ type Event struct {
 	Kind string
 	Time time.Time
 	Raw  json.RawMessage
+}
+
+// HuntStatusDTO mirrors the scalar fields of api.HuntStatus — the live
+// system-discovery run snapshot from GET /api/v1/hunt. The full discovered
+// system map is omitted here; the panel renders the summary counts.
+type HuntStatusDTO struct {
+	RunID      int    `json:"run_id"`
+	State      string `json:"state"`
+	Running    bool   `json:"running"`
+	Mode       string `json:"mode"` // "hunt" | "survey"
+	Phase      string `json:"phase"`
+	Detail     string `json:"detail"`
+	Sites      int    `json:"sites"`
+	Talkgroups int    `json:"talkgroups"`
+	SystemName string `json:"system_name"`
+	// Signals is the survey inventory (empty for a plain hunt). Only the
+	// fields the panel renders are decoded.
+	Signals []HuntSignalDTO `json:"signals"`
+	Error   string          `json:"error"`
+}
+
+// HuntSignalDTO mirrors the scalar fields of hunt.DetectedSignal the panel
+// renders — one classified carrier from a survey run.
+type HuntSignalDTO struct {
+	FreqHz       uint32  `json:"freq_hz"`
+	SNRDb        float32 `json:"snr_db"`
+	OccupiedBwHz uint32  `json:"occupied_bw_hz"`
+	Class        string  `json:"class"`
 }
 
 // ScannerStatusDTO mirrors api.ScannerStatus — the unified scanner
@@ -251,12 +280,13 @@ type RuntimeDTO struct {
 	RetentionFilesDays   int           `json:"retention_files_days"`
 	RetentionInterval    time.Duration `json:"retention_interval_ns"`
 
-	RecordingDir        string `json:"recording_dir,omitempty"`
-	RecordingSampleRate int    `json:"recording_sample_rate"`
-	RecordingWriteRaw   bool   `json:"recording_write_raw"`
-	RecordingEQEnabled  bool   `json:"recording_eq_enabled"`
-	RecordingEQTaps     int    `json:"recording_eq_taps,omitempty"`
-	RecordingEQStepSize string `json:"recording_eq_step_size,omitempty"`
+	RecordingDir           string `json:"recording_dir,omitempty"`
+	RecordingSampleRate    int    `json:"recording_sample_rate"`
+	RecordingWriteRaw      bool   `json:"recording_write_raw"`
+	RecordingSkipEncrypted bool   `json:"recording_skip_encrypted"`
+	RecordingEQEnabled     bool   `json:"recording_eq_enabled"`
+	RecordingEQTaps        int    `json:"recording_eq_taps,omitempty"`
+	RecordingEQStepSize    string `json:"recording_eq_step_size,omitempty"`
 
 	AudioEnabled       bool     `json:"audio_enabled"`
 	AudioDevice        string   `json:"audio_device,omitempty"`
@@ -295,6 +325,11 @@ type RuntimeDTO struct {
 	LastFatalAt        time.Time `json:"last_fatal_at,omitempty"`
 	LastFatalClass     string    `json:"last_fatal_class,omitempty"`
 	LastFatalHint      string    `json:"last_fatal_hint,omitempty"`
+
+	// HiddenTabs lists the navigation tab keys the operator switched
+	// off via web.tabs in config. The TUI filters these out of its tab
+	// bar. Empty means every tab is shown.
+	HiddenTabs []string `json:"hidden_tabs,omitempty"`
 }
 
 // ToneProfileDTO mirrors api.ToneProfileDTO.

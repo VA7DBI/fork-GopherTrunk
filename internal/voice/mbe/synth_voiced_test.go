@@ -292,6 +292,96 @@ func TestUpdateVoicedStateAdvancesPhase(t *testing.T) {
 	}
 }
 
+// TestSynthVoicedDispersed: §6.3 phase regeneration is applied to the
+// per-frame synthesis phase only (PHIl = PSIl + offset for upper
+// harmonics), never to the rolled-forward memory. Low harmonics
+// (l ≤ L/4) and a nil offset reproduce the coherent SynthVoiced exactly;
+// upper voiced harmonics are shifted by exactly the supplied offset; and
+// UpdateVoicedState advances the memory coherently regardless of the
+// offset (no random walk).
+func TestSynthVoicedDispersed(t *testing.T) {
+	const w0 = 0.1
+	const L = 8 // cutoff L/4 = 2 → l ∈ {1,2} coherent, l ∈ {3..8} dispersed
+	twoPi := 2 * math.Pi
+
+	mkState := func() SynthState {
+		s := SynthState{PrevW0: w0, PrevL: L}
+		for l := 1; l <= L; l++ {
+			s.PrevPhase[l] = 0.25 * float64(l)
+			s.PrevMl[l] = 0.5
+		}
+		return s
+	}
+	p := Params{Header: Header{W0: w0, L: L}}
+	var M [57]float64
+	for l := 1; l <= L; l++ {
+		p.Vl[l] = 1
+		M[l] = 0.5
+	}
+	var disp [57]float64
+	for l := 1; l <= L; l++ {
+		disp[l] = 0.7 // distinctive non-zero offset so the effect is visible
+	}
+
+	// Coherent reference output (steady amp → pure cos at the start phase).
+	sc := mkState()
+	coh := make([]float64, SamplesPerFrame)
+	SynthVoiced(&sc, p, &M, coh)
+
+	sd := mkState()
+	dis := make([]float64, SamplesPerFrame)
+	SynthVoicedDispersed(&sd, p, &M, dis, &disp)
+
+	// Verify at n=0 (amp = prevAmp = 0.5) that low harmonics match
+	// coherent and upper differ by the offset. Build the expected sum
+	// directly.
+	wantCoh0, wantDis0 := 0.0, 0.0
+	for l := 1; l <= L; l++ {
+		base := 0.25 * float64(l)
+		wantCoh0 += 0.5 * math.Cos(base)
+		if 4*l > L {
+			wantDis0 += 0.5 * math.Cos(base+disp[l])
+		} else {
+			wantDis0 += 0.5 * math.Cos(base)
+		}
+	}
+	if math.Abs(coh[0]-wantCoh0) > 1e-9 {
+		t.Fatalf("coherent dst[0] = %v, want %v", coh[0], wantCoh0)
+	}
+	if math.Abs(dis[0]-wantDis0) > 1e-9 {
+		t.Fatalf("dispersed dst[0] = %v, want %v", dis[0], wantDis0)
+	}
+	if math.Abs(dis[0]-coh[0]) < 1e-9 {
+		t.Errorf("dispersed output should differ from coherent (offset on upper harmonics)")
+	}
+
+	// nil offset reproduces SynthVoiced byte-for-byte.
+	sn := mkState()
+	nilOut := make([]float64, SamplesPerFrame)
+	SynthVoicedDispersed(&sn, p, &M, nilOut, nil)
+	for n := range nilOut {
+		if nilOut[n] != coh[n] {
+			t.Fatalf("nil-offset dst[%d] = %v, want coherent %v", n, nilOut[n], coh[n])
+		}
+	}
+
+	// The phase memory advances coherently regardless of the offset: the
+	// offset lives only in synthesis, so UpdateVoicedState produces the
+	// same PrevPhase whether or not a frame was dispersed.
+	a := mkState()
+	a.UpdateVoicedState(p, &M)
+	for l := 1; l <= L; l++ {
+		base := 0.25*float64(l) + float64(l)*(w0+w0)*float64(SamplesPerFrame)/2
+		want := math.Mod(base, twoPi)
+		if want < 0 {
+			want += twoPi
+		}
+		if math.Abs(a.PrevPhase[l]-want) > synthEpsilon {
+			t.Errorf("coherent memory PrevPhase[%d] = %v, want %v (no random walk)", l, a.PrevPhase[l], want)
+		}
+	}
+}
+
 // TestUpdateVoicedStateZeroesUnvoiced: harmonics that are unvoiced
 // this frame get PrevMl = 0 so the next frame's fade-in has a clean
 // zero baseline.

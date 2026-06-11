@@ -29,9 +29,10 @@ type SettingsPatchRequest struct {
 	AudioMuted    *bool    `json:"audio_muted,omitempty"`
 	AudioBufferMs *int     `json:"audio_buffer_ms,omitempty"`
 
-	RecordingsDir        *string `json:"recordings_dir,omitempty"`
-	RecordingsSampleRate *uint32 `json:"recordings_sample_rate,omitempty"`
-	RecordingsWriteRaw   *bool   `json:"recordings_write_raw,omitempty"`
+	RecordingsDir           *string `json:"recordings_dir,omitempty"`
+	RecordingsSampleRate    *uint32 `json:"recordings_sample_rate,omitempty"`
+	RecordingsWriteRaw      *bool   `json:"recordings_write_raw,omitempty"`
+	RecordingsSkipEncrypted *bool   `json:"recordings_skip_encrypted,omitempty"`
 
 	RetentionCallLogDays *int    `json:"retention_call_log_days,omitempty"`
 	RetentionFilesDays   *int    `json:"retention_files_days,omitempty"`
@@ -68,6 +69,7 @@ func (r SettingsPatchRequest) toPatch() config.Patch {
 		RecordingsDir:            r.RecordingsDir,
 		RecordingsSampleRate:     r.RecordingsSampleRate,
 		RecordingsWriteRaw:       r.RecordingsWriteRaw,
+		RecordingsSkipEncrypted:  r.RecordingsSkipEncrypted,
 		RetentionCallLogDays:     r.RetentionCallLogDays,
 		RetentionFilesDays:       r.RetentionFilesDays,
 		RetentionInterval:        r.RetentionInterval,
@@ -131,27 +133,27 @@ type ConfigWriter interface {
 // 409 → config.yaml was edited externally; daemon refuses to clobber
 func (s *Server) handleSettingsPatch(w http.ResponseWriter, r *http.Request) {
 	if s.configWriter == nil {
-		writeError(w, http.StatusServiceUnavailable, "settings: no config file backs this daemon (start with -config to enable live edits)")
+		s.writeError(w, http.StatusServiceUnavailable, "settings: no config file backs this daemon (start with -config to enable live edits)")
 		return
 	}
 	var req SettingsPatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "settings: "+err.Error())
+		s.writeError(w, http.StatusBadRequest, "settings: "+err.Error())
 		return
 	}
 	patch := req.toPatch()
 	if patch.IsEmpty() {
-		writeError(w, http.StatusBadRequest, "settings: patch has no fields")
+		s.writeError(w, http.StatusBadRequest, "settings: patch has no fields")
 		return
 	}
 	if _, err := s.configWriter.WritePatch(patch); err != nil {
 		// Distinguish external-edit conflict from a generic write
 		// failure so the UI can present a clearer toast.
 		if isExternalEditConflict(err) {
-			writeError(w, http.StatusConflict, err.Error())
+			s.writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -249,6 +251,7 @@ func (s *Server) applyHotReload(p config.Patch) (applied, restartRequired []stri
 		{"audio.buffer_ms", p.AudioBufferMs != nil},
 		{"recordings.dir", p.RecordingsDir != nil},
 		{"recordings.sample_rate", p.RecordingsSampleRate != nil},
+		{"recordings.skip_encrypted", p.RecordingsSkipEncrypted != nil},
 		{"retention.call_log_days", p.RetentionCallLogDays != nil},
 		{"retention.files_days", p.RetentionFilesDays != nil},
 		{"retention.interval", p.RetentionInterval != nil},

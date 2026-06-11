@@ -34,12 +34,13 @@ type RuntimeDTO struct {
 	RetentionInterval    time.Duration `json:"retention_interval_ns"`
 
 	// Recording config.
-	RecordingDir        string `json:"recording_dir,omitempty"`
-	RecordingSampleRate int    `json:"recording_sample_rate"`
-	RecordingWriteRaw   bool   `json:"recording_write_raw"`
-	RecordingEQEnabled  bool   `json:"recording_eq_enabled"`
-	RecordingEQTaps     int    `json:"recording_eq_taps,omitempty"`
-	RecordingEQStepSize string `json:"recording_eq_step_size,omitempty"`
+	RecordingDir           string `json:"recording_dir,omitempty"`
+	RecordingSampleRate    int    `json:"recording_sample_rate"`
+	RecordingWriteRaw      bool   `json:"recording_write_raw"`
+	RecordingSkipEncrypted bool   `json:"recording_skip_encrypted"`
+	RecordingEQEnabled     bool   `json:"recording_eq_enabled"`
+	RecordingEQTaps        int    `json:"recording_eq_taps,omitempty"`
+	RecordingEQStepSize    string `json:"recording_eq_step_size,omitempty"`
 
 	// Audio runtime (mirrors AudioStatus but adds device list +
 	// backend identity so operators can confirm whether the Linux
@@ -99,6 +100,11 @@ type RuntimeDTO struct {
 	// LastFatalHint is an operator-facing remediation hint derived
 	// from LastFatalClass.
 	LastFatalHint string `json:"last_fatal_hint,omitempty"`
+
+	// HiddenTabs lists the navigation tab keys the operator switched
+	// off via web.tabs in config. Both the web SPA and the TUI filter
+	// these out of their nav. Empty/omitted means every tab is shown.
+	HiddenTabs []string `json:"hidden_tabs,omitempty"`
 }
 
 // ToneProfileDTO is the minimal projection of a tone-out profile —

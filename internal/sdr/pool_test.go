@@ -28,6 +28,8 @@ type fakeDevice struct {
 	rateErr     error
 	ppm         int
 	ppmSets     int
+	blogV4Sets  int
+	blogV4Lite  bool
 }
 
 func (d *fakeDevice) Info() Info                 { return d.info }
@@ -42,6 +44,7 @@ func (d *fakeDevice) SetSampleRate(hz uint32) error {
 func (d *fakeDevice) SetGain(int) error                                    { return nil }
 func (d *fakeDevice) SetPPM(ppm int) error                                 { d.ppm = ppm; d.ppmSets++; return nil }
 func (d *fakeDevice) SetBiasTee(on bool) error                             { d.biasTeeOn = on; d.biasTeeSets++; return nil }
+func (d *fakeDevice) SetBlogV4(lite bool) error                            { d.blogV4Sets++; d.blogV4Lite = lite; return nil }
 func (d *fakeDevice) StreamIQ(context.Context) (<-chan []complex64, error) { return nil, io.EOF }
 func (d *fakeDevice) Close() error {
 	if d.closed {
@@ -89,6 +92,51 @@ func TestPoolAssignsRoles(t *testing.T) {
 	// Here BBB is hinted control, so AAA and CCC should be voice.
 	if roles["AAA"] != RoleVoice || roles["CCC"] != RoleVoice {
 		t.Errorf("AAA=%v CCC=%v, want both voice", roles["AAA"], roles["CCC"])
+	}
+}
+
+func TestPoolMatchesAirspySerialAliases(t *testing.T) {
+	drv := &fakeDriver{name: "fake-airspy-alias", infos: []Info{
+		{Driver: "fake-airspy-alias", Index: 0, Serial: "35AC63DC2D701C4F"},
+	}}
+	registryMu.Lock()
+	registry["fake-airspy-alias"] = drv
+	registryMu.Unlock()
+	t.Cleanup(func() {
+		registryMu.Lock()
+		delete(registry, "fake-airspy-alias")
+		registryMu.Unlock()
+	})
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	p := NewPool(log)
+	if err := p.OpenWith(PoolOpenOptions{
+		Hints:  []Hint{{Serial: "AIRSPY SN:35ac63dc2d701c4f", Role: RoleVoice}},
+		Strict: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	entries := p.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1; log was: %q", len(entries), buf.String())
+	}
+	if entries[0].Info.Serial != "35AC63DC2D701C4F" {
+		t.Errorf("opened serial = %q, want 35AC63DC2D701C4F", entries[0].Info.Serial)
+	}
+	if got := p.FindBySerial("airspy_sn:35ac63dc2d701c4f"); got == nil {
+		t.Fatalf("FindBySerial(alias) returned nil")
+	} else if got.Info.Serial != "35AC63DC2D701C4F" {
+		t.Errorf("FindBySerial(alias) = %q, want 35AC63DC2D701C4F", got.Info.Serial)
+	}
+	if got := p.FindBySerial("35ac63dc2d701c4f"); got == nil {
+		t.Fatalf("FindBySerial(raw) returned nil")
+	}
+	out := buf.String()
+	if strings.Contains(out, "configured SDR not present on the bus") {
+		t.Errorf("unexpected missing-serial warn; log was: %q", out)
 	}
 }
 

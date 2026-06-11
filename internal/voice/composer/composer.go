@@ -34,6 +34,7 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/equalizer"
 	"github.com/MattCheramie/GopherTrunk/internal/dsp/filter"
 	"github.com/MattCheramie/GopherTrunk/internal/events"
+	gtlog "github.com/MattCheramie/GopherTrunk/internal/log"
 	p25p2 "github.com/MattCheramie/GopherTrunk/internal/radio/p25/phase2"
 	"github.com/MattCheramie/GopherTrunk/internal/trunking"
 )
@@ -111,6 +112,18 @@ type Options struct {
 	// TouchInterval is how often the chain pings Engine.Touch while
 	// audio is flowing (default 1 s).
 	TouchInterval time.Duration
+	// VoiceHangtime is the universal end-of-transmission window applied
+	// to every voice chain: once voice has been decoding, the chain ends
+	// the call this long after the last decoded voice frame (rather than
+	// waiting out the engine's much longer call-timeout watchdog).
+	// Default 3.5 s.
+	VoiceHangtime time.Duration
+	// SplitPerTransmission selects the recording-boundary mode for every
+	// voice chain. True (default) rolls the recording to a new file at
+	// each end-of-transmission boundary (one file per over). False
+	// ("conversation") keeps consecutive same-talkgroup overs in one
+	// file, splitting only on a talkgroup change or VoiceHangtime idle.
+	SplitPerTransmission bool
 	// Equalizer optionally enables a CMA blind equalizer between the
 	// front-end LPF and the FM demod. Off by default; flip Enabled
 	// to true and tune Taps / StepSize per site.
@@ -198,6 +211,8 @@ type Composer struct {
 	pcmHz      uint32
 	bw         uint32
 	touchEvery time.Duration
+	hangtime   time.Duration
+	splitTx    bool
 	eqCfg      EqualizerConfig
 	deemphCfg  DeEmphasisConfig
 	lpfCfg     AudioLPFConfig
@@ -238,6 +253,9 @@ func New(opts Options) (*Composer, error) {
 	}
 	if opts.TouchInterval <= 0 {
 		opts.TouchInterval = time.Second
+	}
+	if opts.VoiceHangtime <= 0 {
+		opts.VoiceHangtime = 3500 * time.Millisecond
 	}
 	if opts.Equalizer.Enabled {
 		if opts.Equalizer.Taps <= 0 {
@@ -282,6 +300,8 @@ func New(opts Options) (*Composer, error) {
 		pcmHz:      opts.PCMSampleRate,
 		bw:         opts.VoiceBandwidthHz,
 		touchEvery: opts.TouchInterval,
+		hangtime:   opts.VoiceHangtime,
+		splitTx:    opts.SplitPerTransmission,
 		eqCfg:      opts.Equalizer,
 		deemphCfg:  opts.DeEmphasis,
 		lpfCfg:     opts.AudioLPF,
@@ -360,7 +380,7 @@ func (c *Composer) handleStart(parent context.Context, cs trunking.CallStart) {
 	isAnalogTrunk := proto == "motorola" || proto == "ltr" || proto == "mpt1327" ||
 		(proto == "edacs" && !cs.Grant.ProVoice)
 	isFM := proto == "" || proto == "fm" || proto == "analog" || isAnalogTrunk
-	isDMRVoice := proto == "dmr-tier2" || proto == "dmr-tier3"
+	isDMRVoice := proto == "dmr-tier1" || proto == "dmr-tier2" || proto == "dmr-tier3"
 	isP25P2Voice := proto == "p25-phase2"
 	isP25P1Voice := proto == "p25"
 	if !isFM && !isDMRVoice && !isP25P2Voice && !isP25P1Voice {
@@ -418,7 +438,7 @@ func (c *Composer) handleStart(parent context.Context, cs trunking.CallStart) {
 				"device", cs.DeviceSerial, "system", cs.Grant.System,
 				"group", cs.Grant.GroupID)
 		}
-		go c.runDMRVoiceChain(chainCtx, cs.DeviceSerial, iqCh, rateHz, ch.done)
+		go c.runDMRVoiceChain(chainCtx, cs.DeviceSerial, iqCh, rateHz, cs.Grant.GroupID, cs.Grant.DMRInterleavedVoice, ch.done)
 	case isP25P2Voice:
 		macCfg := p25p2.MACDecodeConfig{
 			Trellis:    p25p2.TrellisMode(cs.Grant.P25Phase2Decode.Trellis),
@@ -429,7 +449,7 @@ func (c *Composer) handleStart(parent context.Context, cs trunking.CallStart) {
 		}
 		go c.runP25Phase2VoiceChain(chainCtx, cs.DeviceSerial, cs.Grant.System, macCfg, iqCh, rateHz, ch.done)
 	case isP25P1Voice:
-		go c.runP25Phase1VoiceChain(chainCtx, cs.DeviceSerial, iqCh, rateHz, cs.Grant.P25Phase1DemodMode, ch.done)
+		go c.runP25Phase1VoiceChain(chainCtx, cs.DeviceSerial, iqCh, rateHz, cs.Grant.P25Phase1DemodMode, cs.Grant.GroupID, cs.Grant.PatchedGroups, ch.done)
 	default:
 		go c.runFMChain(chainCtx, cs.DeviceSerial, iqCh, rateHz, ch.done)
 	}
@@ -467,6 +487,15 @@ func (c *Composer) cancelAll() {
 // the wiring end-to-end and to land the operator-visible plumbing.
 func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []complex64, iqHz uint32, done chan<- struct{}) {
 	defer close(done)
+	defer gtlog.Recover(c.log, "voice-chain-fm:"+serial, nil)
+
+	// Shared boundary controller: Touch heartbeat + hangtime end-of-call,
+	// uniform with the digital chains. Analog FM has no in-band talkgroup
+	// (grantTG 0 → gating disabled) and emits PCM continuously, so in
+	// practice the engine's grant lifecycle / watchdog bounds the call;
+	// the tracker keeps the engine's LastHeardAt fresh.
+	bt := c.newBoundaryTracker(serial, 0, nil)
+	go bt.run(ctx)
 
 	// Front-end LPF: cutoff = bw / iqHz (normalized 0..0.5).
 	cutoff := float64(c.bw) / float64(iqHz)
@@ -560,10 +589,7 @@ func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []
 	// the previous tick. Without this gate a stalled IQ source still
 	// kept the call alive forever via an unconditional 1 s heartbeat
 	// (issue #356).
-	var (
-		pcmWrites    atomic.Uint64
-		lastPCMWrite uint64
-	)
+	var pcmWrites atomic.Uint64
 
 	// lastSample tracks the most recent PCM sample written so we
 	// can ramp it down to zero when the chain ends. Without this
@@ -591,17 +617,20 @@ func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []
 		_ = c.sink.WritePCM(serial, tail)
 	}
 
+	// Reusable equalizer scratch — the equalized slice is fully consumed by
+	// fm.Process within the same iteration, so a single grow-and-reslice
+	// buffer per chain avoids a per-chunk allocation for the whole call
+	// (issue #492 footprint reduction).
+	var eqScratch []complex64
+
 	for {
 		select {
 		case <-ctx.Done():
 			emitTail()
 			return
 		case <-touchTicker.C:
-			n := pcmWrites.Load()
-			if n != lastPCMWrite && c.engine != nil {
-				c.engine.Touch(serial)
-				lastPCMWrite = n
-			}
+			// Touch + hangtime end-of-call handled by the shared boundary
+			// tracker (bt.run).
 		case iq, ok := <-iqCh:
 			if !ok {
 				emitTail()
@@ -610,12 +639,15 @@ func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []
 			filtered := lpf.Process(nil, iq)
 			decimated := decimateComplex(filtered, decim1)
 			if eq != nil {
-				equalized := make([]complex64, len(decimated))
+				if cap(eqScratch) < len(decimated) {
+					eqScratch = make([]complex64, len(decimated))
+				}
+				eqScratch = eqScratch[:len(decimated)]
 				for i, x := range decimated {
 					y, _ := eq.Process(x)
-					equalized[i] = y
+					eqScratch[i] = y
 				}
-				decimated = equalized
+				decimated = eqScratch
 			}
 			audio := fm.Process(nil, decimated)
 			if deemph != nil {
@@ -640,6 +672,7 @@ func (c *Composer) runFMChain(ctx context.Context, serial string, iqCh <-chan []
 				_ = c.sink.WritePCM(serial, pcm)
 				lastSample = pcm[len(pcm)-1]
 				pcmWrites.Add(1)
+				bt.onVoice(0)
 			}
 		}
 	}

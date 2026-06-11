@@ -57,11 +57,12 @@ func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 		RetentionCallLogDays: cfg.Retention.CallLogDays,
 		RetentionFilesDays:   cfg.Retention.FilesDays,
 
-		RecordingDir:        cfg.Recordings.Dir,
-		RecordingSampleRate: int(cfg.Recordings.SampleRate),
-		RecordingWriteRaw:   cfg.Recordings.WriteRaw,
-		RecordingEQEnabled:  cfg.Recordings.Equalizer.Enabled,
-		RecordingEQTaps:     cfg.Recordings.Equalizer.Taps,
+		RecordingDir:           cfg.Recordings.Dir,
+		RecordingSampleRate:    int(cfg.Recordings.SampleRate),
+		RecordingWriteRaw:      cfg.Recordings.WriteRaw,
+		RecordingSkipEncrypted: cfg.Recordings.SkipEncrypted,
+		RecordingEQEnabled:     cfg.Recordings.Equalizer.Enabled,
+		RecordingEQTaps:        cfg.Recordings.Equalizer.Taps,
 
 		AudioEnabled:    cfg.Audio.Enabled,
 		AudioDevice:     cfg.Audio.Device,
@@ -81,6 +82,7 @@ func (r *runtimeSnapshot) Runtime() api.RuntimeDTO {
 
 		MetricsEnabled: r.metrics,
 		VocoderMap:     vocoderProtocolMap,
+		HiddenTabs:     cfg.Web.HiddenTabs(),
 	}
 	if cfg.Recordings.Equalizer.StepSize != 0 {
 		dto.RecordingEQStepSize = formatFloat(float64(cfg.Recordings.Equalizer.StepSize))

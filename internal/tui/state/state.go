@@ -24,6 +24,7 @@ const (
 	PanelMetrics
 	PanelDevices
 	PanelScanner
+	PanelHunt
 	PanelSettings
 	PanelImport
 	PanelFleetSync
@@ -52,6 +53,8 @@ func (p PanelKind) String() string {
 		return "Devices"
 	case PanelScanner:
 		return "Scanner"
+	case PanelHunt:
+		return "Hunt"
 	case PanelSettings:
 		return "Settings"
 	case PanelImport:
@@ -60,6 +63,42 @@ func (p PanelKind) String() string {
 		return "FleetSync"
 	}
 	return "?"
+}
+
+// Key returns the stable config key for this panel — the same key the
+// web SPA uses (route path minus its leading slash) so a single
+// web.tabs entry hides the tab in both UIs. Keep in sync with
+// config.KnownUITabs and web/src/App.tsx.
+func (p PanelKind) Key() string {
+	switch p {
+	case PanelDashboard:
+		return "dashboard"
+	case PanelSystems:
+		return "systems"
+	case PanelTalkgroups:
+		return "talkgroups"
+	case PanelActive:
+		return "active"
+	case PanelHistory:
+		return "history"
+	case PanelEvents:
+		return "events"
+	case PanelTones:
+		return "tones"
+	case PanelMetrics:
+		return "metrics"
+	case PanelDevices:
+		return "devices"
+	case PanelScanner:
+		return "scanner"
+	case PanelHunt:
+		return "hunt"
+	case PanelSettings:
+		return "settings"
+	case PanelImport:
+		return "import"
+	}
+	return ""
 }
 
 // RingReader is the read-side interface RingBuf satisfies. Panels
@@ -87,6 +126,8 @@ type SharedState struct {
 	DevicesErr  error
 	Scanner     client.ScannerStatusDTO
 	ScannerErr  error
+	Hunt        client.HuntStatusDTO
+	HuntErr     error
 	Audio       client.AudioStatusDTO
 	AudioErr    error
 	Runtime     client.RuntimeDTO
@@ -134,6 +175,19 @@ type WriteRequest struct {
 	ScannerManualTune *ScannerManualTuneReq
 	Audio             *AudioReq
 	Settings          *SettingsReq
+	Hunt              *HuntStartReq
+}
+
+// HuntStartReq is the payload for WriteKindHuntStart — a live system-discovery
+// run started from the TUI. Frequencies are in MHz (matching the operator's
+// input); the client converts to the wire shape.
+type HuntStartReq struct {
+	Bands      []string  // "low:high" MHz
+	Candidates []float64 // MHz
+	Survey     bool      // classify+decode every carrier, not just trunking CCs
+	Name       string
+	Serial     string
+	Protocol   string
 }
 
 // WriteKind discriminates a WriteRequest's payload.
@@ -157,6 +211,8 @@ const (
 	WriteKindAudio
 	WriteKindScannerManualTune
 	WriteKindSettings
+	WriteKindHuntStop
+	WriteKindHuntStart
 )
 
 // ScannerManualTuneReq adds a temp VFO channel and forces dwell.

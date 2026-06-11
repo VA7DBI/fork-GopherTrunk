@@ -10,6 +10,11 @@ import { Active } from "./panels/Active";
 import { Bookmarks } from "./panels/Bookmarks";
 import { CCActivity } from "./panels/CCActivity";
 import { Constellation } from "./panels/Constellation";
+import { SymbolScope } from "./panels/SymbolScope";
+import { EyeDiagram } from "./panels/EyeDiagram";
+import { Tuning } from "./panels/Tuning";
+import { Histogram } from "./panels/Histogram";
+import { Plots } from "./panels/Plots";
 import { Dashboard } from "./panels/Dashboard";
 import { Devices } from "./panels/Devices";
 import { Events } from "./panels/Events";
@@ -20,10 +25,12 @@ import { AIS } from "./panels/AIS";
 import { DSC } from "./panels/DSC";
 import { ADSB } from "./panels/ADSB";
 import { MDC1200 } from "./panels/MDC1200";
+import { LoRa } from "./panels/LoRa";
 import { Metrics } from "./panels/Metrics";
 import { Pagers } from "./panels/Pagers";
 import { RadioIDs } from "./panels/RadioIDs";
 import { Scanner } from "./panels/Scanner";
+import { Hunt } from "./panels/Hunt";
 import { Settings } from "./panels/Settings";
 import { Spectrum } from "./panels/Spectrum";
 import { Systems } from "./panels/Systems";
@@ -38,6 +45,7 @@ const TABS: Tab[] = [
   { to: "/settings", label: "Settings", icon: "⚙" },
 ];
 const EXTRA_TABS: Tab[] = [
+  { to: "/hunt", label: "Hunt", icon: "🔍" },
   { to: "/systems", label: "Systems", icon: "❖" },
   { to: "/talkgroups", label: "Talkgroups", icon: "☷" },
   { to: "/rids", label: "Radio IDs", icon: "⌖" },
@@ -51,8 +59,9 @@ const EXTRA_TABS: Tab[] = [
   { to: "/dsc", label: "DSC", icon: "📡" },
   { to: "/adsb", label: "ADS-B", icon: "✈" },
   { to: "/mdc1200", label: "MDC1200", icon: "📻" },
+  { to: "/lora", label: "LoRa", icon: "🌐" },
   { to: "/spectrum", label: "Spectrum", icon: "≈" },
-  { to: "/constellation", label: "Constellation", icon: "✦" },
+  { to: "/plots", label: "Plots", icon: "✦" },
   { to: "/bookmarks", label: "Bookmarks", icon: "★" },
   { to: "/metrics", label: "Metrics", icon: "▰" },
   { to: "/devices", label: "Devices", icon: "⌗" },
@@ -70,6 +79,8 @@ export function App() {
   const setConnected = useShared((s) => s.setConnected);
   const setMutations = useShared((s) => s.setMutations);
   const setWSStatus = useShared((s) => s.setWSStatus);
+  const hiddenTabs = useShared((s) => s.hiddenTabs);
+  const setHiddenTabs = useShared((s) => s.setHiddenTabs);
   const appendEvents = useShared((s) => s.appendEvents);
   const lastError = useShared((s) => s.lastError);
   const setError = useShared((s) => s.setError);
@@ -111,6 +122,14 @@ export function App() {
       .then(setMutations)
       .catch(() => setMutations(null));
 
+    // Pull the runtime snapshot once to learn which nav tabs the
+    // operator turned off via web.tabs in config. On failure we leave
+    // the nav untouched (everything visible) rather than blank it.
+    api
+      .runtime(cfg)
+      .then((rt) => setHiddenTabs(rt.hidden_tabs ?? []))
+      .catch(() => setHiddenTabs([]));
+
     const stream = openEventStream(cfg, {
       onEvents: appendEvents,
       onStatus: setWSStatus,
@@ -118,9 +137,30 @@ export function App() {
     return () => {
       stream.close();
     };
-  }, [connected, baseURL, token, appendEvents, setMutations, setWSStatus]);
+  }, [
+    connected,
+    baseURL,
+    token,
+    appendEvents,
+    setMutations,
+    setWSStatus,
+    setHiddenTabs,
+  ]);
 
-  const visibleTabs = useMemo(() => TABS, []);
+  // A hidden tab is dropped from both the main strip and the desktop
+  // overflow row. The key is the route path minus its leading slash —
+  // the same key the daemon emits in hidden_tabs. Routes stay mounted
+  // (nav-only hiding), so a hidden panel is still reachable by URL.
+  const hidden = useMemo(() => new Set(hiddenTabs), [hiddenTabs]);
+  const tabKey = (t: Tab) => String(t.to).replace(/^\//, "");
+  const visibleTabs = useMemo(
+    () => TABS.filter((t) => !hidden.has(tabKey(t))),
+    [hidden],
+  );
+  const visibleExtraTabs = useMemo(
+    () => EXTRA_TABS.filter((t) => !hidden.has(tabKey(t))),
+    [hidden],
+  );
 
   if (!baseURL || !connected) {
     return <ConnectScreen />;
@@ -134,7 +174,7 @@ export function App() {
           bottom-nav-friendly four-tab limit still leaves room for
           everything else. */}
       <div className="hidden sm:flex gap-1 px-3 py-1 border-b border-panel text-xs overflow-x-auto">
-        {EXTRA_TABS.map((t) => (
+        {visibleExtraTabs.map((t) => (
           <button
             key={String(t.to)}
             onClick={() => navigate(t.to)}
@@ -143,6 +183,16 @@ export function App() {
             {t.icon} {t.label}
           </button>
         ))}
+        {/* The Config Builder is a separate SPA the daemon serves at
+            /config/. Open it in a new tab so editing config doesn't tear
+            down the live operator session. */}
+        <button
+          onClick={() => window.open("/config/", "_blank", "noopener")}
+          className="px-2 py-1 rounded text-muted hover:text-fg hover:bg-panel"
+          title="Open the Config Builder/Editor in a new tab"
+        >
+          🛠 Config Builder ↗
+        </button>
       </div>
 
       <main className="flex-1 p-3 sm:p-4 pb-20 sm:pb-4">
@@ -151,8 +201,15 @@ export function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/active" element={<Active />} />
           <Route path="/scanner" element={<Scanner />} />
+          <Route path="/hunt" element={<Hunt />} />
           <Route path="/spectrum" element={<Spectrum />} />
+          <Route path="/plots" element={<Plots />} />
+          <Route path="/plots/:tab" element={<Plots />} />
           <Route path="/constellation" element={<Constellation />} />
+          <Route path="/symbols" element={<SymbolScope />} />
+          <Route path="/eye" element={<EyeDiagram />} />
+          <Route path="/tuning" element={<Tuning />} />
+          <Route path="/histogram" element={<Histogram />} />
           <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/systems" element={<Systems />} />
           <Route path="/talkgroups" element={<Talkgroups />} />
@@ -167,6 +224,7 @@ export function App() {
           <Route path="/dsc" element={<DSC />} />
           <Route path="/adsb" element={<ADSB />} />
           <Route path="/mdc1200" element={<MDC1200 />} />
+          <Route path="/lora" element={<LoRa />} />
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/devices" element={<Devices />} />
           <Route path="/settings" element={<Settings />} />

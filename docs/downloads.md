@@ -28,7 +28,7 @@ release state looks like:
 {%- elsif site.github.releases and site.github.releases[0] and site.github.releases[0].tag_name -%}
   {%- assign ver = site.github.releases[0].tag_name -%}
 {%- else -%}
-  {%- assign ver = "v0.2.6" -%}
+  {%- assign ver = "v0.3.8" -%}
 {%- endif -%}
 {%- assign rel_url = "https://github.com/MattCheramie/GopherTrunk/releases/download/" | append: ver -%}
 
@@ -141,7 +141,7 @@ Run the installer:
 .\gophertrunk-{{ ver }}-windows-amd64-setup.exe
 ```
 
-During setup the wizard asks where to install the **browser-based web operator console** (default `%USERPROFILE%\Documents\GopherTrunk Web Console`). A Start Menu shortcut opens `index.html` in your default browser; untick the "Install the web operator console" task on the Tasks page to skip it for a headless install.
+During setup the wizard asks for **one data folder** (default `%USERPROFILE%\Documents\GopherTrunk`) to hold everything that isn't the program: config, recordings, IQ captures, exports, the database, logs, and the **browser-based web consoles** (standard, Signal Lab, Config Builder) under its `web\` subfolder. Start Menu shortcuts open each console's `index.html` in your default browser.
 
 After install, complete the WinUSB driver swap via the bundled Zadig — see **[`install-windows.md`]({{ '/install-windows.html' | relative_url }})** for the full step-by-step (Start Menu → GopherTrunk → "Install RTL-SDR driver (Zadig)", or tick the postinstall option before clicking Finish). The OS won't see your RTL-SDR until that swap is done.
 
@@ -184,7 +184,7 @@ make test                # unit tests
 make integration         # daemon end-to-end (no SDR required)
 ```
 
-Requires Go 1.25+ — the project's `go.mod` pins the toolchain to 1.25.10 (closes the 23 stdlib CVEs in the bare 1.25.0). See **[`CONTRIBUTING.md`](https://github.com/MattCheramie/GopherTrunk/blob/main/CONTRIBUTING.md)** for the full dev setup.
+Requires Go 1.25+ — the project's `go.mod` pins the toolchain to 1.25.11 (closes the stdlib CVEs in the bare 1.25.0). See **[`CONTRIBUTING.md`](https://github.com/MattCheramie/GopherTrunk/blob/main/CONTRIBUTING.md)** for the full dev setup.
 
 ## Docker
 

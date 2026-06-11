@@ -36,20 +36,34 @@ anywhere — the contents are the same.
 Double-click `setup.exe` and accept the defaults. The installer:
 
 - Copies `gophertrunk.exe` to `C:\Program Files\GopherTrunk\` —
-  a single static binary, no DLLs to ship.
+  a single static binary, no DLLs to ship. **This is the only
+  thing that goes in Program Files.**
+- Asks you for **one data folder** (the "Select your GopherTrunk
+  data folder" page after the Tasks step, defaulting to
+  `%USERPROFILE%\Documents\GopherTrunk`). Everything that *isn't*
+  the program lives here, in a tidy subfolder tree Setup creates:
+
+  ```
+  Documents\GopherTrunk\
+    config\       config.yaml + your talkgroup / RID CSVs
+    recordings\   voice-call recordings (.wav / .raw)
+    iq\           raw IQ baseband captures
+    exports\      CSV / PDF exports
+    data\         calls.db + caches
+    logs\         decoded-message logs
+    web\          the browser consoles (standard + Signal Lab + Config Builder)
+  ```
+
+  You can point this anywhere you can write to — a USB stick, a
+  network drive, your desktop. Setup seeds a starter `config.yaml`
+  into `config\` (an existing one is never overwritten).
 - Bundles **Zadig** (the WinUSB driver-binding tool) next to the
   daemon and adds a Start Menu shortcut "Install RTL-SDR driver
   (Zadig)" so you don't have to chase a separate download.
 - Adds Start Menu entries for the daemon, the config template,
+  the three **browser-based web consoles** (open them straight
+  from `web\` — setup + quick-start guide: **[Web console]({{ '/web.html' | relative_url }})**),
   and these instructions.
-- Installs the **browser-based web operator console** (a static
-  HTML / JS folder you open in any browser) to a location you
-  pick — the wizard offers a "Select web operator console
-  location" page after the Tasks step, defaulting to
-  `%USERPROFILE%\Documents\GopherTrunk Web Console`. Untick the
-  "Install the web operator console" checkbox on the Tasks page
-  to skip it (e.g. for a headless server install). Setup +
-  quick-start guide for the console: **[Web console]({{ '/web.html' | relative_url }})**.
 - Optionally adds `C:\Program Files\GopherTrunk` to your system
   PATH so you can run `gophertrunk` from any PowerShell window
   (off by default — tick the "Add GopherTrunk to my PATH"
@@ -57,9 +71,8 @@ Double-click `setup.exe` and accept the defaults. The installer:
 
 When the wizard finishes, it'll offer to open this document, a
 console window, Zadig (to bind the WinUSB driver — see §3), and
-(if you installed the web console) the console itself in your
-default browser. All four are harmless to skip; the Zadig one
-defaults off.
+the web console in your default browser. All are harmless to skip;
+the Zadig one defaults off.
 
 ## 3. Install the WinUSB driver via Zadig (one-time, for each dongle)
 
@@ -124,13 +137,21 @@ cd "C:\Program Files\GopherTrunk"
 
 ## 5. Configure and start the daemon
 
-The installer asked you for an "editable files folder" (default
-`Documents\GopherTrunk`) and seeded a `config.yaml` there. It also
-set the `GOPHERTRUNK_CONFIG` user environment variable to point at
-that file, so the daemon discovers it automatically — no `-config`
-flag needed. Use the Start Menu shortcut "Edit my config.yaml
-(Notepad)" to open it, set your device serial + control-channel
-frequencies, and save.
+The installer asked you for a data folder (default
+`Documents\GopherTrunk`) and seeded a `config.yaml` in its
+`config\` subfolder. It also set the `GOPHERTRUNK_CONFIG` user
+environment variable to point at that file, so the daemon discovers
+it automatically — no `-config` flag needed. (A second variable,
+`GOPHERTRUNK_HOME`, points at the data folder itself.) Use the Start
+Menu shortcut "Edit my config.yaml (Notepad)" to open it, set your
+device serial + control-channel frequencies, and save.
+
+The seeded `config.yaml` uses **config-relative paths**
+(`../recordings`, `../data/calls.db`, `../iq`, `../logs`), so the
+daemon writes recordings, the database, IQ captures, and logs into
+the sibling folders under your data root automatically — no absolute
+paths to edit. You can still hard-code an absolute path (or use
+`%GOPHERTRUNK_HOME%\...`) if you want files somewhere else.
 
 Then start the daemon:
 
@@ -146,7 +167,7 @@ against a second config for testing), use `-config`:
 gophertrunk run -config "C:\path\to\other.yaml"
 ```
 
-If you drop multiple `*.yaml` files into the editable-files folder
+If you drop multiple `*.yaml` files into the `config\` folder
 (e.g. `config.yaml` + `prod.yaml` + `test.yaml`), the daemon prints
 a numbered menu on startup and asks which one to load. Pick the
 number, press Enter, and that file is used. Set `-config` or
@@ -166,20 +187,27 @@ native service manifest ships:
 
 ```powershell
 nssm install GopherTrunk "C:\Program Files\GopherTrunk\gophertrunk.exe" `
-  run -config "C:\ProgramData\GopherTrunk\config.yaml"
+  run -config "%USERPROFILE%\Documents\GopherTrunk\config\config.yaml"
 nssm set GopherTrunk AppDirectory "C:\Program Files\GopherTrunk"
 nssm start GopherTrunk
 ```
+
+> Point `-config` at the `config.yaml` inside your data folder's
+> `config\` subfolder. A service runs as a different account, so use
+> the absolute path here rather than relying on the per-user
+> `GOPHERTRUNK_CONFIG` variable.
 
 ## Uninstall
 
 **Settings → Apps → Installed apps → GopherTrunk → Uninstall.**
 The uninstaller removes the install folder and every Start Menu
 entry, strips GopherTrunk from your PATH (if you opted in), and
-clears the `GOPHERTRUNK_CONFIG` env var. It then asks whether to
-also delete your editable `config.yaml` and the `gophertrunk-web`
-folder Setup created — the default is **No** so you don't lose
-edits or per-system data.
+clears the `GOPHERTRUNK_CONFIG` / `GOPHERTRUNK_HOME` env vars. It
+then asks whether to also delete the Setup-managed parts of your
+data folder — the `config`, `data`, `logs`, and `web` subfolders.
+The default is **No**. Even if you say Yes, your **captures**
+(`recordings`, `iq`, `exports`) are always kept so you never lose
+recordings on an uninstall.
 
 ## Troubleshooting
 
@@ -189,6 +217,7 @@ edits or per-system data.
 | `sdr list` prints nothing              | Zadig WinUSB swap didn't take — see step 3.        |
 | `usb: device disconnected` mid-stream  | The DVB driver re-attached itself — re-run Zadig. |
 | `WinUsb_Initialize` fails              | The dongle is bound to the wrong driver — re-run Zadig and pick **WinUSB**. |
+| `ERROR_GEN_FAILURE` / `device rejected request` on `sdr list` | Clone-dongle cold-start quirk — a USB control transfer is NAK'd during bring-up. v0.2.x absorbs this automatically: the sacrificial warmup probe, a control-pipe clear-and-retry, and (for R820T/R828D tuner init on NESDR v5 silicon) a per-chunk retry + chunk-size halving fallback all recover from it. If it still persists, the probe error prints a **`--- USB diagnostics ---`** block (bound driver, device/config descriptors, a control-IN read probe) — copy that whole block into a GitHub issue. Meanwhile: try a different USB port (front vs. rear use different host controllers), avoid hubs and extension cables, and confirm `gophertrunk sdr doctor` shows **WinUSB** (not libusbK) bound to interface 0. |
 | Smart Screen blocks the installer      | Right-click → Properties → Unblock, or **More info → Run anyway**. |
 
 For anything else: open an issue at

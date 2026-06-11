@@ -6,12 +6,50 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // debugUSBEnv is the environment variable that toggles the debug
 // transport wrapper. Anything non-empty enables it.
 const debugUSBEnv = "RTLSDR_DEBUG_USB"
+
+// debugUSBCSVEnv enables compact CSV-style lines alongside human-readable
+// traces. Useful for diffing against USBPcap/Wireshark exports.
+const debugUSBCSVEnv = "RTLSDR_DEBUG_USB_CSV"
+
+// debugUSBCSVHeader is emitted once per process when CSV mode is enabled.
+//
+// Column order is fixed for script-friendly parsing:
+//  1. tx_id           monotonically increasing transfer sequence number
+//  2. ts_utc          RFC3339Nano timestamp in UTC
+//  3. rel             elapsed time since process-local trace epoch
+//  4. phase           request | payload | result
+//  5. dir             in | out
+//  6. bmReqType       hex or empty
+//  7. bRequest        hex or empty
+//  8. wValue          hex or empty
+//  9. wIndex          hex or empty
+//
+// 10) wLength         decimal or empty
+// 11) timeoutMs       decimal or empty
+// 12) status          ok | err or empty
+// 13) dataLen         decimal or empty
+// 14) payloadHex      quoted hex dump or empty
+// 15) err             quoted error text or empty
+// 16) duration        elapsed op duration string or empty
+const debugUSBCSVHeader = "tx_id,ts_utc,rel,phase,dir,bmReqType,bRequest,wValue,wIndex,wLength,timeoutMs,status,dataLen,payloadHex,err,duration"
+
+// Diagnoser is an optional Transport capability. Implementations that
+// can describe the underlying device — the bound driver, USB descriptors,
+// a control-IN read probe — expose Diagnostics. The bring-up path
+// (purego/driver.go) appends this to a failed Open so a single probe run
+// captures everything needed to triage a dongle that rejects control
+// transfers. The Windows transport implements it; transports that don't
+// simply contribute no extra diagnostics.
+type Diagnoser interface {
+	Diagnostics() string
+}
 
 // debugMaxDataBytes caps how many payload bytes the debug log dumps
 // per ControlOut. 64 bytes is enough to capture the R820T 27-byte
@@ -22,8 +60,11 @@ const debugMaxDataBytes = 64
 // debugSink is the io.Writer the debug transport logs to. Defaults
 // to os.Stderr; tests swap it via SetDebugSink.
 var (
-	debugSinkMu sync.Mutex
-	debugSink   io.Writer = os.Stderr
+	debugSinkMu           sync.Mutex
+	debugSink             io.Writer = os.Stderr
+	debugTrace0                     = time.Now()
+	debugTraceSeq         atomic.Uint64
+	debugCSVHeaderEmitted atomic.Bool
 )
 
 // SetDebugSink redirects debug-transport output. Returns the previous
@@ -42,6 +83,8 @@ func SetDebugSink(w io.Writer) io.Writer {
 // off-path stays free.
 func debugUSBEnabled() bool { return os.Getenv(debugUSBEnv) != "" }
 
+func debugUSBCSVEnabled() bool { return os.Getenv(debugUSBCSVEnv) != "" }
+
 // debugLogf writes one line to the debug sink with the standard
 // rtlsdr-usb prefix and a component label, when RTLSDR_DEBUG_USB is
 // set. Free function so enumerator paths (not just the per-device
@@ -56,6 +99,17 @@ func debugLogf(component, format string, args ...interface{}) {
 	w := debugSink
 	debugSinkMu.Unlock()
 	fmt.Fprintln(w, "rtlsdr-usb ["+component+"]: "+fmt.Sprintf(format, args...))
+}
+
+// DebugLogf is the exported entry point to the gated debug sink for
+// callers outside this package (e.g. the rtlsdr bring-up path in
+// purego/driver.go, which logs the swallowed sacrificial-warmup
+// failure). Like debugLogf it only emits when RTLSDR_DEBUG_USB is set,
+// writes to the same sink (so SetDebugSink works in tests), and uses
+// the same "rtlsdr-usb [component]" line prefix — keeping every USB
+// diagnostic on one diffable channel.
+func DebugLogf(component, format string, args ...interface{}) {
+	debugLogf(component, format, args...)
 }
 
 // MaybeWrapDebug returns t wrapped in a debug-logging Transport when
@@ -109,34 +163,62 @@ func (d *debugTransport) logf(format string, args ...interface{}) {
 	d.writeLog("rtlsdr-usb [" + d.label + "]: " + fmt.Sprintf(format, args...))
 }
 
+func (d *debugTransport) logCSV(format string, args ...interface{}) {
+	if !debugUSBCSVEnabled() {
+		return
+	}
+	if !debugCSVHeaderEmitted.Load() {
+		if debugCSVHeaderEmitted.CompareAndSwap(false, true) {
+			d.writeLog("rtlsdr-usb-csv,#" + debugUSBCSVHeader)
+		}
+	}
+	d.writeLog("rtlsdr-usb-csv," + fmt.Sprintf(format, args...))
+}
+
+func nextDebugTrace() (uint64, time.Time, time.Duration) {
+	now := time.Now()
+	seq := debugTraceSeq.Add(1)
+	delta := now.Sub(debugTrace0).Round(time.Microsecond)
+	return seq, now, delta
+}
+
 func (d *debugTransport) ControlIn(bRequest uint8, wValue, wIndex uint16, n int, timeoutMs int) ([]byte, error) {
-	d.logf("ControlIn  bmReqType=0x%02x bReq=0x%02x wValue=0x%04x wIndex=0x%04x wLength=%d timeout=%dms",
-		VendorIn, bRequest, wValue, wIndex, n, timeoutMs)
+	txID, ts, rel := nextDebugTrace()
+	d.logf("tx=%06d ts=%s rel=%s ControlIn  bmReqType=0x%02x bReq=0x%02x wValue=0x%04x wIndex=0x%04x wLength=%d timeout=%dms",
+		txID, ts.UTC().Format(time.RFC3339Nano), rel, VendorIn, bRequest, wValue, wIndex, n, timeoutMs)
+	d.logCSV("%06d,%s,%s,request,in,0x%02x,0x%02x,0x%04x,0x%04x,%d,%d,,,,,", txID, ts.UTC().Format(time.RFC3339Nano), rel, VendorIn, bRequest, wValue, wIndex, n, timeoutMs)
 	start := time.Now()
 	out, err := d.inner.ControlIn(bRequest, wValue, wIndex, n, timeoutMs)
 	dur := time.Since(start)
 	if err != nil {
-		d.logf("  -> err=%v (after %s)", err, dur)
+		d.logf("tx=%06d -> err=%v (after %s)", txID, err, dur)
+		d.logCSV("%06d,%s,%s,result,in,,,,,,,err,,,%q,%s", txID, ts.UTC().Format(time.RFC3339Nano), rel, err.Error(), dur)
 		return out, err
 	}
-	d.logf("  -> data=%s (%d bytes, %s)", hexBytes(out, debugMaxDataBytes), len(out), dur)
+	d.logf("tx=%06d -> data=%s (%d bytes, %s)", txID, hexBytes(out, debugMaxDataBytes), len(out), dur)
+	d.logCSV("%06d,%s,%s,result,in,,,,,,,ok,%d,%q,,%s", txID, ts.UTC().Format(time.RFC3339Nano), rel, len(out), hexBytes(out, debugMaxDataBytes), dur)
 	return out, nil
 }
 
 func (d *debugTransport) ControlOut(bRequest uint8, wValue, wIndex uint16, data []byte, timeoutMs int) error {
-	d.logf("ControlOut bmReqType=0x%02x bReq=0x%02x wValue=0x%04x wIndex=0x%04x wLength=%d timeout=%dms",
-		VendorOut, bRequest, wValue, wIndex, len(data), timeoutMs)
+	txID, ts, rel := nextDebugTrace()
+	d.logf("tx=%06d ts=%s rel=%s ControlOut bmReqType=0x%02x bReq=0x%02x wValue=0x%04x wIndex=0x%04x wLength=%d timeout=%dms",
+		txID, ts.UTC().Format(time.RFC3339Nano), rel, VendorOut, bRequest, wValue, wIndex, len(data), timeoutMs)
+	d.logCSV("%06d,%s,%s,request,out,0x%02x,0x%02x,0x%04x,0x%04x,%d,%d,,,,,", txID, ts.UTC().Format(time.RFC3339Nano), rel, VendorOut, bRequest, wValue, wIndex, len(data), timeoutMs)
 	if len(data) > 0 {
-		d.logf("  data=%s", hexBytes(data, debugMaxDataBytes))
+		d.logf("tx=%06d data=%s", txID, hexBytes(data, debugMaxDataBytes))
+		d.logCSV("%06d,%s,%s,payload,out,,,,,,,,,%q,,", txID, ts.UTC().Format(time.RFC3339Nano), rel, hexBytes(data, debugMaxDataBytes))
 	}
 	start := time.Now()
 	err := d.inner.ControlOut(bRequest, wValue, wIndex, data, timeoutMs)
 	dur := time.Since(start)
 	if err != nil {
-		d.logf("  -> err=%v (after %s)", err, dur)
+		d.logf("tx=%06d -> err=%v (after %s)", txID, err, dur)
+		d.logCSV("%06d,%s,%s,result,out,,,,,,,err,,,%q,%s", txID, ts.UTC().Format(time.RFC3339Nano), rel, err.Error(), dur)
 		return err
 	}
-	d.logf("  -> ok (after %s)", dur)
+	d.logf("tx=%06d -> ok (after %s)", txID, dur)
+	d.logCSV("%06d,%s,%s,result,out,,,,,,,ok,,,,%s", txID, ts.UTC().Format(time.RFC3339Nano), rel, dur)
 	return nil
 }
 
@@ -175,6 +257,16 @@ func (d *debugTransport) Reset() error {
 func (d *debugTransport) Close() error {
 	d.logf("Close")
 	return d.inner.Close()
+}
+
+// Diagnostics forwards to the wrapped transport's Diagnostics when it
+// implements Diagnoser, so the RTLSDR_DEBUG_USB wrapper doesn't hide the
+// rich device dump the bring-up path appends on failure.
+func (d *debugTransport) Diagnostics() string {
+	if dg, ok := d.inner.(Diagnoser); ok {
+		return dg.Diagnostics()
+	}
+	return ""
 }
 
 // hexBytes returns a space-separated lowercase hex dump of the first

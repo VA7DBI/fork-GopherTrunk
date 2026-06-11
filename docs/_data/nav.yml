@@ -1,4 +1,10 @@
 groups:
+  - label: Getting Started
+    items:
+      - title: What is GopherTrunk?
+        url: /getting-started.html
+      - title: Get started
+        url: /getting-started-setup.html
   - label: About
     items:
       - title: The Story of GopherTrunk
@@ -33,8 +39,22 @@ groups:
         url: /bookmarks.html
       - title: CC Activity
         url: /cc-activity.html
+      - title: Radio IDs
+        url: /radio-ids.html
+      - title: Plots (signal scopes)
+        url: /plots.html
       - title: Constellation
         url: /constellation.html
+      - title: Symbol scope
+        url: /symbol-scope.html
+      - title: Eye diagram
+        url: /eye-diagram.html
+      - title: Tuning (receiver meters)
+        url: /tuning.html
+      - title: Symbol histogram
+        url: /histogram.html
+      - title: Hunt (discover systems)
+        url: /hunt.html
       - title: rigctld integration
         url: /rigctld.html
       - title: Hardening

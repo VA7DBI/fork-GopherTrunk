@@ -49,7 +49,37 @@ import "math"
 // initialized it). The caller is expected to have called
 // (s).Reset() first on a Silent frame so the next non-silent
 // frame starts from a clean state.
+//
+// This is the fully-coherent path (every harmonic synthesized from the
+// phase-locked memory). The IMBE decoder uses SynthVoicedDispersed for
+// the §6.3 voiced-phase regeneration that de-buzzes the synthesis.
 func SynthVoiced(s *SynthState, p Params, M *[57]float64, dst []float64) {
+	synthVoiced(s, p, M, dst, nil)
+}
+
+// SynthVoicedDispersed is SynthVoiced plus TIA-102.BABA §6.3
+// voiced-phase regeneration. Fully phase-coherent voiced synthesis
+// re-aligns every harmonic once per pitch period, which radiates a
+// buzzy impulse train — the "robotic" artifact that makes a from-scratch
+// MBE decoder sound worse than the reference imbe_vocoder. The reference
+// (mbelib mbe_synthesizeSpeechf) keeps a coherent phase memory PSIl and
+// forms the synthesis phase PHIl = PSIl + offset for the upper harmonics:
+//
+//	if (l <= L/4) PHIl[l] = PSIl[l]                       // coherent
+//	else          PHIl[l] = PSIl[l] + numUv*rand_phase()/L
+//
+// phaseDisp[l] is that per-frame offset (the caller scales it by the
+// unvoiced-harmonic fraction so mostly-voiced frames get near-zero
+// dispersion). It is applied to the *synthesis* start phase only and is
+// NOT rolled into the memory — UpdateVoicedState advances PrevPhase
+// coherently, so the offset never accumulates into a random walk. The
+// offset is applied to voiced harmonics with l > L/4; a nil phaseDisp is
+// identical to SynthVoiced.
+func SynthVoicedDispersed(s *SynthState, p Params, M *[57]float64, dst []float64, phaseDisp *[57]float64) {
+	synthVoiced(s, p, M, dst, phaseDisp)
+}
+
+func synthVoiced(s *SynthState, p Params, M *[57]float64, dst []float64, phaseDisp *[57]float64) {
 	if p.Silent || p.L == 0 {
 		return
 	}
@@ -88,6 +118,15 @@ func SynthVoiced(s *SynthState, p Params, M *[57]float64, dst []float64) {
 
 		lf := float64(l)
 		thetaBase := s.PrevPhase[l]
+		// §6.3 upper-harmonic phase regeneration: a voiced upper harmonic
+		// (l > L/4) starts this frame from the coherent phase plus a
+		// bounded random offset (PHIl = PSIl + offset). The offset is not
+		// rolled into the memory below, so it perturbs only this frame's
+		// excitation and never accumulates. Low harmonics (l ≤ L/4) and
+		// fade-out-only harmonics stay coherent.
+		if phaseDisp != nil && currAmp != 0 && 4*l > p.L {
+			thetaBase += phaseDisp[l]
+		}
 		// Linear phase coefficient (n^1) and quadratic (n^2):
 		//   θ(n) = θ₀ + a·n + b·n²
 		// a = l · ω_prev, b = l · (ω_curr − ω_prev) / (2N)
@@ -116,7 +155,12 @@ func SynthVoiced(s *SynthState, p Params, M *[57]float64, dst []float64) {
 // clean zero baseline).
 //
 // Silence + zero-L frames are a no-op so callers can invoke this
-// unconditionally on the synthesis path.
+// unconditionally on the synthesis path. The phase memory is advanced
+// coherently (every harmonic stays phase-locked frame to frame); this is
+// the reference PSIl recursion. The §6.3 voiced-phase regeneration
+// (SynthVoicedDispersed) perturbs only the per-frame synthesis phase
+// (PHIl) and is intentionally NOT folded in here — keeping the memory
+// coherent prevents the upper harmonics from random-walking into noise.
 func (s *SynthState) UpdateVoicedState(p Params, M *[57]float64) {
 	if p.Silent || p.L == 0 {
 		return

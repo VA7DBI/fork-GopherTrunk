@@ -8,6 +8,34 @@ import (
 	"github.com/MattCheramie/GopherTrunk/internal/voice/mbe"
 )
 
+// packInfoBits is the inverse of unpackInfoBits: it packs an 88-element
+// 0/1 info slice (the shape putB0 builds) MSB-first into 11 bytes — the
+// FrameBytes form Decode consumes.
+func packInfoBits(info []byte) []byte {
+	frame := make([]byte, FrameBytes)
+	for i := 0; i < InfoBits; i++ {
+		if info[i]&1 == 1 {
+			frame[i/8] |= 1 << (7 - uint(i)%8)
+		}
+	}
+	return frame
+}
+
+// frameB0 returns an 11-byte packed frame carrying b_0 with all other
+// info bits zero. Decode-ready (unlike putB0, which returns the 88-bit
+// info form).
+func frameB0(b0 uint) []byte { return packInfoBits(putB0(b0)) }
+
+// goodVoiceFrame returns a valid, non-degenerate voice frame just
+// outside the idle-tone corner (b_0 = IdleToneMaxB0 + 1), so a repeated
+// feed synthesizes every frame instead of muting. Tests that feed a
+// "good frame" repeatedly or after a bad streak use this instead of the
+// all-zero (b_0 = 0) frame, which now reads as an idle tone and gets
+// muted on a sustained run — see Decode's muteTone path. b_0 just above
+// the threshold keeps the synthesized energy close to the historical
+// all-zero frame these tests were tuned against.
+func goodVoiceFrame() []byte { return frameB0(IdleToneMaxB0 + 1) }
+
 func TestDecoderRegistered(t *testing.T) {
 	v, err := voice.DefaultRegistry.New(VocoderName)
 	if err != nil {
@@ -62,7 +90,7 @@ func TestDecodeReturnsSilenceForB0SilenceFrame(t *testing.T) {
 // "synthesizer is wired up" milestone.
 func TestDecodeProducesAudioForValidFrame(t *testing.T) {
 	d := New()
-	frame := make([]byte, FrameBytes) // all zero ⇒ b_0 = 0
+	frame := goodVoiceFrame() // valid non-idle voice frame
 	out, err := d.Decode(frame)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
@@ -178,7 +206,7 @@ func TestDecodeDeterministicAcrossDecoders(t *testing.T) {
 func TestNewWithSeedDifferentSeedsDifferentOutput(t *testing.T) {
 	a := NewWithSeed(1)
 	b := NewWithSeed(2)
-	frame := make([]byte, FrameBytes)
+	frame := goodVoiceFrame()
 	outA, err := a.Decode(frame)
 	if err != nil {
 		t.Fatalf("a.Decode: %v", err)
@@ -207,7 +235,7 @@ func TestNewWithSeedDifferentSeedsDifferentOutput(t *testing.T) {
 // Pins that state-rolling actually happens.
 func TestDecodeRollsCrossFrameState(t *testing.T) {
 	d := New()
-	frame := make([]byte, FrameBytes)
+	frame := goodVoiceFrame()
 	out1, err := d.Decode(frame)
 	if err != nil {
 		t.Fatalf("frame1: %v", err)
@@ -238,7 +266,7 @@ func TestDecodeRollsCrossFrameState(t *testing.T) {
 func TestResetClearsCrossFrameState(t *testing.T) {
 	d := New()
 	// Drive some non-trivial state into d via a valid frame.
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("seed Decode: %v", err)
 	}
 	if d.state.PrevW0 == 0 {
@@ -269,7 +297,7 @@ func TestResetClearsCrossFrameState(t *testing.T) {
 func TestDecodeSilenceFrameResetsState(t *testing.T) {
 	d := New()
 	// Establish state.
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("seed Decode: %v", err)
 	}
 	if d.state.PrevW0 == 0 {
@@ -385,7 +413,7 @@ func agcPeak(out []int16) int {
 // constant gain).
 func TestAGCConvergesTowardTarget(t *testing.T) {
 	d := New()
-	frame := make([]byte, FrameBytes) // valid b_0=0 frame
+	frame := goodVoiceFrame() // non-degenerate; a repeated b_0=0 frame mutes as idle tone
 	var lastPeak int
 	for i := 0; i < 30; i++ {
 		out, err := d.Decode(frame)
@@ -414,7 +442,7 @@ func TestAGCConvergesTowardTarget(t *testing.T) {
 // gain explosion at the first-frame edge).
 func TestAGCInitialFrameNotOverAmplified(t *testing.T) {
 	d := New()
-	frame := make([]byte, FrameBytes)
+	frame := goodVoiceFrame()
 	out, err := d.Decode(frame)
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +465,7 @@ func TestAGCInitialFrameNotOverAmplified(t *testing.T) {
 func TestAGCSilenceFramePreservesEnvelope(t *testing.T) {
 	d := New()
 	for i := 0; i < 5; i++ {
-		if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+		if _, err := d.Decode(goodVoiceFrame()); err != nil {
 			t.Fatalf("seed frame %d: %v", i, err)
 		}
 	}
@@ -465,7 +493,7 @@ func TestAGCSilenceFramePreservesEnvelope(t *testing.T) {
 // starts from a clean baseline.
 func TestAGCResetClearsEnvelope(t *testing.T) {
 	d := New()
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatal(err)
 	}
 	if d.agc.Envelope() == 0 {
@@ -512,7 +540,7 @@ func TestAGCBoundedOutputAcrossFramePatterns(t *testing.T) {
 // pumping that would be audible as breathing.
 func TestAGCDoesNotPumpOnConstantInput(t *testing.T) {
 	d := New()
-	frame := make([]byte, FrameBytes)
+	frame := goodVoiceFrame()
 	// Warm up the envelope.
 	for i := 0; i < 30; i++ {
 		if _, err := d.Decode(frame); err != nil {
@@ -561,7 +589,7 @@ func badFrame() []byte {
 // than emitting silence).
 func TestFrameRepeatOnBadFrameAfterGood(t *testing.T) {
 	d := New()
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("good seed: %v", err)
 	}
 	if d.lastGoodParams.L == 0 {
@@ -590,7 +618,7 @@ func TestFrameRepeatOnBadFrameAfterGood(t *testing.T) {
 // downward: peak[5] < peak[0].
 func TestFrameRepeatProgressiveAttenuation(t *testing.T) {
 	d := New()
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("good seed: %v", err)
 	}
 	var peaks [mbe.MaxBadFrames]int
@@ -612,7 +640,7 @@ func TestFrameRepeatProgressiveAttenuation(t *testing.T) {
 // "no cache or budget exhausted" path → silence + cache cleared.
 func TestFrameRepeatExhaustedBudgetForcesSilence(t *testing.T) {
 	d := New()
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("good seed: %v", err)
 	}
 	for i := 0; i < mbe.MaxBadFrames; i++ {
@@ -646,7 +674,7 @@ func TestFrameRepeatExhaustedBudgetForcesSilence(t *testing.T) {
 // bad streak gets a fresh budget.
 func TestFrameRepeatCounterResetsOnGoodFrame(t *testing.T) {
 	d := New()
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("good seed: %v", err)
 	}
 	if _, err := d.Decode(badFrame()); err != nil {
@@ -658,7 +686,7 @@ func TestFrameRepeatCounterResetsOnGoodFrame(t *testing.T) {
 	if d.badFrameCount != 2 {
 		t.Fatalf("badFrameCount = %d after 2 bads, want 2", d.badFrameCount)
 	}
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("recovery: %v", err)
 	}
 	if d.badFrameCount != 0 {
@@ -675,7 +703,7 @@ func TestFrameRepeatCounterResetsOnGoodFrame(t *testing.T) {
 // silence boundary).
 func TestSilenceFrameClearsRepeatCache(t *testing.T) {
 	d := New()
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("good seed: %v", err)
 	}
 	silence := make([]byte, FrameBytes)
@@ -707,7 +735,7 @@ func TestSilenceFrameClearsRepeatCache(t *testing.T) {
 // "Reset = clean slate" contract.
 func TestResetClearsFrameRepeatCache(t *testing.T) {
 	d := New()
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Decode(badFrame()); err != nil {
@@ -845,7 +873,7 @@ func TestAGCConfigPreservedAcrossReset(t *testing.T) {
 // len(recoveryRampFactors) once the budget is exhausted.
 func TestRecoveryRampArmedOnBadStreakClear(t *testing.T) {
 	d := New()
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// MaxBadFrames consecutive bad replays — these stay within
@@ -875,7 +903,7 @@ func TestRecoveryRampArmedOnBadStreakClear(t *testing.T) {
 // the cached params, so a fade-in on top would double-attenuate.
 func TestRecoveryRampNotArmedDuringBudgetedBadStreak(t *testing.T) {
 	d := New()
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	for i := 0; i < mbe.MaxBadFrames; i++ {
@@ -915,7 +943,7 @@ func TestRecoveryRampDecrementsOverGoodFrames(t *testing.T) {
 			t.Errorf("before good frame %d: recoveryFramesRemaining = %d, want %d",
 				len(recoveryRampFactors)-i+1, d.recoveryFramesRemaining, i)
 		}
-		if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+		if _, err := d.Decode(goodVoiceFrame()); err != nil {
 			t.Fatalf("good frame: %v", err)
 		}
 	}
@@ -924,7 +952,7 @@ func TestRecoveryRampDecrementsOverGoodFrames(t *testing.T) {
 			len(recoveryRampFactors), d.recoveryFramesRemaining)
 	}
 	// Subsequent good frames don't underflow the counter.
-	if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := d.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("post-recovery good frame: %v", err)
 	}
 	if d.recoveryFramesRemaining != 0 {
@@ -945,7 +973,7 @@ func TestRecoveryRampDecrementsOverGoodFrames(t *testing.T) {
 func TestRecoveryRampAttenuatesOutput(t *testing.T) {
 	// Baseline: fresh decoder, decode one frame.
 	baseline := New()
-	baseOut, err := baseline.Decode(make([]byte, FrameBytes))
+	baseOut, err := baseline.Decode(goodVoiceFrame())
 	if err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
@@ -955,7 +983,7 @@ func TestRecoveryRampAttenuatesOutput(t *testing.T) {
 	// then decode one good frame. Use the same seed so the
 	// unvoiced noise stream matches the baseline.
 	rec := New()
-	if _, err := rec.Decode(make([]byte, FrameBytes)); err != nil {
+	if _, err := rec.Decode(goodVoiceFrame()); err != nil {
 		t.Fatalf("rec seed: %v", err)
 	}
 	for i := 0; i <= mbe.MaxBadFrames; i++ {
@@ -963,7 +991,7 @@ func TestRecoveryRampAttenuatesOutput(t *testing.T) {
 			t.Fatalf("rec bad %d: %v", i, err)
 		}
 	}
-	recOut, err := rec.Decode(make([]byte, FrameBytes))
+	recOut, err := rec.Decode(goodVoiceFrame())
 	if err != nil {
 		t.Fatalf("rec good: %v", err)
 	}
@@ -1036,7 +1064,7 @@ func TestRecoveryRampFactorsMonotonicallyIncrease(t *testing.T) {
 func TestFrameRepeatFreezesAGC(t *testing.T) {
 	d := New()
 	for i := 0; i < 5; i++ {
-		if _, err := d.Decode(make([]byte, FrameBytes)); err != nil {
+		if _, err := d.Decode(goodVoiceFrame()); err != nil {
 			t.Fatalf("warmup %d: %v", i, err)
 		}
 	}

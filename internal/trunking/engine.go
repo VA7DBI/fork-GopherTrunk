@@ -219,14 +219,53 @@ func (e *Engine) HandleGrant(g Grant) {
 	// still going" and refresh the existing bind's LastHeardAt. Skip
 	// when GroupID is zero (grants without a TG can legitimately
 	// share a frequency).
+	//
+	// Timeslot is part of the match: a DMR Tier III carrier runs two
+	// independent calls, one per TDMA slot, so a TS2 grant must NOT be
+	// folded into an active TS1 call on the same frequency (even when
+	// both slots happen to carry the same talkgroup) — that would drop
+	// the second call. For non-slotted protocols Timeslot is 0 on both
+	// sides, so the comparison is a no-op.
 	if g.GroupID != 0 {
 		for _, ac := range e.pool.Active() {
-			if ac.Grant.GroupID == g.GroupID && ac.Grant.FrequencyHz == g.FrequencyHz {
+			// A logical call is identified by (System, talkgroup, timeslot),
+			// NOT by frequency: a call's frequency can change mid-call (a
+			// band-plan IdentifierUpdate re-maps the channel, or the system
+			// hands the call to a new channel). Matching on frequency made
+			// such a re-grant miss, so the engine bound a *second* tap to the
+			// same talkgroup — two "Active calls" rows for one call. System
+			// keeps two systems' identical TG numbers apart; Timeslot keeps a
+			// DMR Tier III carrier's two per-slot calls apart (issue #356).
+			if ac.Grant.System != g.System || ac.Grant.GroupID != g.GroupID ||
+				ac.Grant.Timeslot != g.Timeslot {
+				continue
+			}
+			if g.FrequencyHz == ac.Grant.FrequencyHz {
+				// Same channel: the CC is repeating the grant while the call
+				// runs (issue #356). Refresh LastHeardAt and we're done.
 				e.pool.Touch(ac.Device.Serial, e.now())
 				e.log.Debug("grant already active; refreshed",
 					"grant", g.String(), "device", ac.Device.Serial)
 				return
 			}
+			// Same call, new frequency — follow it. Retune the bound device
+			// in place when it can still reach the new channel; otherwise end
+			// the stale bind and fall through to allocate a capable device.
+			if fc, ok := ac.Device.Tuner.(FrequencyChecker); !ok || fc.CanTune(g.FrequencyHz) {
+				if err := e.pool.Retune(ac.Device.Serial, g, e.now()); err != nil {
+					e.log.Warn("voice retune failed; rebinding",
+						"err", err, "grant", g.String(), "device", ac.Device.Serial)
+					e.endCall(ac, EndReasonNormal)
+					break
+				}
+				e.log.Info("call followed to new frequency",
+					"device", ac.Device.Serial, "grant", g.String())
+				return
+			}
+			e.log.Info("call moved beyond device window; rebinding",
+				"device", ac.Device.Serial, "grant", g.String())
+			e.endCall(ac, EndReasonNormal)
+			break
 		}
 	}
 

@@ -85,6 +85,28 @@ func (c *Client) ScannerSetMode(ctx context.Context, mode string) error {
 		map[string]string{"scan_mode": mode}, nil)
 }
 
+// HuntStartRequest is the POST /api/v1/hunt/start body the TUI sends. It
+// mirrors the subset of api.HuntStartRequest the panel collects.
+type HuntStartRequest struct {
+	Bands      []string  `json:"bands,omitempty"`
+	Candidates []float64 `json:"candidates,omitempty"`
+	NoSweep    bool      `json:"no_sweep,omitempty"`
+	Survey     bool      `json:"survey,omitempty"`
+	Name       string    `json:"name,omitempty"`
+	Serial     string    `json:"serial,omitempty"`
+	Protocol   string    `json:"protocol,omitempty"`
+}
+
+// HuntStart launches a live system-discovery run.
+func (c *Client) HuntStart(ctx context.Context, req HuntStartRequest) error {
+	return c.do(ctx, http.MethodPost, "/api/v1/hunt/start", req, nil)
+}
+
+// HuntStop cancels the active live system-discovery run.
+func (c *Client) HuntStop(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/api/v1/hunt/stop", nil, nil)
+}
+
 // ScannerHuntHold / ScannerHuntResume / ScannerHuntRetune call the
 // per-system hunt mutation endpoints. system must match a configured
 // trunked system name.
@@ -275,9 +297,10 @@ type SettingsPatch struct {
 	AudioMuted    *bool    `json:"audio_muted,omitempty"`
 	AudioBufferMs *int     `json:"audio_buffer_ms,omitempty"`
 
-	RecordingsDir        *string `json:"recordings_dir,omitempty"`
-	RecordingsSampleRate *uint32 `json:"recordings_sample_rate,omitempty"`
-	RecordingsWriteRaw   *bool   `json:"recordings_write_raw,omitempty"`
+	RecordingsDir           *string `json:"recordings_dir,omitempty"`
+	RecordingsSampleRate    *uint32 `json:"recordings_sample_rate,omitempty"`
+	RecordingsWriteRaw      *bool   `json:"recordings_write_raw,omitempty"`
+	RecordingsSkipEncrypted *bool   `json:"recordings_skip_encrypted,omitempty"`
 
 	RetentionCallLogDays *int    `json:"retention_call_log_days,omitempty"`
 	RetentionFilesDays   *int    `json:"retention_files_days,omitempty"`

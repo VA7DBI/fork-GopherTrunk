@@ -144,18 +144,18 @@ func fleetSyncMessageToDTO(m storage.FleetSyncMessage) FleetSyncMessageDTO {
 // handleFleetSyncMessages answers GET /api/v1/fleetsync/messages.
 func (s *Server) handleFleetSyncMessages(w http.ResponseWriter, r *http.Request) {
 	if s.fleetsync == nil {
-		writeError(w, http.StatusServiceUnavailable, "fleetsync subsystem not enabled")
+		s.writeError(w, http.StatusServiceUnavailable, "fleetsync subsystem not enabled")
 		return
 	}
 	filter, err := parseFleetSyncFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	rows, err := s.fleetsync.ListFleetSyncMessages(filter)
 	if err != nil {
 		s.log.Error("api: fleetsync messages", "err", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
+		s.writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	out := make([]FleetSyncMessageDTO, 0, len(rows))
@@ -168,22 +168,22 @@ func (s *Server) handleFleetSyncMessages(w http.ResponseWriter, r *http.Request)
 // handleFleetSyncMessage answers GET /api/v1/fleetsync/messages/{id}.
 func (s *Server) handleFleetSyncMessage(w http.ResponseWriter, r *http.Request) {
 	if s.fleetsync == nil {
-		writeError(w, http.StatusServiceUnavailable, "fleetsync subsystem not enabled")
+		s.writeError(w, http.StatusServiceUnavailable, "fleetsync subsystem not enabled")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid id")
+		s.writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	row, err := s.fleetsync.GetFleetSyncMessage(id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "not found")
+			s.writeError(w, http.StatusNotFound, "not found")
 			return
 		}
 		s.log.Error("api: fleetsync message", "id", id, "err", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
+		s.writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, fleetSyncMessageToDTO(row))
@@ -192,19 +192,19 @@ func (s *Server) handleFleetSyncMessage(w http.ResponseWriter, r *http.Request) 
 // handleFleetSyncStats answers GET /api/v1/fleetsync/stats.
 func (s *Server) handleFleetSyncStats(w http.ResponseWriter, r *http.Request) {
 	if s.fleetsync == nil {
-		writeError(w, http.StatusServiceUnavailable, "fleetsync subsystem not enabled")
+		s.writeError(w, http.StatusServiceUnavailable, "fleetsync subsystem not enabled")
 		return
 	}
 	filter, err := parseFleetSyncFilter(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	filter.Limit = 0 // stats endpoint is aggregate-only.
 	stats, err := s.fleetsync.FleetSyncStats(filter)
 	if err != nil {
 		s.log.Error("api: fleetsync stats", "err", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
+		s.writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, FleetSyncStatsDTO{
