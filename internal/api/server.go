@@ -619,10 +619,8 @@ type ServerOptions struct {
 	// POCSAG (and eventually FLEX) pager messages. Wired by the
 	// daemon over the SQLite-backed storage.PagerLog.
 	Pager PagerProvider
-	// FleetSync, when non-nil, enables the FleetSync log/stats routes:
+	// FleetSync, when non-nil, enables the FleetSync recent-message route:
 	// GET /api/v1/fleetsync/messages
-	// GET /api/v1/fleetsync/messages/{id}
-	// GET /api/v1/fleetsync/stats
 	FleetSync FleetSyncProvider
 	// APRS, when non-nil, enables the
 	// GET /api/v1/aprs/packets route serving recent decoded
@@ -1090,8 +1088,6 @@ func (s *Server) routes() *http.ServeMux {
 	// Read-only; the decoder writes via the events bus → PagerLog.
 	mux.HandleFunc("GET /api/v1/pager/messages", s.handlePagerMessages)
 	mux.HandleFunc("GET /api/v1/fleetsync/messages", s.handleFleetSyncMessages)
-	mux.HandleFunc("GET /api/v1/fleetsync/messages/{id}", s.handleFleetSyncMessage)
-	mux.HandleFunc("GET /api/v1/fleetsync/stats", s.handleFleetSyncStats)
 
 	// APRS / AX.25 packet log — recent decoded packets. Read-only;
 	// the decoder writes via the events bus → APRSLog.

@@ -193,6 +193,12 @@ func (f *FleetSyncLog) List(filter FleetSyncFilter) ([]FleetSyncMessage, error) 
 	return out, rows.Err()
 }
 
+// Recent returns the most recent FleetSync messages, newest first,
+// capped at limit. limit <= 0 picks 200; limit > 5000 caps at 5000.
+func (f *FleetSyncLog) Recent(limit int) ([]FleetSyncMessage, error) {
+	return f.List(FleetSyncFilter{Limit: limit})
+}
+
 // Stats computes aggregate FleetSync statistics and a command histogram
 // over the requested filter window.
 func (f *FleetSyncLog) Stats(filter FleetSyncFilter) (FleetSyncStats, error) {

@@ -1,9 +1,7 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/hex"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,10 +12,7 @@ import (
 
 // FleetSyncProvider is the read surface the FleetSync log endpoints consume.
 type FleetSyncProvider interface {
-	ListFleetSyncMessages(filter storage.FleetSyncFilter) ([]storage.FleetSyncMessage, error)
-	GetFleetSyncMessage(id int64) (storage.FleetSyncMessage, error)
-	FleetSyncStats(filter storage.FleetSyncFilter) (storage.FleetSyncStats, error)
-	FleetSyncRuntimeStats() FleetSyncRuntimeStatsDTO
+	RecentFleetSyncMessages(limit int) ([]storage.FleetSyncMessage, error)
 }
 
 // FleetSyncMessageDTO is the JSON wire shape for FleetSync log endpoints.
@@ -36,90 +31,6 @@ type FleetSyncMessageDTO struct {
 	Priority   bool      `json:"priority"`
 	PayloadHex string    `json:"payload_hex"`
 	RawHex     string    `json:"raw_hex"`
-}
-
-// FleetSyncStatsDTO is the JSON wire shape for FleetSync stats.
-type FleetSyncStatsDTO struct {
-	Total     int64                          `json:"total"`
-	Emergency int64                          `json:"emergency"`
-	Priority  int64                          `json:"priority"`
-	FirstSeen time.Time                      `json:"first_seen"`
-	LastSeen  time.Time                      `json:"last_seen"`
-	Commands  []storage.FleetSyncCommandStat `json:"commands"`
-	Runtime   FleetSyncRuntimeStatsDTO       `json:"runtime"`
-}
-
-// FleetSyncRuntimeStatsDTO captures live decoder/receiver telemetry.
-type FleetSyncRuntimeStatsDTO struct {
-	MessagesEmitted uint64                            `json:"messages_emitted"`
-	TotalSamples    int64                             `json:"total_samples"`
-	TotalMessagesRx int64                             `json:"total_messages_rx"`
-	SyncErrors      int64                             `json:"sync_errors"`
-	CRCErrors       int64                             `json:"crc_errors"`
-	LastMessageTime time.Time                         `json:"last_message_time"`
-	MessageRate     float64                           `json:"message_rate"`
-	Channels        []FleetSyncRuntimeChannelStatsDTO `json:"channels,omitempty"`
-	Export          FleetSyncExportRuntimeStatsDTO    `json:"export"`
-}
-
-// FleetSyncRuntimeChannelStatsDTO is per-receiver live telemetry.
-type FleetSyncRuntimeChannelStatsDTO struct {
-	Source          string    `json:"source"`
-	MessagesEmitted uint64    `json:"messages_emitted"`
-	TotalSamples    int64     `json:"total_samples"`
-	TotalMessagesRx int64     `json:"total_messages_rx"`
-	SyncErrors      int64     `json:"sync_errors"`
-	CRCErrors       int64     `json:"crc_errors"`
-	LastMessageTime time.Time `json:"last_message_time"`
-	MessageRate     float64   `json:"message_rate"`
-}
-
-// FleetSyncExportRuntimeStatsDTO is exporter/back-end health telemetry.
-type FleetSyncExportRuntimeStatsDTO struct {
-	Queued                           int                              `json:"queued"`
-	Dropped                          int                              `json:"dropped"`
-	LastEventAt                      time.Time                        `json:"last_event_at,omitempty"`
-	LastSendAt                       time.Time                        `json:"last_send_at,omitempty"`
-	LastFailureAt                    time.Time                        `json:"last_failure_at,omitempty"`
-	TelemetryAgeSeconds              float64                          `json:"telemetry_age_seconds,omitempty"`
-	QueueDepth                       int                              `json:"queue_depth"`
-	QueueCapacity                    int                              `json:"queue_capacity"`
-	QueueUtilization                 float64                          `json:"queue_utilization"`
-	QueueUtilizationLast60sAvg       float64                          `json:"queue_utilization_last_60s_avg,omitempty"`
-	QueueUtilizationLast60sPeak      float64                          `json:"queue_utilization_last_60s_peak,omitempty"`
-	DroppedBySource                  map[string]int                   `json:"dropped_by_source,omitempty"`
-	DroppedPerMinuteBySource         map[string]float64               `json:"dropped_per_minute_by_source,omitempty"`
-	SentLast60sTotal                 int                              `json:"sent_last_60s_total,omitempty"`
-	FailedLast60sTotal               int                              `json:"failed_last_60s_total,omitempty"`
-	SuccessRateLast60s               float64                          `json:"success_rate_last_60s,omitempty"`
-	FailureRateLast60s               float64                          `json:"failure_rate_last_60s,omitempty"`
-	RetriedLast60sTotal              int                              `json:"retried_last_60s_total,omitempty"`
-	RetryRateLast60s                 float64                          `json:"retry_rate_last_60s,omitempty"`
-	DroppedToAttemptsRateLast60s     float64                          `json:"dropped_to_attempts_rate_last_60s,omitempty"`
-	SaturationSeverityLast60s        float64                          `json:"saturation_severity_last_60s,omitempty"`
-	SaturationStateLast60s           string                           `json:"saturation_state_last_60s,omitempty"`
-	SaturationTransitionCountLast60s int                              `json:"saturation_transition_count_last_60s,omitempty"`
-	SaturationStateDwellLast60s      map[string]float64               `json:"saturation_state_dwell_last_60s,omitempty"`
-	DroppedLast60sTotal              int                              `json:"dropped_last_60s_total,omitempty"`
-	DroppedPerMinuteLast60sTotal     float64                          `json:"dropped_per_minute_last_60s_total,omitempty"`
-	DroppedLast60sBySource           map[string]int                   `json:"dropped_last_60s_by_source,omitempty"`
-	DroppedPerMinuteLast60sBySource  map[string]float64               `json:"dropped_per_minute_last_60s_by_source,omitempty"`
-	Backends                         []FleetSyncExportBackendStatsDTO `json:"backends,omitempty"`
-}
-
-// FleetSyncExportBackendStatsDTO captures per-backend delivery counters.
-type FleetSyncExportBackendStatsDTO struct {
-	Name               string  `json:"name"`
-	Sent               int     `json:"sent"`
-	SentLast60s        int     `json:"sent_last_60s,omitempty"`
-	SuccessRateLast60s float64 `json:"success_rate_last_60s,omitempty"`
-	Failed             int     `json:"failed"`
-	FailedLast60s      int     `json:"failed_last_60s,omitempty"`
-	FailureRateLast60s float64 `json:"failure_rate_last_60s,omitempty"`
-	Attempts           int     `json:"attempts"`
-	AttemptsLast60s    int     `json:"attempts_last_60s,omitempty"`
-	Retried            int     `json:"retried"`
-	RetriedLast60s     int     `json:"retried_last_60s,omitempty"`
 }
 
 func fleetSyncMessageToDTO(m storage.FleetSyncMessage) FleetSyncMessageDTO {
@@ -147,12 +58,13 @@ func (s *Server) handleFleetSyncMessages(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusServiceUnavailable, "fleetsync subsystem not enabled")
 		return
 	}
-	filter, err := parseFleetSyncFilter(r)
-	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
-		return
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
 	}
-	rows, err := s.fleetsync.ListFleetSyncMessages(filter)
+	rows, err := s.fleetsync.RecentFleetSyncMessages(limit)
 	if err != nil {
 		s.log.Error("api: fleetsync messages", "err", err)
 		s.writeError(w, http.StatusInternalServerError, "query failed")
@@ -163,124 +75,4 @@ func (s *Server) handleFleetSyncMessages(w http.ResponseWriter, r *http.Request)
 		out = append(out, fleetSyncMessageToDTO(row))
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// handleFleetSyncMessage answers GET /api/v1/fleetsync/messages/{id}.
-func (s *Server) handleFleetSyncMessage(w http.ResponseWriter, r *http.Request) {
-	if s.fleetsync == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "fleetsync subsystem not enabled")
-		return
-	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		s.writeError(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	row, err := s.fleetsync.GetFleetSyncMessage(id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			s.writeError(w, http.StatusNotFound, "not found")
-			return
-		}
-		s.log.Error("api: fleetsync message", "id", id, "err", err)
-		s.writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	writeJSON(w, http.StatusOK, fleetSyncMessageToDTO(row))
-}
-
-// handleFleetSyncStats answers GET /api/v1/fleetsync/stats.
-func (s *Server) handleFleetSyncStats(w http.ResponseWriter, r *http.Request) {
-	if s.fleetsync == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "fleetsync subsystem not enabled")
-		return
-	}
-	filter, err := parseFleetSyncFilter(r)
-	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	filter.Limit = 0 // stats endpoint is aggregate-only.
-	stats, err := s.fleetsync.FleetSyncStats(filter)
-	if err != nil {
-		s.log.Error("api: fleetsync stats", "err", err)
-		s.writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	writeJSON(w, http.StatusOK, FleetSyncStatsDTO{
-		Total:     stats.Total,
-		Emergency: stats.Emergency,
-		Priority:  stats.Priority,
-		FirstSeen: stats.FirstSeen,
-		LastSeen:  stats.LastSeen,
-		Commands:  stats.Commands,
-		Runtime:   s.fleetsync.FleetSyncRuntimeStats(),
-	})
-}
-
-func parseFleetSyncFilter(r *http.Request) (storage.FleetSyncFilter, error) {
-	q := r.URL.Query()
-	filter := storage.FleetSyncFilter{Limit: 200}
-	if v := q.Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return filter, errors.New("invalid limit")
-		}
-		filter.Limit = n
-	}
-	if v := q.Get("source_unit"); v != "" {
-		n, err := strconv.ParseUint(v, 10, 16)
-		if err != nil {
-			return filter, errors.New("invalid source_unit")
-		}
-		u := uint16(n)
-		filter.SourceUnit = &u
-	}
-	if v := q.Get("destination_unit"); v != "" {
-		n, err := strconv.ParseUint(v, 10, 16)
-		if err != nil {
-			return filter, errors.New("invalid destination_unit")
-		}
-		u := uint16(n)
-		filter.DestinationUnit = &u
-	}
-	if v := q.Get("command"); v != "" {
-		n, err := parseUint8(v)
-		if err != nil {
-			return filter, errors.New("invalid command")
-		}
-		filter.Command = &n
-	}
-	if v := q.Get("since"); v != "" {
-		ts, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			return filter, errors.New("invalid since")
-		}
-		filter.Since = ts
-	}
-	if v := q.Get("until"); v != "" {
-		ts, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			return filter, errors.New("invalid until")
-		}
-		filter.Until = ts
-	}
-	if !filter.Since.IsZero() && !filter.Until.IsZero() && filter.Until.Before(filter.Since) {
-		return filter, errors.New("invalid range")
-	}
-	return filter, nil
-}
-
-func parseUint8(v string) (uint8, error) {
-	base := 10
-	value := strings.TrimSpace(strings.ToLower(v))
-	if strings.HasPrefix(value, "0x") {
-		base = 16
-		value = strings.TrimPrefix(value, "0x")
-	}
-	n, err := strconv.ParseUint(value, base, 8)
-	if err != nil {
-		return 0, err
-	}
-	return uint8(n), nil
 }
